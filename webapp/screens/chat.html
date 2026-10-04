@@ -1,0 +1,671 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Karen · Chat</title>
+<link rel="stylesheet" href="chatgpt-theme.css">
+<script src="theme.js"></script>
+<script src="live.js"></script>
+<style>
+/* Chat-specific nuances */
+.attachment-sheet-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  padding: 8px 0;
+}
+.attachment-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  padding: 8px 4px;
+  border-radius: var(--radius-md);
+  transition: background 0.15s ease;
+}
+.attachment-item:hover {
+  background: var(--bg-surface-hover);
+}
+.attachment-icon-circle {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-primary);
+}
+.attachment-label {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  text-align: center;
+}
+.toast {
+  position: fixed;
+  bottom: 80px;
+  left: 50%;
+  transform: translateX(-50%) translateY(20px);
+  background: rgba(47, 47, 47, 0.95);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  padding: 8px 18px;
+  border-radius: var(--radius-full);
+  font-size: 13px;
+  pointer-events: none;
+  opacity: 0;
+  transition: all 0.2s ease;
+  z-index: 200;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+}
+.toast.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+</style>
+</head>
+<body>
+
+<!-- Slide-out ChatGPT Side Drawer -->
+<div class="drawer-backdrop" id="drawerBackdrop" onclick="toggleDrawer(false)"></div>
+<div class="chatgpt-drawer" id="drawer">
+  <div class="drawer-header">
+    <div class="drawer-top-row">
+      <div class="brand-title">
+        <span class="material-symbols-outlined" style="color:var(--accent-green);font-size:22px">token</span>
+        Karen Intelligence
+      </div>
+      <button class="icon-btn" onclick="toggleDrawer(false)">
+        <span class="material-symbols-outlined">close</span>
+      </button>
+    </div>
+    <div class="drawer-search">
+      <span class="material-symbols-outlined" style="font-size:18px">search</span>
+      <input type="text" placeholder="Search conversations...">
+    </div>
+    <button class="new-chat-btn" onclick="startNewChat()">
+      <span class="material-symbols-outlined" style="font-size:18px">add</span>
+      New chat
+    </button>
+  </div>
+
+  <div class="drawer-content">
+    <div>
+      <div class="drawer-section-title">Today</div>
+      <a class="drawer-nav-item active" onclick="toggleDrawer(false)">
+        <span class="material-symbols-outlined">chat_bubble</span>
+        <span>Lab Exam &amp; Timetable</span>
+      </a>
+      <a class="drawer-nav-item" href="workspace.html">
+        <span class="material-symbols-outlined">code</span>
+        <span>TreeVision Biometrics</span>
+      </a>
+    </div>
+
+    <div>
+      <div class="drawer-section-title">Previous 7 Days</div>
+      <a class="drawer-nav-item" href="study-book.html">
+        <span class="material-symbols-outlined">menu_book</span>
+        <span>DBMS Normalization BCNF</span>
+      </a>
+      <a class="drawer-nav-item" href="voice.html">
+        <span class="material-symbols-outlined">record_voice_over</span>
+        <span>Thermal Compile Discussion</span>
+      </a>
+    </div>
+
+    <div>
+      <div class="drawer-section-title">Capabilities &amp; Tools</div>
+      <a class="drawer-nav-item" href="home.html">
+        <span class="material-symbols-outlined">home</span>
+        <span>Home Dashboard</span>
+      </a>
+      <a class="drawer-nav-item" href="voice.html">
+        <span class="material-symbols-outlined">graphic_eq</span>
+        <span>Advanced Voice Mode</span>
+      </a>
+      <a class="drawer-nav-item" href="workspace.html">
+        <span class="material-symbols-outlined">terminal</span>
+        <span>Dev Workspace / Canvas</span>
+      </a>
+      <a class="drawer-nav-item" href="files.html">
+        <span class="material-symbols-outlined">folder</span>
+        <span>Knowledge Vault &amp; Files</span>
+      </a>
+      <a class="drawer-nav-item" href="memory.html">
+        <span class="material-symbols-outlined">psychology</span>
+        <span>Memory &amp; Preferences</span>
+      </a>
+      <a class="drawer-nav-item" href="model-manager.html">
+        <span class="material-symbols-outlined">memory</span>
+        <span>Local Models (GGUF)</span>
+      </a>
+      <a class="drawer-nav-item" href="performance.html">
+        <span class="material-symbols-outlined">speed</span>
+        <span>Performance &amp; TTFT</span>
+      </a>
+      <a class="drawer-nav-item" href="hardware.html">
+        <span class="material-symbols-outlined">shield</span>
+        <span>Hardware &amp; Governance</span>
+      </a>
+    </div>
+
+    <div>
+      <div class="drawer-section-title">Theme &amp; Appearance</div>
+      <div class="drawer-theme-box">
+        <div class="drawer-theme-meta">
+          <span class="drawer-theme-title">
+            <span class="material-symbols-outlined" style="font-size:18px;color:#f59e0b">dark_mode</span>
+            Dark Mode
+          </span>
+          <span class="drawer-theme-sub theme-mode-label">OLED Black (#000000)</span>
+        </div>
+        <label class="switch">
+          <input type="checkbox" class="theme-switch-input" checked onchange="toggleTheme()">
+          <span class="slider"></span>
+        </label>
+      </div>
+    </div>
+  </div>
+
+  <div class="drawer-footer">
+    <div class="user-profile-pill" onclick="location.href='memory.html'">
+      <div class="user-avatar">A</div>
+      <div class="user-meta">
+        <span class="user-name">Alex Morgan</span>
+        <span class="user-plan">Karen Sovereign · 4B NPU</span>
+      </div>
+    </div>
+    <button class="icon-btn" onclick="toggleTheme()" title="Toggle Dark / Light Mode">
+      <span class="material-symbols-outlined theme-toggle-icon">light_mode</span>
+    </button>
+    <button class="icon-btn" onclick="location.href='hardware.html'">
+      <span class="material-symbols-outlined">settings</span>
+    </button>
+  </div>
+</div>
+
+<!-- ChatGPT Top App Bar -->
+<header class="chatgpt-header">
+  <div class="header-left">
+    <button class="icon-btn" onclick="toggleDrawer(true)" aria-label="Open sidebar" title="Menu">
+      <span class="material-symbols-outlined">menu</span>
+    </button>
+  </div>
+
+  <div class="header-center">
+    <div class="model-selector-pill" id="modelPill" onclick="toggleModelSheet(true)">
+      <span id="selectedModelLabel">Karen 4B</span>
+      <span class="material-symbols-outlined chevron">expand_more</span>
+    </div>
+  </div>
+
+  <div class="header-right">
+    <button class="icon-btn" onclick="toggleTheme()" title="Toggle Dark / Light Mode">
+      <span class="material-symbols-outlined theme-toggle-icon">light_mode</span>
+    </button>
+    <button class="icon-btn" onclick="startNewChat()" aria-label="New chat" title="New chat">
+      <span class="material-symbols-outlined">edit_square</span>
+    </button>
+    <button class="icon-btn" onclick="toggleAttachmentSheet(true)" aria-label="Options" title="More options">
+      <span class="material-symbols-outlined">more_vert</span>
+    </button>
+  </div>
+</header>
+
+<!-- Chat Messages Canvas -->
+<main class="chat-container" id="chatStream">
+  
+  <!-- User Message Bubble -->
+  <div class="chat-message-user">
+    Can you inspect my Timetable_Sem5.pdf and check when my next Lab exam is scheduled, then add a reminder?
+  </div>
+
+  <!-- Assistant Message -->
+  <div class="chat-message-assistant">
+    <div class="assistant-avatar-badge">
+      <div class="karen-spark-logo">
+        <span class="material-symbols-outlined" style="font-size:20px">token</span>
+      </div>
+      <span class="assistant-name">Karen</span>
+    </div>
+
+    <!-- Collapsible Reasoning / Thought Box (like ChatGPT o1/o3) -->
+    <div class="thought-box" onclick="this.classList.toggle('open')">
+      <div class="thought-header">
+        <span class="thought-dot"></span>
+        <span>Thought for 3 seconds</span>
+        <span class="material-symbols-outlined thought-chevron">expand_more</span>
+      </div>
+      <div class="thought-body">
+        • Queried SQLite vector table for "Lab exam semester timetable"<br>
+        • Extracted page 3, section 4.2 of <code>Timetable_Sem5.pdf</code> (Cosine sim: 0.941)<br>
+        • Detected: "Distributed Systems Lab Exam — Thu, Oct 24 — 02:00 PM"<br>
+        • Formulated on-device Intent for Calendar Provider with 0 network egress.
+      </div>
+    </div>
+
+    <!-- Tool Call Chip -->
+    <div>
+      <div class="tool-pill">
+        <span class="material-symbols-outlined" style="font-size:16px;color:var(--accent-green)">check_circle</span>
+        <span>rag_search(doc="Timetable_Sem5.pdf") · 0.12s</span>
+      </div>
+    </div>
+
+    <!-- Assistant Typography -->
+    <div class="assistant-content">
+      <p>According to page 3 of your semester timetable, your next lab exam is <b>Distributed Systems Lab</b> on <b>Thursday, October 24th at 2:00 PM – 5:00 PM</b> in <b>Computing Complex Lab 4B</b>.</p>
+    </div>
+
+    <!-- Action Confirmation Card -->
+    <div class="action-card" id="reminderCard">
+      <div class="action-card-title">
+        <span class="material-symbols-outlined" style="color:var(--accent-blue)">event</span>
+        Schedule Calendar Reminder
+      </div>
+      <div class="action-card-subtitle">
+        Distributed Systems Lab Exam<br>
+        Thu, Oct 24 · 02:00 PM – 05:00 PM · Hardware Lab 4B
+      </div>
+      <div class="action-card-buttons">
+        <button class="btn-primary" onclick="confirmReminder(this)">Confirm &amp; Add</button>
+        <button class="btn-secondary" onclick="dismissReminder(this)">Dismiss</button>
+      </div>
+    </div>
+
+    <div class="assistant-content">
+      <p>I've prepared the on-device calendar event above. Confirm to commit it directly to your system database without any cloud sync.</p>
+    </div>
+
+    <!-- Code Block -->
+    <div class="code-container">
+      <div class="code-header">
+        <span>json</span>
+        <button class="copy-code-btn" onclick="copySnippet(this)">
+          <span class="material-symbols-outlined" style="font-size:14px">content_copy</span>
+          <span>Copy code</span>
+        </button>
+      </div>
+      <pre><code>{
+  "event": "Distributed Systems Lab Exam",
+  "start": "2026-10-24T14:00:00",
+  "end": "2026-10-24T17:00:00",
+  "location": "Hardware Lab 4B",
+  "source_doc": "Timetable_Sem5.pdf",
+  "privacy": "air-gapped-local"
+}</code></pre>
+    </div>
+
+    <!-- Message Actions Bar -->
+    <div class="msg-actions">
+      <button class="msg-action-btn" title="Copy message" onclick="showToast('Copied to clipboard')">
+        <span class="material-symbols-outlined">content_copy</span>
+      </button>
+      <button class="msg-action-btn" title="Good response" onclick="toggleThumbs(this)">
+        <span class="material-symbols-outlined">thumb_up</span>
+      </button>
+      <button class="msg-action-btn" title="Bad response" onclick="toggleThumbs(this)">
+        <span class="material-symbols-outlined">thumb_down</span>
+      </button>
+      <button class="msg-action-btn" title="Read aloud" onclick="speakMessage()">
+        <span class="material-symbols-outlined">volume_up</span>
+      </button>
+      <button class="msg-action-btn" title="Regenerate" onclick="regenerateLast()">
+        <span class="material-symbols-outlined">sync</span>
+      </button>
+      <button class="msg-action-btn" title="Share" onclick="showToast('Link created')">
+        <span class="material-symbols-outlined">share</span>
+      </button>
+    </div>
+
+  </div>
+
+</main>
+
+<!-- Bottom Floating Composer -->
+<div class="composer-dock">
+  <div class="composer-dock-inner">
+    <button class="composer-attach-btn" onclick="toggleAttachmentSheet(true)" title="Attach file or tool">
+      <span class="material-symbols-outlined" style="font-size:20px">add</span>
+    </button>
+    
+    <input type="text" class="composer-input" id="messageInput" placeholder="Message Karen..." autocomplete="off">
+    
+    <div class="composer-actions">
+      <!-- Mic Button for Dictation -->
+      <button class="composer-voice-btn" id="micBtn" title="Dictate" onclick="toggleMic()">
+        <span class="material-symbols-outlined" style="font-size:22px">mic</span>
+      </button>
+      
+      <!-- ChatGPT Advanced Voice Mode Button -->
+      <button class="composer-voice-btn" id="voiceModeBtn" title="Advanced Voice Mode" onclick="location.href='voice.html'">
+        <span class="material-symbols-outlined" style="font-size:22px;color:var(--text-primary)">graphic_eq</span>
+      </button>
+
+      <!-- Dynamic Send Button (hidden initially, shows when typing) -->
+      <button class="composer-send-btn" id="sendBtn" style="display:none" onclick="sendMessage()">
+        <span class="material-symbols-outlined" style="font-size:20px">arrow_upward</span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Model Switcher Bottom Sheet -->
+<div class="sheet-backdrop" id="modelSheetBackdrop" onclick="toggleModelSheet(false)"></div>
+<div class="bottom-sheet" id="modelSheet">
+  <div class="sheet-handle"></div>
+  <div class="sheet-title">Model Architecture</div>
+  
+  <div class="sheet-options-list">
+    <div class="sheet-option-item selected" onclick="selectModel('Karen 4B', 'Fast, local &amp; sandboxed')">
+      <div class="sheet-option-left">
+        <span class="sheet-option-name">Karen 4B (Default)</span>
+        <span class="sheet-option-desc">Optimal everyday balance of speed, coding &amp; RAG. 0ms latency.</span>
+      </div>
+      <span class="material-symbols-outlined" style="color:var(--accent-green)">check</span>
+    </div>
+
+    <div class="sheet-option-item" onclick="selectModel('Karen Pro 9B', 'Deep reasoning &amp; complex code')">
+      <div class="sheet-option-left">
+        <span class="sheet-option-name">Karen Pro 9B Reasoning</span>
+        <span class="sheet-option-desc">Uses chain-of-thought scratchpad for complex algorithms.</span>
+      </div>
+    </div>
+
+    <div class="sheet-option-item" onclick="selectModel('Karen 2B Eco', 'Ultra-low battery consumption')">
+      <div class="sheet-option-left">
+        <span class="sheet-option-name">Karen 2B Eco</span>
+        <span class="sheet-option-desc">Lightweight NPU runtime for background listeners and timers.</span>
+      </div>
+    </div>
+  </div>
+
+  <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 4px;border-top:1px solid var(--border-subtle);margin-top:4px">
+    <div>
+      <div style="font-size:14px;font-weight:600">Dark Mode</div>
+      <div style="font-size:12px;color:var(--text-muted)">Toggle between Dark (OLED) and Light</div>
+    </div>
+    <label class="switch">
+      <input type="checkbox" class="theme-switch-input" checked onchange="toggleTheme()">
+      <span class="slider"></span>
+    </label>
+  </div>
+
+  <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 4px;border-top:1px solid var(--border-subtle)">
+    <div>
+      <div style="font-size:14px;font-weight:600">Temporary Chat</div>
+      <div style="font-size:12px;color:var(--text-muted)">Do not index into long-term memory</div>
+    </div>
+    <label class="switch">
+      <input type="checkbox" id="tempChatToggle">
+      <span class="slider"></span>
+    </label>
+  </div>
+</div>
+
+<!-- Attachment & Tools Bottom Sheet -->
+<div class="sheet-backdrop" id="attachSheetBackdrop" onclick="toggleAttachmentSheet(false)"></div>
+<div class="bottom-sheet" id="attachSheet">
+  <div class="sheet-handle"></div>
+  <div class="sheet-title">Add to chat</div>
+  
+  <div class="attachment-sheet-grid">
+    <div class="attachment-item" onclick="location.href='files.html'">
+      <div class="attachment-icon-circle"><span class="material-symbols-outlined">folder</span></div>
+      <span class="attachment-label">Files &amp; RAG</span>
+    </div>
+    <div class="attachment-item" onclick="location.href='workspace.html'">
+      <div class="attachment-icon-circle"><span class="material-symbols-outlined">terminal</span></div>
+      <span class="attachment-label">Dev Canvas</span>
+    </div>
+    <div class="attachment-item" onclick="location.href='voice.html'">
+      <div class="attachment-icon-circle"><span class="material-symbols-outlined">record_voice_over</span></div>
+      <span class="attachment-label">Voice Mode</span>
+    </div>
+    <div class="attachment-item" onclick="location.href='memory.html'">
+      <div class="attachment-icon-circle"><span class="material-symbols-outlined">psychology</span></div>
+      <span class="attachment-label">Memory</span>
+    </div>
+    <div class="attachment-item" onclick="location.href='study-book.html'">
+      <div class="attachment-icon-circle"><span class="material-symbols-outlined">menu_book</span></div>
+      <span class="attachment-label">Study Book</span>
+    </div>
+    <div class="attachment-item" onclick="location.href='model-manager.html'">
+      <div class="attachment-icon-circle"><span class="material-symbols-outlined">memory</span></div>
+      <span class="attachment-label">Models</span>
+    </div>
+    <div class="attachment-item" onclick="location.href='performance.html'">
+      <div class="attachment-icon-circle"><span class="material-symbols-outlined">speed</span></div>
+      <span class="attachment-label">Telemetry</span>
+    </div>
+    <div class="attachment-item" onclick="location.href='hardware.html'">
+      <div class="attachment-icon-circle"><span class="material-symbols-outlined">shield</span></div>
+      <span class="attachment-label">Sandbox</span>
+    </div>
+  </div>
+</div>
+
+<!-- Toast notification -->
+<div class="toast" id="toast">Notification</div>
+
+<script>
+// Drawer toggle
+function toggleDrawer(open) {
+  document.getElementById('drawer').classList.toggle('active', open);
+  document.getElementById('drawerBackdrop').classList.toggle('active', open);
+}
+
+// Model Bottom Sheet
+function toggleModelSheet(open) {
+  document.getElementById('modelSheet').classList.toggle('active', open);
+  document.getElementById('modelSheetBackdrop').classList.toggle('active', open);
+  document.getElementById('modelPill').classList.toggle('open', open);
+}
+
+function selectModel(name, desc) {
+  document.getElementById('selectedModelLabel').innerText = name;
+  document.querySelectorAll('.sheet-option-item').forEach(el => {
+    el.classList.remove('selected');
+    const existingCheck = el.querySelector('.material-symbols-outlined');
+    if (existingCheck && existingCheck.innerText === 'check') existingCheck.remove();
+  });
+  event.currentTarget.classList.add('selected');
+  const check = document.createElement('span');
+  check.className = 'material-symbols-outlined';
+  check.style.color = 'var(--accent-green)';
+  check.innerText = 'check';
+  event.currentTarget.appendChild(check);
+  toggleModelSheet(false);
+  showToast('Switched to ' + name);
+}
+
+// Attachment Bottom Sheet
+function toggleAttachmentSheet(open) {
+  document.getElementById('attachSheet').classList.toggle('active', open);
+  document.getElementById('attachSheetBackdrop').classList.toggle('active', open);
+}
+
+// Toast notification
+function showToast(msg) {
+  const toast = document.getElementById('toast');
+  toast.innerText = msg;
+  toast.classList.add('show');
+  setTimeout(() => toast.classList.remove('show'), 2000);
+}
+
+// Copy Code Snippet
+function copySnippet(btn) {
+  const code = btn.closest('.code-container').querySelector('code').innerText;
+  navigator.clipboard?.writeText(code);
+  showToast('Code copied to clipboard');
+}
+
+// Thumbs toggle
+function toggleThumbs(btn) {
+  const icon = btn.querySelector('.material-symbols-outlined');
+  const isFilled = icon.style.fontVariationSettings?.includes("'FILL' 1");
+  btn.parentElement.querySelectorAll('.msg-action-btn').forEach(b => {
+    const i = b.querySelector('.material-symbols-outlined');
+    if (i) i.style.fontVariationSettings = "'FILL' 0, 'wght' 400";
+  });
+  if (!isFilled) {
+    icon.style.fontVariationSettings = "'FILL' 1, 'wght' 400";
+    showToast('Feedback submitted');
+  }
+}
+
+// Confirm Calendar Action
+function confirmReminder(btn) {
+  const card = document.getElementById('reminderCard');
+  card.innerHTML = `
+    <div class="action-card-title" style="color:var(--accent-green)">
+      <span class="material-symbols-outlined">check_circle</span>
+      Scheduled on Device Calendar
+    </div>
+    <div class="action-card-subtitle">
+      Distributed Systems Lab Exam · Thu, Oct 24, 2:00 PM · Lab 4B
+    </div>
+  `;
+  showToast('Event committed to local calendar');
+}
+
+function dismissReminder(btn) {
+  const card = document.getElementById('reminderCard');
+  card.style.display = 'none';
+  showToast('Reminder dismissed');
+}
+
+// Text Input typing detection for Send button morphing
+const messageInput = document.getElementById('messageInput');
+const micBtn = document.getElementById('micBtn');
+const voiceModeBtn = document.getElementById('voiceModeBtn');
+const sendBtn = document.getElementById('sendBtn');
+
+messageInput.addEventListener('input', () => {
+  const hasText = messageInput.value.trim().length > 0;
+  if (hasText) {
+    micBtn.style.display = 'none';
+    voiceModeBtn.style.display = 'none';
+    sendBtn.style.display = 'flex';
+  } else {
+    micBtn.style.display = 'flex';
+    voiceModeBtn.style.display = 'flex';
+    sendBtn.style.display = 'none';
+  }
+});
+
+messageInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    sendMessage();
+  }
+});
+
+function sendMessage() {
+  const text = messageInput.value.trim();
+  if (!text) return;
+
+  const chatStream = document.getElementById('chatStream');
+
+  // Append user message bubble
+  const userDiv = document.createElement('div');
+  userDiv.className = 'chat-message-user';
+  userDiv.innerText = text;
+  chatStream.appendChild(userDiv);
+
+  messageInput.value = '';
+  micBtn.style.display = 'flex';
+  voiceModeBtn.style.display = 'flex';
+  sendBtn.style.display = 'none';
+
+  window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' });
+
+  // Simulate ChatGPT assistant streaming response
+  setTimeout(() => {
+    const assistantDiv = document.createElement('div');
+    assistantDiv.className = 'chat-message-assistant';
+    const msgId = 'stream_' + Date.now();
+    assistantDiv.innerHTML = `
+      <div class="assistant-avatar-badge">
+        <div class="karen-spark-logo">
+          <span class="material-symbols-outlined" style="font-size:20px">token</span>
+        </div>
+        <span class="assistant-name">Karen</span>
+      </div>
+      <div class="assistant-content">
+        <p id="${msgId}" style="display:inline"></p><span class="thought-dot" style="display:inline-block;vertical-align:middle;margin-left:4px"></span>
+      </div>
+      <div class="msg-actions" style="margin-top:6px">
+        <button class="msg-action-btn" title="Copy message" onclick="showToast('Copied to clipboard')">
+          <span class="material-symbols-outlined">content_copy</span>
+        </button>
+        <button class="msg-action-btn" title="Good response" onclick="toggleThumbs(this)">
+          <span class="material-symbols-outlined">thumb_up</span>
+        </button>
+        <button class="msg-action-btn" title="Bad response" onclick="toggleThumbs(this)">
+          <span class="material-symbols-outlined">thumb_down</span>
+        </button>
+        <button class="msg-action-btn" title="Read aloud" onclick="speakMessage()">
+          <span class="material-symbols-outlined">volume_up</span>
+        </button>
+      </div>
+    `;
+    chatStream.appendChild(assistantDiv);
+    window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' });
+
+    const reply = "I've processed your query locally using Karen 4B Q4. All documents and actions are kept strictly offline within your hardware sandbox.";
+    let idx = 0;
+    const target = assistantDiv.querySelector('#' + msgId);
+    const interval = setInterval(() => {
+      if (idx < reply.length) {
+        target.innerText += reply[idx++];
+        window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' });
+      } else {
+        clearInterval(interval);
+        assistantDiv.querySelector('.thought-dot')?.remove();
+      }
+    }, 20);
+  }, 450);
+}
+
+function startNewChat() {
+  toggleDrawer(false);
+  const chatStream = document.getElementById('chatStream');
+  chatStream.innerHTML = `
+    <div style="text-align:center;padding:60px 20px 20px;display:flex;flex-direction:column;align-items:center;gap:14px">
+      <div style="width:48px;height:48px;border-radius:50%;background:rgba(255,255,255,0.06);display:flex;align-items:center;justify-content:center">
+        <span class="material-symbols-outlined" style="font-size:28px;color:var(--accent-green)">token</span>
+      </div>
+      <div style="font-size:20px;font-weight:600">What can I help with today?</div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;justify-content:center;max-width:400px;margin-top:10px">
+        <button class="btn-secondary" onclick="insertPrompt('Inspect my Timetable_Sem5.pdf')">📅 Inspect timetable</button>
+        <button class="btn-secondary" onclick="insertPrompt('Review TreeVision biometric code')">🔒 Biometric code</button>
+        <button class="btn-secondary" onclick="insertPrompt('Explain BCNF vs 3NF with examples')">📚 BCNF vs 3NF</button>
+      </div>
+    </div>
+  `;
+}
+
+function insertPrompt(txt) {
+  messageInput.value = txt;
+  messageInput.dispatchEvent(new Event('input'));
+  messageInput.focus();
+}
+
+function toggleMic() {
+  showToast('Listening via on-device Whisper...');
+}
+
+function speakMessage() {
+  showToast('Playing via Piper TTS (1.1x speed)');
+}
+
+function regenerateLast() {
+  showToast('Regenerating response deterministically...');
+}
+</script>
+</body>
+</html>

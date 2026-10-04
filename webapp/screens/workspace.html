@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Karen · Dev Canvas</title>
+<link rel="stylesheet" href="chatgpt-theme.css">
+<script src="theme.js"></script>
+<script src="live.js"></script>
+<style>
+.tab-pill-bar {
+  display: flex;
+  gap: 8px;
+  padding: 8px 14px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-app);
+}
+.tab-pill-bar::-webkit-scrollbar { display: none; }
+.tab-btn {
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  border-radius: var(--radius-full);
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+}
+.tab-btn.active {
+  background: var(--bg-surface);
+  border-color: rgba(255, 255, 255, 0.2);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.canvas-editor {
+  background: var(--bg-code);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.6;
+  padding: 16px 14px;
+  overflow-x: auto;
+  min-height: 380px;
+}
+.code-line {
+  display: flex;
+  gap: 14px;
+}
+.line-num {
+  color: var(--text-dim);
+  user-select: none;
+  width: 24px;
+  text-align: right;
+  flex-shrink: 0;
+}
+.line-text {
+  color: #e2e8f0;
+  white-space: pre;
+}
+.inline-ai-bubble {
+  background: rgba(16, 163, 127, 0.12);
+  border-left: 3px solid var(--accent-green);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  padding: 8px 12px;
+  margin: 8px 0 8px 38px;
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.diff-added { background: rgba(16, 185, 129, 0.15); color: #34d399; }
+.diff-removed { background: rgba(244, 63, 94, 0.15); color: #fb7185; }
+</style>
+</head>
+<body>
+
+<!-- Header styled like ChatGPT Canvas -->
+<header class="chatgpt-header">
+  <div class="header-left">
+    <button class="icon-btn" onclick="location.href='chat.html'" aria-label="Back">
+      <span class="material-symbols-outlined">arrow_back</span>
+    </button>
+  </div>
+  <div style="display:flex;flex-direction:column;align-items:center">
+    <div style="font-size:14px;font-weight:600">BiometricAuthManager.kt</div>
+    <div style="font-size:11px;color:var(--text-muted)">TreeVision-Android · feat/biometric</div>
+  </div>
+  <div class="header-right">
+    <button class="icon-btn" onclick="toggleTheme()" title="Toggle Dark / Light Mode">
+      <span class="material-symbols-outlined theme-toggle-icon">light_mode</span>
+    </button>
+    <button class="icon-btn" onclick="runTests()" title="Run unit tests">
+      <span class="material-symbols-outlined" style="color:var(--accent-green)">play_arrow</span>
+    </button>
+  </div>
+</header>
+
+<!-- Canvas Segmented Tabs -->
+<div class="tab-pill-bar">
+  <button class="tab-btn active" onclick="switchTab(this, 'codeView')">Code</button>
+  <button class="tab-btn" onclick="switchTab(this, 'planView')">Plan (3/5)</button>
+  <button class="tab-btn" onclick="switchTab(this, 'terminalView')">Terminal</button>
+  <button class="tab-btn" onclick="switchTab(this, 'diffView')">Diff (+84/-3)</button>
+</div>
+
+<!-- Tab Content: Code Editor -->
+<div id="codeView" class="tab-content">
+  <div class="canvas-editor">
+    <div class="code-line"><span class="line-num">1</span><span class="line-text"><span style="color:#f472b6">package</span> com.karen.treevision.auth</span></div>
+    <div class="code-line"><span class="line-num">2</span><span class="line-text"></span></div>
+    <div class="code-line"><span class="line-num">3</span><span class="line-text"><span style="color:#f472b6">import</span> androidx.biometric.BiometricPrompt</span></div>
+    <div class="code-line"><span class="line-num">4</span><span class="line-text"><span style="color:#f472b6">import</span> androidx.fragment.app.FragmentActivity</span></div>
+    <div class="code-line"><span class="line-num">5</span><span class="line-text"><span style="color:#f472b6">import</span> java.util.concurrent.Executors</span></div>
+    <div class="code-line"><span class="line-num">6</span><span class="line-text"></span></div>
+    <div class="code-line"><span class="line-num">7</span><span class="line-text"><span style="color:#38bdf8">class</span> <span style="color:#facc15">BiometricAuthManager</span>(</span></div>
+    <div class="code-line"><span class="line-num">8</span><span class="line-text">    <span style="color:#f472b6">private val</span> activity: FragmentActivity</span></div>
+    <div class="code-line"><span class="line-num">9</span><span class="line-text">) {</span></div>
+    
+    <!-- Inline Karen Comment -->
+    <div class="inline-ai-bubble">
+      <span class="material-symbols-outlined" style="color:var(--accent-green);font-size:18px">token</span>
+      <span>Karen: Configured executor pool with StrongBox hardware keystore fallback.</span>
+    </div>
+
+    <div class="code-line"><span class="line-num">10</span><span class="line-text">    <span style="color:#f472b6">private val</span> executor = Executors.newSingleThreadExecutor()</span></div>
+    <div class="code-line"><span class="line-num">11</span><span class="line-text"></span></div>
+    <div class="code-line"><span class="line-num">12</span><span class="line-text">    <span style="color:#38bdf8">fun</span> <span style="color:#60a5fa">authenticateUser</span>(onSuccess: () -&gt; <span style="color:#38bdf8">Unit</span>) {</span></div>
+    <div class="code-line"><span class="line-num">13</span><span class="line-text">        <span style="color:#f472b6">val</span> prompt = BiometricPrompt(activity, executor,</span></div>
+    <div class="code-line"><span class="line-num">14</span><span class="line-text">            <span style="color:#f472b6">object</span> : BiometricPrompt.AuthenticationCallback() {</span></div>
+    <div class="code-line"><span class="line-num">15</span><span class="line-text">                <span style="color:#38bdf8">override fun</span> <span style="color:#60a5fa">onAuthenticationSucceeded</span>(result: BiometricPrompt.AuthenticationResult) {</span></div>
+    <div class="code-line"><span class="line-num">16</span><span class="line-text">                    onSuccess()</span></div>
+    <div class="code-line"><span class="line-num">17</span><span class="line-text">                }</span></div>
+    <div class="code-line"><span class="line-num">18</span><span class="line-text">            })</span></div>
+    <div class="code-line"><span class="line-num">19</span><span class="line-text">    }</span></div>
+    <div class="code-line"><span class="line-num">20</span><span class="line-text">}</span></div>
+  </div>
+</div>
+
+<!-- Tab Content: Autonomous Plan -->
+<div id="planView" class="tab-content" style="display:none;padding:16px 14px">
+  <div class="card-group">
+    <div class="card-cell">
+      <div class="cell-info">
+        <span class="cell-title">✓ T1: Analyze security specifications</span>
+        <span class="cell-subtitle">100% · Validated against NIST SP 800-63B</span>
+      </div>
+      <span class="tag-pill green">Done</span>
+    </div>
+    <div class="card-cell">
+      <div class="cell-info">
+        <span class="cell-title">✓ T2: Inspect AndroidX Biometric deps</span>
+        <span class="cell-subtitle">100% · androidx.biometric:1.2.0-alpha05</span>
+      </div>
+      <span class="tag-pill green">Done</span>
+    </div>
+    <div class="card-cell">
+      <div class="cell-info">
+        <span class="cell-title">● T3: Implement BiometricPrompt callback</span>
+        <span class="cell-subtitle">Generating failover tokens in BiometricPromptWrapper.kt</span>
+      </div>
+      <span class="tag-pill blue">Running</span>
+    </div>
+    <div class="card-cell">
+      <div class="cell-info">
+        <span class="cell-title">○ T4: Unit test keystore encryption</span>
+        <span class="cell-subtitle">Awaiting T3 AST completion</span>
+      </div>
+      <span class="tag-pill">Queued</span>
+    </div>
+  </div>
+</div>
+
+<!-- Tab Content: Terminal -->
+<div id="terminalView" class="tab-content" style="display:none;padding:16px 14px">
+  <div class="code-container">
+    <div class="code-header"><span>$ ./gradlew testDebugUnitTest</span></div>
+    <pre><code>&gt; Task :app:testDebugUnitTest
+✓ BiometricAuthManagerTest &gt; testSuccessAuth PASSED
+✓ BiometricAuthManagerTest &gt; testHardwareUnavailableHandled PASSED
+↻ Running: CryptoKeyStoreProviderTest &gt; testKeyGen()
+27 passed, 1 running... (2.89s)</code></pre>
+  </div>
+</div>
+
+<!-- Tab Content: Diff -->
+<div id="diffView" class="tab-content" style="display:none;padding:16px 14px">
+  <div class="code-container">
+    <div class="code-header"><span>git diff --stat</span></div>
+    <pre><code>BiometricAuthManager.kt | +84 additions
+AuthState.kt            | Unchanged
+CryptoUtils.kt          | +12 -3 modifications</code></pre>
+  </div>
+</div>
+
+<!-- Bottom Floating Composer for Canvas -->
+<div class="composer-dock">
+  <div class="composer-dock-inner">
+    <button class="composer-attach-btn" onclick="location.href='chat.html'">
+      <span class="material-symbols-outlined" style="font-size:20px">chat</span>
+    </button>
+    <input type="text" class="composer-input" placeholder="Ask Karen to edit this file...">
+    <button class="btn-primary" onclick="alert('Changes approved and committed locally.')">Commit</button>
+  </div>
+</div>
+
+<script>
+function switchTab(btn, tabId) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  document.querySelectorAll('.tab-content').forEach(c => c.style.display = 'none');
+  document.getElementById(tabId).style.display = 'block';
+}
+
+function runTests() {
+  switchTab(document.querySelectorAll('.tab-btn')[2], 'terminalView');
+}
+</script>
+
+</body>
+</html>

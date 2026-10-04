@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Karen · Home</title>
+<link rel="stylesheet" href="chatgpt-theme.css">
+<script src="theme.js"></script>
+<script src="live.js"></script>
+<style>
+.greeting-section {
+  padding: 24px 6px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.greeting-title {
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
+}
+.greeting-subtitle {
+  font-size: 14px;
+  color: var(--text-muted);
+}
+.prompt-chips-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+  margin: 10px 0 16px;
+}
+.prompt-chip-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  text-decoration: none;
+  color: inherit;
+  transition: background 0.15s ease, border-color 0.15s ease;
+  cursor: pointer;
+}
+.prompt-chip-card:hover {
+  background: var(--bg-surface-hover);
+  border-color: rgba(255, 255, 255, 0.15);
+}
+.prompt-chip-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent-green);
+}
+.prompt-chip-text {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.prompt-chip-sub {
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+.progress-bar-wrap {
+  width: 100%;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 3px;
+  overflow: hidden;
+  margin: 8px 0;
+}
+.progress-bar-fill {
+  height: 100%;
+  background: var(--accent-green);
+  border-radius: 3px;
+}
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<header class="chatgpt-header">
+  <div class="header-left">
+    <button class="icon-btn" onclick="location.href='chat.html'" aria-label="Open Chat">
+      <span class="material-symbols-outlined">chat_bubble</span>
+    </button>
+  </div>
+  <div class="model-selector-pill" onclick="location.href='model-manager.html'">
+    <span>Karen 4B Q4</span>
+    <span class="material-symbols-outlined chevron">expand_more</span>
+  </div>
+  <div class="header-right">
+    <button class="icon-btn" onclick="toggleTheme()" title="Toggle Dark / Light Mode">
+      <span class="material-symbols-outlined theme-toggle-icon">light_mode</span>
+    </button>
+    <button class="icon-btn" onclick="location.href='chat.html'" aria-label="New chat">
+      <span class="material-symbols-outlined">edit_square</span>
+    </button>
+  </div>
+</header>
+
+<div class="content-wrapper">
+  
+  <!-- Greeting -->
+  <div class="greeting-section">
+    <div style="display:flex;align-items:center;gap:8px">
+      <div class="tag-pill green">
+        <span class="material-symbols-outlined" style="font-size:14px">lock</span>
+        Air-Gapped Sovereign
+      </div>
+      <div class="tag-pill" id="live-egress">…</div>
+    </div>
+    <div class="greeting-title" id="live-greeting">Good day, Alex</div>
+    <div class="greeting-subtitle">What would you like to build or synthesize today?</div>
+  </div>
+
+  <!-- Prompt Shortcuts -->
+  <div class="prompt-chips-grid">
+    <a class="prompt-chip-card" href="workspace.html">
+      <div class="prompt-chip-icon"><span class="material-symbols-outlined" style="color:var(--accent-blue)">code</span></div>
+      <div class="prompt-chip-text">Coding Agent</div>
+      <div class="prompt-chip-sub">TreeVision biometric flow</div>
+    </a>
+    <a class="prompt-chip-card" href="chat.html">
+      <div class="prompt-chip-icon"><span class="material-symbols-outlined" style="color:var(--accent-green)">event</span></div>
+      <div class="prompt-chip-text">Exam Timetable</div>
+      <div class="prompt-chip-sub">Distributed Systems Lab</div>
+    </a>
+    <a class="prompt-chip-card" href="study-book.html">
+      <div class="prompt-chip-icon"><span class="material-symbols-outlined" style="color:#f59e0b">menu_book</span></div>
+      <div class="prompt-chip-text">DBMS Flashcards</div>
+      <div class="prompt-chip-sub">BCNF Normalization</div>
+    </a>
+    <a class="prompt-chip-card" href="voice.html">
+      <div class="prompt-chip-icon"><span class="material-symbols-outlined" style="color:#ec4899">graphic_eq</span></div>
+      <div class="prompt-chip-text">Voice Session</div>
+      <div class="prompt-chip-sub">Whisper + Piper TTS</div>
+    </a>
+  </div>
+
+  <!-- Active Canvas Execution -->
+  <div class="section-label">Active Autonomous Task</div>
+  <div class="card-group">
+    <div class="card-cell" style="flex-direction:column;align-items:stretch;gap:10px">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div class="cell-info">
+          <span class="cell-title">TreeVision: Implement biometric callback</span>
+          <span class="cell-subtitle">Subtask 3 of 5 · 27 tests passing</span>
+        </div>
+        <span class="tag-pill blue">Running</span>
+      </div>
+      <div class="progress-bar-wrap">
+        <div class="progress-bar-fill" style="width: 68%;"></div>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <span class="cell-value" style="font-size:12px">BiometricPromptWrapper.kt</span>
+        <button class="btn-primary" onclick="location.href='workspace.html'">Open Canvas</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Recent Knowledge Files -->
+  <div class="section-label">Knowledge Vault &amp; Context</div>
+  <div class="card-group">
+    <a class="card-cell" href="files.html">
+      <div class="cell-info">
+        <span class="cell-title">Timetable_Sem5.pdf</span>
+        <span class="cell-subtitle">Indexed · 12 pages · RAG Active</span>
+      </div>
+      <span class="material-symbols-outlined" style="color:var(--text-muted)">chevron_right</span>
+    </a>
+    <a class="card-cell" href="files.html">
+      <div class="cell-info">
+        <span class="cell-title">DBMS_Normalization.pdf</span>
+        <span class="cell-subtitle">148 chunks · Cosine Sim 0.98</span>
+      </div>
+      <span class="material-symbols-outlined" style="color:var(--text-muted)">chevron_right</span>
+    </a>
+    <a class="card-cell" href="memory.html">
+      <div class="cell-info">
+        <span class="cell-title">Active Memory Bank</span>
+        <span class="cell-subtitle">42 verified personal traits</span>
+      </div>
+      <span class="material-symbols-outlined" style="color:var(--text-muted)">chevron_right</span>
+    </a>
+  </div>
+
+  <!-- Silicon Telemetry -->
+  <div class="section-label">Hardware Health</div>
+  <div class="card-group">
+    <div class="card-cell">
+      <span class="cell-title">Unified RAM</span>
+      <span class="cell-value" id="live-ram">—</span>
+    </div>
+    <div class="card-cell">
+      <span class="cell-title">Network RTT</span>
+      <span class="cell-value" style="color:var(--accent-green)" id="live-rtt">—</span>
+    </div>
+    <div class="card-cell">
+      <span class="cell-title">Battery</span>
+      <span class="cell-value" id="live-battery2">—</span>
+    </div>
+  </div>
+
+</div>
+
+<!-- Bottom Floating Composer Bar to start a chat anytime -->
+<div class="composer-dock">
+  <div class="composer-dock-inner">
+    <button class="composer-attach-btn" onclick="location.href='chat.html'">
+      <span class="material-symbols-outlined" style="font-size:20px">add</span>
+    </button>
+    <input type="text" class="composer-input" placeholder="Ask Karen anything..." onfocus="location.href='chat.html'">
+    <button class="composer-voice-btn" onclick="location.href='voice.html'">
+      <span class="material-symbols-outlined" style="font-size:22px">graphic_eq</span>
+    </button>
+  </div>
+</div>
+
+</body>
+</html>

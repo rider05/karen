@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Karen · Hardware &amp; Governance</title>
+<link rel="stylesheet" href="chatgpt-theme.css">
+<script src="theme.js"></script>
+<script src="live.js"></script>
+</head>
+<body>
+
+<header class="chatgpt-header">
+  <div class="header-left">
+    <button class="icon-btn" onclick="location.href='chat.html'" aria-label="Back">
+      <span class="material-symbols-outlined">arrow_back</span>
+    </button>
+  </div>
+  <div style="font-size:15px;font-weight:600">Hardware &amp; Governance</div>
+  <div class="header-right">
+    <button class="icon-btn" onclick="toggleTheme()" title="Toggle Dark / Light Mode">
+      <span class="material-symbols-outlined theme-toggle-icon">light_mode</span>
+    </button>
+    <button class="icon-btn" onclick="location.href='chat.html'" aria-label="Chat">
+      <span class="material-symbols-outlined">chat</span>
+    </button>
+  </div>
+</header>
+
+<div class="content-wrapper">
+
+  <!-- Sovereign Status -->
+  <div class="action-card" style="border-color:rgba(16,163,127,0.3)">
+    <div class="action-card-title" style="color:var(--accent-green)">
+      <span class="material-symbols-outlined">verified_user</span>
+      Air-Gapped Sovereign Sandbox
+    </div>
+    <div class="action-card-subtitle">
+      Zero network egress enforced at kernel boundary via <code>seccomp(AF_INET, DROP)</code>. Karen cannot communicate outside your physical phone.
+    </div>
+  </div>
+
+  <!-- Silicon Dispatch -->
+  <div class="section-label">Compute Acceleration</div>
+  <div class="card-group">
+    <div class="card-cell">
+      <div class="cell-info">
+        <span class="cell-title">GPU Acceleration</span>
+        <span class="cell-subtitle">Vulkan 1.3 · 54 Compute Units</span>
+      </div>
+      <span class="tag-pill green">Active</span>
+    </div>
+    <div class="card-cell">
+      <div class="cell-info">
+        <span class="cell-title">Vector Engine</span>
+        <span class="cell-subtitle">ARMv9 NEON SIMD + Hexagon NPU</span>
+      </div>
+      <span class="tag-pill green">Enabled</span>
+    </div>
+    <div class="card-cell">
+      <div class="cell-info">
+        <span class="cell-title">Worker Thread Governor</span>
+        <span class="cell-subtitle">Pinned to Cortex-X4 &amp; A720 cores</span>
+      </div>
+      <span class="cell-value" id="live-cores">—</span>
+    </div>
+  </div>
+
+  <!-- Thermal & Battery Governance -->
+  <div class="section-label">Safety &amp; Thermal Thresholds</div>
+  <div class="card-group">
+    <div class="card-cell">
+      <div class="cell-info">
+        <span class="cell-title">Thermal Throttling Guard</span>
+        <span class="cell-subtitle">Auto-throttles compile jobs above 45.0°C</span>
+      </div>
+      <label class="switch">
+        <input type="checkbox" checked>
+        <span class="slider"></span>
+      </label>
+    </div>
+    <div class="card-cell">
+      <div class="cell-info">
+        <span class="cell-title">Low Battery Preserver (&lt;20%)</span>
+        <span class="cell-subtitle">Downscales to Karen 2B Eco model</span>
+      </div>
+      <label class="switch">
+        <input type="checkbox" checked>
+        <span class="slider"></span>
+      </label>
+    </div>
+  </div>
+
+  <!-- Emergency Master Lockdown -->
+  <div style="margin-top:12px">
+    <button class="btn-secondary" style="width:100%;color:var(--accent-red);border:1px solid rgba(239,68,68,0.3);padding:12px;border-radius:var(--radius-lg);font-weight:600" onclick="alert('Lockdown initiated: GPU/RAM buffers flushed and model unloaded.')">
+      Flush Model Buffers &amp; Engage Lockdown
+    </button>
+  </div>
+
+</div>
+
+</body>
+</html>

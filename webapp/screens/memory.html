@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Karen · Memory &amp; Personalization</title>
+<link rel="stylesheet" href="chatgpt-theme.css">
+<script src="theme.js"></script>
+<script src="live.js"></script>
+<style>
+.memory-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-divider);
+  gap: 12px;
+}
+.memory-item:last-child {
+  border-bottom: none;
+}
+.memory-text {
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--text-primary);
+}
+.memory-meta {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  margin-top: 3px;
+}
+.delete-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  transition: color 0.15s ease;
+}
+.delete-btn:hover {
+  color: var(--accent-red);
+}
+</style>
+</head>
+<body>
+
+<header class="chatgpt-header">
+  <div class="header-left">
+    <button class="icon-btn" onclick="location.href='chat.html'" aria-label="Back">
+      <span class="material-symbols-outlined">arrow_back</span>
+    </button>
+  </div>
+  <div style="font-size:15px;font-weight:600">Memory &amp; Personalization</div>
+  <div class="header-right">
+    <button class="icon-btn" onclick="toggleTheme()" title="Toggle Dark / Light Mode">
+      <span class="material-symbols-outlined theme-toggle-icon">light_mode</span>
+    </button>
+    <button class="icon-btn" onclick="clearAllMemories()" title="Clear all">
+      <span class="material-symbols-outlined" style="font-size:20px">delete_sweep</span>
+    </button>
+  </div>
+</header>
+
+<div class="content-wrapper">
+
+  <div style="padding:4px 6px;color:var(--text-muted);font-size:13px;line-height:1.5">
+    Karen remembers preferences and project contexts across chats to give you tailored answers. 100% stored on-device in encrypted SQLite tables.
+  </div>
+
+  <!-- Main Toggles -->
+  <div class="card-group">
+    <div class="card-cell">
+      <div class="cell-info">
+        <span class="cell-title">Dark Mode</span>
+        <span class="cell-subtitle">Toggle between Dark (OLED Pure Black) and Light</span>
+      </div>
+      <label class="switch">
+        <input type="checkbox" class="theme-switch-input" checked onchange="toggleTheme()">
+        <span class="slider"></span>
+      </label>
+    </div>
+    <div class="card-cell">
+      <div class="cell-info">
+        <span class="cell-title">Memory</span>
+        <span class="cell-subtitle">Remember facts and instructions across sessions</span>
+      </div>
+      <label class="switch">
+        <input type="checkbox" checked id="memoryToggle">
+        <span class="slider"></span>
+      </label>
+    </div>
+    <div class="card-cell">
+      <div class="cell-info">
+        <span class="cell-title">Explicit Confirmation</span>
+        <span class="cell-subtitle">Prompt before committing new long-term traits</span>
+      </div>
+      <label class="switch">
+        <input type="checkbox" checked id="confirmToggle">
+        <span class="slider"></span>
+      </label>
+    </div>
+  </div>
+
+  <!-- Pending Approvals -->
+  <div class="section-label">Pending Verification (2)</div>
+  <div class="action-card">
+    <div class="action-card-subtitle" style="color:var(--text-primary);font-size:13.5px">
+      "User is preparing for DBMS Normalization final exam scheduled for next Monday."
+    </div>
+    <div style="font-size:11.5px;color:var(--text-muted)">Detected from Study Book · 74% confidence</div>
+    <div class="action-card-buttons">
+      <button class="btn-primary" onclick="approvePending(this)">Keep</button>
+      <button class="btn-secondary" onclick="this.closest('.action-card').remove()">Discard</button>
+    </div>
+  </div>
+
+  <!-- Saved Memories List -->
+  <div class="section-label">Saved Memories (42 traits)</div>
+  <div class="card-group" id="memoryList">
+    
+    <div class="memory-item">
+      <div>
+        <div class="memory-text">Prefers concise technical explanations without corporate pleasantries, padding, or disclaimers.</div>
+        <div class="memory-meta">Tone &amp; Style · Verified</div>
+      </div>
+      <button class="delete-btn" onclick="deleteMemory(this)" title="Delete trait">
+        <span class="material-symbols-outlined" style="font-size:18px">delete</span>
+      </button>
+    </div>
+
+    <div class="memory-item">
+      <div>
+        <div class="memory-text">Target is Android SDK 34 using Jetpack Compose, Kotlin Coroutines, and Clean Architecture.</div>
+        <div class="memory-meta">Coding Architecture · TreeVision AST</div>
+      </div>
+      <button class="delete-btn" onclick="deleteMemory(this)" title="Delete trait">
+        <span class="material-symbols-outlined" style="font-size:18px">delete</span>
+      </button>
+    </div>
+
+    <div class="memory-item">
+      <div>
+        <div class="memory-text">Distributed Systems Lab exam is scheduled on Thursday, Oct 24 at 2:00 PM in Lab 4B.</div>
+        <div class="memory-meta">Calendar Hook · Timetable_Sem5.pdf</div>
+      </div>
+      <button class="delete-btn" onclick="deleteMemory(this)" title="Delete trait">
+        <span class="material-symbols-outlined" style="font-size:18px">delete</span>
+      </button>
+    </div>
+
+    <div class="memory-item">
+      <div>
+        <div class="memory-text">Limit background compile tasks to 6 worker threads to prevent junction temperatures exceeding 45°C.</div>
+        <div class="memory-meta">Hardware Preference · Governor Rule #08</div>
+      </div>
+      <button class="delete-btn" onclick="deleteMemory(this)" title="Delete trait">
+        <span class="material-symbols-outlined" style="font-size:18px">delete</span>
+      </button>
+    </div>
+
+  </div>
+
+</div>
+
+<script>
+function deleteMemory(btn) {
+  const item = btn.closest('.memory-item');
+  item.style.opacity = '0';
+  item.style.transform = 'translateX(20px)';
+  item.style.transition = 'all 0.2s ease';
+  setTimeout(() => item.remove(), 200);
+}
+
+function clearAllMemories() {
+  if (confirm('Clear all stored memories? This cannot be undone.')) {
+    document.getElementById('memoryList').innerHTML = '<div style="padding:16px;text-align:center;color:var(--text-muted);font-size:13px">No memories stored.</div>';
+  }
+}
+
+function approvePending(btn) {
+  const card = btn.closest('.action-card');
+  card.innerHTML = '<div style="color:var(--accent-green);font-size:13px;display:flex;align-items:center;gap:6px"><span class="material-symbols-outlined">check_circle</span> Added to long-term memory</div>';
+  setTimeout(() => card.remove(), 1500);
+}
+</script>
+
+</body>
+</html>

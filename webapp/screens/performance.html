@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Karen · Performance &amp; TTFT</title>
+<link rel="stylesheet" href="chatgpt-theme.css">
+<script src="theme.js"></script>
+<script src="live.js"></script>
+<style>
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+.metric-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.metric-num {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+}
+.metric-desc {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+</style>
+</head>
+<body>
+
+<header class="chatgpt-header">
+  <div class="header-left">
+    <button class="icon-btn" onclick="location.href='chat.html'" aria-label="Back">
+      <span class="material-symbols-outlined">arrow_back</span>
+    </button>
+  </div>
+  <div style="font-size:15px;font-weight:600">Performance &amp; Telemetry</div>
+  <div class="header-right">
+    <button class="icon-btn" onclick="toggleTheme()" title="Toggle Dark / Light Mode">
+      <span class="material-symbols-outlined theme-toggle-icon">light_mode</span>
+    </button>
+    <button class="icon-btn" onclick="runBenchmark()" title="Run Benchmark">
+      <span class="material-symbols-outlined">refresh</span>
+    </button>
+  </div>
+</header>
+
+<div class="content-wrapper">
+
+  <!-- Real-time key metrics -->
+  <div class="metric-grid">
+    <div class="metric-card">
+      <span class="metric-desc">Network RTT (real)</span>
+      <span class="metric-num" id="live-rtt" style="color:var(--accent-green)">…</span>
+    </div>
+    <div class="metric-card">
+      <span class="metric-desc">Downlink (real)</span>
+      <span class="metric-num" id="live-downlink">…</span>
+    </div>
+    <div class="metric-card">
+      <span class="metric-desc">Device RAM (real)</span>
+      <span class="metric-num" id="live-device-ram">…</span>
+    </div>
+    <div class="metric-card">
+      <span class="metric-desc">Battery (real)</span>
+      <span class="metric-num" id="live-battery2">…</span>
+    </div>
+  </div>
+
+  <!-- Detailed Diagnostics -->
+  <div class="section-label">Memory &amp; Context Pipeline</div>
+  <div class="card-group">
+    <div class="card-cell">
+      <span class="cell-title">Resident Unified RAM</span>
+      <span class="cell-value" id="live-ram">—</span>
+    </div>
+    <div class="card-cell">
+      <span class="cell-title">Battery</span>
+      <span class="cell-value" id="live-battery">—</span>
+    </div>
+    <div class="card-cell">
+      <span class="cell-title">Uptime</span>
+      <span class="cell-value" id="live-uptime">—</span>
+    </div>
+    <div class="card-cell">
+      <span class="cell-title">Cloud Network Egress</span>
+      <span class="cell-value" style="color:var(--accent-green)" id="live-egress">—</span>
+    </div>
+  </div>
+
+  <!-- Benchmarks Across Tasks -->
+  <div class="section-label">Task Latency Profiles</div>
+  <div class="card-group">
+    <div class="card-cell">
+      <div class="cell-info">
+        <span class="cell-title">Chat &amp; Reasoning</span>
+        <span class="cell-subtitle">Network RTT</span>
+      </div>
+      <span class="cell-value" id="live-rtt2">—</span>
+    </div>
+    <div class="card-cell">
+      <div class="cell-info">
+        <span class="cell-title">Storage Estimate</span>
+        <span class="cell-subtitle">Browser quota</span>
+      </div>
+      <span class="cell-value" id="live-storage2">—</span>
+    </div>
+    <div class="card-cell">
+      <div class="cell-info">
+        <span class="cell-title">Voice Synthesis (Piper)</span>
+        <span class="cell-subtitle">Offline egress state</span>
+      </div>
+      <span class="cell-value" id="live-egress2">—</span>
+    </div>
+  </div>
+
+</div>
+
+<script>
+function runBenchmark() {
+  alert('Running on-device benchmark sequence (ARMv9 NEON + Vulkan 1.3)...');
+}
+</script>
+
+</body>
+</html>

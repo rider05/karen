@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Karen · ChatGPT Mobile Redesign</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet">
+<style>
+  :root {
+    --bg-main: #141414;
+    --bg-aside: #1a1a1a;
+    --bg-hover: #262626;
+    --text-primary: #ececec;
+    --text-secondary: #999999;
+    --accent-green: #10a37f;
+    --border-subtle: rgba(255, 255, 255, 0.08);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg-main);
+    color: var(--text-primary);
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    display: flex;
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  /* Left Showcase Sidebar */
+  aside {
+    width: 280px;
+    background: var(--bg-aside);
+    border-right: 1px solid var(--border-subtle);
+    display: flex;
+    flex-direction: column;
+    padding: 20px 16px;
+    gap: 16px;
+    flex-shrink: 0;
+  }
+
+  .sidebar-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .sidebar-logo {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: rgba(16, 163, 127, 0.15);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--accent-green);
+  }
+
+  .sidebar-title {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--text-primary);
+    line-height: 1.2;
+  }
+
+  .sidebar-subtitle {
+    font-size: 11px;
+    color: var(--text-secondary);
+  }
+
+  .nav-group-title {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-secondary);
+    padding: 0 8px;
+    margin-bottom: 4px;
+  }
+
+  nav#list {
+    flex: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  nav#list::-webkit-scrollbar { width: 4px; }
+  nav#list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
+
+  .nav-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: var(--text-secondary);
+    text-decoration: none;
+    padding: 9px 12px;
+    border-radius: 10px;
+    font-size: 13.5px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .nav-item:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  .nav-item.active {
+    background: #2a2a2a;
+    color: var(--text-primary);
+    font-weight: 600;
+  }
+
+  .nav-item.active .material-symbols-outlined {
+    color: var(--accent-green);
+  }
+
+  .nav-item .material-symbols-outlined {
+    font-size: 19px;
+    color: var(--text-secondary);
+  }
+
+  .sidebar-footer {
+    padding-top: 12px;
+    border-top: 1px solid var(--border-subtle);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .external-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    text-decoration: none;
+    padding: 6px 10px;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.05);
+  }
+
+  .external-btn:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--text-primary);
+  }
+
+  /* Main Device Showcase Area */
+  main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    padding: 16px;
+    background: radial-gradient(circle at center, #1e1e1e 0%, #111111 100%);
+  }
+
+  /* Phone Mockup (iPhone 16 Pro styling) */
+  .phone-mockup {
+    width: 395px;
+    height: 840px;
+    max-height: 94vh;
+    background: #000000;
+    border-radius: 50px;
+    box-shadow: 
+      0 0 0 4px #2b2b2e,
+      0 0 0 6px #1b1b1c,
+      0 25px 60px -10px rgba(0, 0, 0, 0.8),
+      0 0 40px rgba(0, 0, 0, 0.5);
+    position: relative;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* Top Status Bar with Dynamic Island */
+  .phone-statusbar {
+    height: 44px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 24px;
+    user-select: none;
+    color: #ffffff;
+    font-size: 13px;
+    font-weight: 600;
+    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+    position: relative;
+    background: #000000;
+    z-index: 50;
+    transition: background 0.2s ease, color 0.2s ease;
+  }
+
+  .dynamic-island {
+    position: absolute;
+    top: 9px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 105px;
+    height: 26px;
+    background: #000000;
+    border-radius: 20px;
+    z-index: 60;
+    pointer-events: none;
+  }
+
+  .statusbar-icons {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .statusbar-icons .material-symbols-outlined {
+    font-size: 15px;
+  }
+
+  .phone-screen-frame {
+    flex: 1;
+    position: relative;
+    overflow: hidden;
+    display: flex;
+    background: #212121;
+  }
+
+  /* Iframe Phone Screen */
+  iframe {
+    width: 100%;
+    height: 100%;
+    border: none;
+    background: transparent;
+    display: block;
+  }
+
+  /* Home Indicator Pill at Bottom */
+  .phone-home-indicator {
+    position: absolute;
+    bottom: 8px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 130px;
+    height: 4px;
+    background: rgba(255, 255, 255, 0.4);
+    border-radius: 2px;
+    z-index: 50;
+    pointer-events: none;
+  }
+
+  /* Responsive layout for smaller desktop or tablet */
+  @media (max-width: 820px) {
+    body { flex-direction: column; }
+    aside {
+      width: 100%;
+      height: 130px;
+      padding: 10px 14px;
+      border-right: none;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .sidebar-header { display: none; }
+    nav#list { flex-direction: row; flex-wrap: wrap; gap: 4px; }
+    .nav-item { font-size: 12px; padding: 5px 10px; }
+    main { padding: 10px 0; }
+    .phone-mockup {
+      width: 100%;
+      max-width: 420px;
+      height: calc(100vh - 145px);
+      border-radius: 32px;
+    }
+  }
+
+  /* Switch styles */
+  .switch {
+    position: relative;
+    display: inline-block;
+    width: 42px;
+    height: 22px;
+    flex-shrink: 0;
+  }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .slider {
+    position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0;
+    background-color: #38383a; transition: .2s ease; border-radius: 22px;
+  }
+  .slider:before {
+    position: absolute; content: ""; height: 16px; width: 16px; left: 3px; bottom: 3px;
+    background-color: white; transition: .2s ease; border-radius: 50%;
+  }
+  input:checked + .slider { background-color: var(--accent-green); }
+  input:checked + .slider:before { transform: translateX(20px); }
+
+  [data-theme="oled"] {
+    --bg-main: #000000;
+    --bg-aside: #0a0a0a;
+  }
+
+  [data-theme="light"] {
+    --bg-main: #f0f0f3;
+    --bg-aside: #ffffff;
+    --bg-hover: #e5e5ea;
+    --text-primary: #111111;
+    --text-secondary: #6e6e73;
+    --border-subtle: rgba(0, 0, 0, 0.08);
+  }
+
+  [data-theme="light"] main {
+    background: radial-gradient(circle at center, #ffffff 0%, #dedee4 100%);
+  }
+
+  [data-theme="light"] .phone-statusbar {
+    background: #ffffff;
+    color: #000000;
+  }
+
+  [data-theme="light"] .phone-screen-frame {
+    background: #ffffff;
+  }
+
+  [data-theme="light"] .phone-home-indicator {
+    background: rgba(0, 0, 0, 0.35);
+  }
+
+  [data-theme="light"] .phone-mockup {
+    box-shadow: 
+      0 0 0 4px #d2d2d8,
+      0 0 0 6px #bcbcc4,
+      0 25px 60px -10px rgba(0, 0, 0, 0.25),
+      0 0 35px rgba(0, 0, 0, 0.08);
+  }
+</style>
+</head>
+<body>
+
+<aside>
+  <div class="sidebar-header">
+    <div class="sidebar-logo">
+      <span class="material-symbols-outlined" style="font-size:22px">token</span>
+    </div>
+    <div>
+      <div class="sidebar-title">Karen Intelligence</div>
+      <div class="sidebar-subtitle">ChatGPT Mobile Redesign</div>
+    </div>
+  </div>
+
+  <!-- Dark and Light Mode Selector Card -->
+  <div style="background:rgba(125,125,125,0.06);border:1px solid var(--border-subtle);border-radius:14px;padding:10px 12px;display:flex;flex-direction:column;gap:8px">
+    <div style="display:flex;align-items:center;justify-content:space-between">
+      <div style="display:flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;color:var(--text-primary)">
+        <span class="material-symbols-outlined" id="themeCardIcon" style="font-size:17px;color:#f59e0b">dark_mode</span>
+        <span>Appearance</span>
+      </div>
+      <span id="themeCardBadge" style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:9999px;background:rgba(125,125,125,0.12);color:var(--text-secondary)">Dark (OLED)</span>
+    </div>
+    
+    <div style="display:flex;background:rgba(0,0,0,0.25);border-radius:8px;padding:3px;gap:3px">
+      <button type="button" id="btnThemeDark" onclick="setThemeFromIndex('oled')" style="flex:1;background:rgba(255,255,255,0.15);border:none;color:#fff;border-radius:6px;padding:6px 0;font-size:12px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:4px">
+        <span class="material-symbols-outlined" style="font-size:15px">dark_mode</span> Dark
+      </button>
+      <button type="button" id="btnThemeLight" onclick="setThemeFromIndex('light')" style="flex:1;background:transparent;border:none;color:var(--text-secondary);border-radius:6px;padding:6px 0;font-size:12px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:4px">
+        <span class="material-symbols-outlined" style="font-size:15px">light_mode</span> Light
+      </button>
+    </div>
+  </div>
+
+  <div class="nav-group-title">Screens</div>
+  <nav id="list"></nav>
+
+  <div class="sidebar-footer">
+    <a class="external-btn" id="openExternalBtn" target="_blank" href="screens/chat.html">
+      <span class="material-symbols-outlined" style="font-size:15px">open_in_new</span>
+      Open in Tab
+    </a>
+    <span style="font-size:11px;color:var(--text-secondary)">Offline 4B Q4</span>
+  </div>
+</aside>
+
+<main>
+  <div class="phone-mockup">
+    <!-- Top Status Bar with Dynamic Island -->
+    <div class="phone-statusbar">
+      <span>9:41</span>
+      <div class="dynamic-island"></div>
+      <div class="statusbar-icons">
+        <span class="material-symbols-outlined">signal_cellular_alt</span>
+        <span class="material-symbols-outlined">wifi</span>
+        <span class="material-symbols-outlined">battery_full</span>
+      </div>
+    </div>
+
+    <!-- Screen Container -->
+    <div class="phone-screen-frame">
+      <iframe id="frame"></iframe>
+    </div>
+
+    <!-- Home Indicator Bar -->
+    <div class="phone-home-indicator"></div>
+  </div>
+</main>
+
+<script>
+const screens = [
+  ["chat.html",          "Chat (Main)",         "chat_bubble"],
+  ["voice.html",         "Advanced Voice",      "graphic_eq"],
+  ["home.html",          "Home Hub",            "home"],
+  ["workspace.html",     "Dev Canvas",          "code"],
+  ["files.html",         "Knowledge & Files",   "folder"],
+  ["memory.html",        "Memory & Settings",   "psychology"],
+  ["model-manager.html", "Models & Weights",    "memory"],
+  ["study-book.html",    "Study Book",          "menu_book"],
+  ["performance.html",   "Performance & TTFT",  "speed"],
+  ["hardware.html",      "Hardware & Sandbox",  "shield"],
+];
+
+const list = document.getElementById('list');
+const frame = document.getElementById('frame');
+const openExternalBtn = document.getElementById('openExternalBtn');
+
+screens.forEach(([file, name, icon], i) => {
+  const a = document.createElement('a');
+  a.className = 'nav-item';
+  a.innerHTML = `<span class="material-symbols-outlined">${icon}</span><span>${name}</span>`;
+  a.onclick = () => {
+    list.querySelectorAll('.nav-item').forEach(x => x.classList.remove('active'));
+    a.classList.add('active');
+    frame.src = 'screens/' + file;
+    openExternalBtn.href = 'screens/' + file;
+  };
+  list.appendChild(a);
+  if (i === 0) a.click();
+});
+
+// OLED Theme Sync between Showcase Viewer and Screen Iframe
+const savedTheme = localStorage.getItem('karen_theme') || 'oled';
+document.documentElement.setAttribute('data-theme', savedTheme);
+const oledToggleIndex = document.getElementById('oledToggleIndex');
+if (oledToggleIndex) oledToggleIndex.checked = (savedTheme === 'oled');
+
+function toggleOledFromIndex(isOled) {
+  const theme = isOled ? 'oled' : 'charcoal';
+  localStorage.setItem('karen_theme', theme);
+  document.documentElement.setAttribute('data-theme', theme);
+  try {
+    frame.contentWindow?.postMessage({ type: 'karen_theme_change', theme }, '*');
+    frame.contentDocument?.documentElement.setAttribute('data-theme', theme);
+  } catch(e) {}
+}
+
+window.addEventListener('message', (e) => {
+  if (e.data && e.data.type === 'karen_theme_change') {
+    const isOled = e.data.theme === 'oled';
+    if (oledToggleIndex) oledToggleIndex.checked = isOled;
+    document.documentElement.setAttribute('data-theme', e.data.theme);
+  }
+});
+
+frame.addEventListener('load', () => {
+  const theme = localStorage.getItem('karen_theme') || 'oled';
+  try {
+    frame.contentWindow?.postMessage({ type: 'karen_theme_change', theme }, '*');
+    frame.contentDocument?.documentElement.setAttribute('data-theme', theme);
+  } catch(e) {}
+});
+</script>
+</body>
+</html>

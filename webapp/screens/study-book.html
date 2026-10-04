@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Karen · Study Book &amp; Flashcards</title>
+<link rel="stylesheet" href="chatgpt-theme.css">
+<script src="theme.js"></script>
+<script src="live.js"></script>
+<style>
+.flashcard-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-card);
+  border-radius: var(--radius-lg);
+  padding: 20px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+  cursor: pointer;
+  transition: transform 0.2s ease;
+}
+.flashcard-card:active {
+  transform: scale(0.99);
+}
+.card-counter {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--accent-green);
+  letter-spacing: 0.05em;
+}
+.flashcard-q {
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--text-primary);
+}
+.flashcard-a {
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+  border-top: 1px solid var(--border-divider);
+  padding-top: 12px;
+}
+</style>
+</head>
+<body>
+
+<header class="chatgpt-header">
+  <div class="header-left">
+    <button class="icon-btn" onclick="location.href='chat.html'" aria-label="Back">
+      <span class="material-symbols-outlined">arrow_back</span>
+    </button>
+  </div>
+  <div style="font-size:15px;font-weight:600">DBMS Normalization</div>
+  <div class="header-right">
+    <button class="icon-btn" onclick="toggleTheme()" title="Toggle Dark / Light Mode">
+      <span class="material-symbols-outlined theme-toggle-icon">light_mode</span>
+    </button>
+    <button class="icon-btn" onclick="location.href='files.html'" title="Files">
+      <span class="material-symbols-outlined">folder</span>
+    </button>
+  </div>
+</header>
+
+<div class="content-wrapper">
+
+  <div style="display:flex;align-items:center;gap:8px">
+    <div class="tag-pill blue">12 Pages</div>
+    <div class="tag-pill green">148 RAG Chunks</div>
+    <div class="tag-pill">Offline Local Vector</div>
+  </div>
+
+  <!-- Interactive Flashcard -->
+  <div class="section-label">Active Flashcard</div>
+  <div class="flashcard-card" id="flashcard" onclick="toggleAnswer()">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <span class="card-counter" id="cardCounter">Card 3 of 12</span>
+      <span class="material-symbols-outlined" style="font-size:18px;color:var(--text-muted)">flip</span>
+    </div>
+    <div class="flashcard-q" id="cardQ">What distinguishes BCNF from standard 3NF?</div>
+    <div class="flashcard-a" id="cardA">
+      In BCNF, for every functional dependency X → Y, <b>X must be a strict superkey</b>. Standard 3NF is more lenient and permits Y to be a prime attribute even if X is not a superkey.
+    </div>
+    <div class="action-card-buttons" style="margin-top:6px" onclick="event.stopPropagation()">
+      <button class="btn-secondary" style="flex:1" onclick="nextCard()">Review Again</button>
+      <button class="btn-primary" style="flex:1" onclick="nextCard()">I Know This</button>
+    </div>
+  </div>
+
+  <!-- Extracted Concepts -->
+  <div class="section-label">Key Concepts Extracted by Karen</div>
+  <div class="card-group">
+    
+    <div class="card-cell">
+      <div class="cell-info">
+        <span class="cell-title">1NF — Atomicity</span>
+        <span class="cell-subtitle">Each column value is atomic; no multi-valued attributes.</span>
+      </div>
+      <span class="tag-pill">Page 2</span>
+    </div>
+
+    <div class="card-cell">
+      <div class="cell-info">
+        <span class="cell-title">2NF — Full Functional Dependency</span>
+        <span class="cell-subtitle">1NF + non-key columns depend on entire composite key.</span>
+      </div>
+      <span class="tag-pill">Page 4</span>
+    </div>
+
+    <div class="card-cell">
+      <div class="cell-info">
+        <span class="cell-title">3NF &amp; BCNF — Transitive Dependencies</span>
+        <span class="cell-subtitle">2NF + no transitive dependency on non-prime attributes.</span>
+      </div>
+      <span class="tag-pill">Page 7</span>
+    </div>
+
+  </div>
+
+  <!-- Quick Prompts -->
+  <div class="section-label">Practice &amp; Synthesis</div>
+  <div class="card-group">
+    <div class="card-cell" onclick="location.href='chat.html'" style="cursor:pointer">
+      <div class="cell-info">
+        <span class="cell-title">Generate 5 practice multiple-choice questions</span>
+        <span class="cell-subtitle">Test knowledge against exam patterns</span>
+      </div>
+      <span class="material-symbols-outlined" style="color:var(--text-muted)">arrow_forward</span>
+    </div>
+    <div class="card-cell" onclick="location.href='chat.html'" style="cursor:pointer">
+      <div class="cell-info">
+        <span class="cell-title">Explain 3NF using an e-commerce order schema</span>
+        <span class="cell-subtitle">Concrete real-world relational database scenario</span>
+      </div>
+      <span class="material-symbols-outlined" style="color:var(--text-muted)">arrow_forward</span>
+    </div>
+  </div>
+
+</div>
+
+<!-- Bottom Floating Composer -->
+<div class="composer-dock">
+  <div class="composer-dock-inner">
+    <button class="composer-attach-btn" onclick="location.href='chat.html'">
+      <span class="material-symbols-outlined" style="font-size:20px">chat</span>
+    </button>
+    <input type="text" class="composer-input" placeholder="Ask Karen about this document..." onfocus="location.href='chat.html'">
+    <button class="composer-voice-btn" onclick="location.href='voice.html'">
+      <span class="material-symbols-outlined" style="font-size:22px">graphic_eq</span>
+    </button>
+  </div>
+</div>
+
+<script>
+let cardIndex = 0;
+const cards = [
+  { q: "What distinguishes BCNF from standard 3NF?", a: "In BCNF, for every functional dependency X → Y, X must be a strict superkey. Standard 3NF permits Y to be a prime attribute even if X is not a superkey." },
+  { q: "What is a Lossless-Join Decomposition?", a: "A decomposition of schema R into R1 and R2 is lossless if and only if R1 ∩ R2 forms a superkey for at least one of the schemas (R1 or R2)." },
+  { q: "What is Dependency Preservation?", a: "A decomposition preserves dependencies if the union of functional dependencies in each decomposed relation logically implies all original dependencies in F." }
+];
+
+function nextCard() {
+  cardIndex = (cardIndex + 1) % cards.length;
+  document.getElementById('cardCounter').innerText = `Card ${cardIndex + 1} of ${cards.length}`;
+  document.getElementById('cardQ').innerText = cards[cardIndex].q;
+  document.getElementById('cardA').innerText = cards[cardIndex].a;
+}
+
+function toggleAnswer() {
+  const ans = document.getElementById('cardA');
+  ans.style.display = ans.style.display === 'none' ? 'block' : 'none';
+}
+</script>
+
+</body>
+</html>

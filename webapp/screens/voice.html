@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Karen · Advanced Voice Mode</title>
+<link rel="stylesheet" href="chatgpt-theme.css">
+<script src="theme.js"></script>
+<script src="live.js"></script>
+<style>
+body {
+  background: #000000;
+  color: #ececec;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  overflow: hidden;
+  position: relative;
+  user-select: none;
+}
+
+/* Voice Top Bar */
+.voice-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 18px;
+  z-index: 20;
+}
+
+.voice-status-pill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(12px);
+  padding: 6px 14px;
+  border-radius: var(--radius-full);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.voice-live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #10a37f;
+  box-shadow: 0 0 10px #10a37f;
+  animation: voice-pulse 1.8s infinite ease-in-out;
+}
+
+@keyframes voice-pulse {
+  0%, 100% { transform: scale(0.9); opacity: 0.6; }
+  50% { transform: scale(1.2); opacity: 1; }
+}
+
+/* Voice Selector Dropdown */
+.voice-picker-btn {
+  background: rgba(255, 255, 255, 0.08);
+  border: none;
+  color: var(--text-primary);
+  border-radius: var(--radius-full);
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+
+/* Center Stage: ChatGPT Dynamic Voice Orb */
+.voice-center-stage {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  padding: 20px;
+}
+
+/* The Iconic ChatGPT Pulsating Fluid Glowing Orb */
+.chatgpt-orb-container {
+  position: relative;
+  width: 220px;
+  height: 220px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.chatgpt-orb-glow {
+  position: absolute;
+  width: 240px;
+  height: 240px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(56, 189, 248, 0.35) 0%, rgba(16, 163, 127, 0.25) 45%, rgba(0, 0, 0, 0) 70%);
+  filter: blur(25px);
+  animation: orb-breathe 4s infinite ease-in-out alternate;
+}
+
+.chatgpt-orb-layer1 {
+  position: absolute;
+  width: 170px;
+  height: 170px;
+  border-radius: 46% 54% 48% 52% / 54% 48% 52% 46%;
+  background: linear-gradient(135deg, #10a37f 0%, #38bdf8 50%, #6366f1 100%);
+  opacity: 0.85;
+  filter: blur(12px);
+  animation: orb-spin 8s infinite linear;
+}
+
+.chatgpt-orb-layer2 {
+  position: absolute;
+  width: 160px;
+  height: 160px;
+  border-radius: 52% 48% 55% 45% / 47% 53% 47% 53%;
+  background: radial-gradient(circle at 40% 40%, #ffffff 0%, #7dd3fc 35%, #0284c7 70%, #0f172a 100%);
+  box-shadow: inset 0 0 25px rgba(255, 255, 255, 0.8), 0 0 35px rgba(56, 189, 248, 0.5);
+  animation: orb-wobble 5s infinite ease-in-out alternate;
+}
+
+.chatgpt-orb-core {
+  position: absolute;
+  width: 100px;
+  height: 100px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%, #ffffff 0%, rgba(255, 255, 255, 0.9) 25%, rgba(186, 230, 253, 0.6) 60%, rgba(56, 189, 248, 0) 100%);
+  filter: blur(4px);
+}
+
+@keyframes orb-spin {
+  0% { transform: rotate(0deg) scale(1); }
+  50% { transform: rotate(180deg) scale(1.05); }
+  100% { transform: rotate(360deg) scale(1); }
+}
+
+@keyframes orb-wobble {
+  0% { border-radius: 52% 48% 55% 45% / 47% 53% 47% 53%; transform: scale(1); }
+  50% { border-radius: 45% 55% 48% 52% / 54% 46% 54% 46%; transform: scale(1.08); }
+  100% { border-radius: 55% 45% 50% 50% / 50% 50% 50% 50%; transform: scale(0.96); }
+}
+
+@keyframes orb-breathe {
+  0% { transform: scale(0.9); opacity: 0.4; }
+  100% { transform: scale(1.3); opacity: 0.85; }
+}
+
+/* Speaking waves when active */
+.chatgpt-orb-container.speaking .chatgpt-orb-layer1 {
+  animation: orb-spin 3s infinite linear;
+}
+.chatgpt-orb-container.speaking .chatgpt-orb-glow {
+  animation: orb-breathe 1.5s infinite ease-in-out alternate;
+}
+
+/* Transcript Subtitles Pill */
+.voice-transcript-dock {
+  margin-top: 36px;
+  max-width: 88%;
+  background: rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: var(--radius-lg);
+  padding: 14px 18px;
+  text-align: center;
+  transition: all 0.25s ease;
+}
+
+.transcript-speaker {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--accent-green);
+  margin-bottom: 4px;
+}
+
+.transcript-text {
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-primary);
+}
+
+.voice-hint {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-top: 10px;
+}
+
+/* Bottom Control Dock */
+.voice-bottom-dock {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  padding: 24px 20px 36px;
+  z-index: 20;
+}
+
+.voice-action-circle {
+  width: 58px;
+  height: 58px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.12);
+  border: none;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.15s ease;
+}
+
+.voice-action-circle:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.voice-action-circle:active {
+  transform: scale(0.92);
+}
+
+.voice-action-circle.muted {
+  background: #ef4444;
+  color: #fff;
+}
+
+.voice-action-circle.end-call {
+  background: rgba(255, 255, 255, 0.18);
+  color: #fff;
+}
+
+.voice-action-circle.end-call:hover {
+  background: #ef4444;
+}
+
+.voice-action-circle .material-symbols-outlined {
+  font-size: 26px;
+}
+</style>
+</head>
+<body>
+
+<!-- Top Navigation -->
+<div class="voice-topbar">
+  <button class="icon-btn" onclick="location.href='chat.html'" title="Return to Chat">
+    <span class="material-symbols-outlined" style="font-size:26px">close</span>
+  </button>
+
+  <div class="voice-status-pill">
+    <span class="voice-live-dot" id="liveDot"></span>
+    <span id="voiceStatusText">Karen Advanced Voice</span>
+  </div>
+
+  <button class="voice-picker-btn" onclick="cycleVoice()">
+    <span id="currentVoiceName">Juniper</span>
+    <span class="material-symbols-outlined" style="font-size:18px">expand_more</span>
+  </button>
+</div>
+
+<!-- Center Visualizer Stage -->
+<div class="voice-center-stage">
+  <div class="chatgpt-orb-container speaking" id="orbContainer" onclick="toggleSpeechState()">
+    <div class="chatgpt-orb-glow"></div>
+    <div class="chatgpt-orb-layer1"></div>
+    <div class="chatgpt-orb-layer2"></div>
+    <div class="chatgpt-orb-core"></div>
+  </div>
+
+  <!-- Real-time Live Transcript Bubble -->
+  <div class="voice-transcript-dock" id="transcriptDock">
+    <div class="transcript-speaker" id="transcriptSpeaker">Karen · Piper TTS</div>
+    <div class="transcript-text" id="transcriptText">
+      "Under an 8-thread compile, CPU package power will spike to 9.4W. I recommend 6 threads to stay well below thermal throttling."
+    </div>
+  </div>
+
+  <div class="voice-hint">Tap orb to interrupt · <span id="live-egress">…</span></div>
+</div>
+
+<!-- Bottom Control Dock -->
+<div class="voice-bottom-dock">
+  <!-- Mute / Unmute -->
+  <button class="voice-action-circle" id="muteBtn" onclick="toggleMute()" title="Mute Microphone">
+    <span class="material-symbols-outlined">mic</span>
+  </button>
+
+  <!-- Vision / Video Camera Toggle -->
+  <button class="voice-action-circle" id="videoBtn" onclick="toggleVideo()" title="Share Camera">
+    <span class="material-symbols-outlined">videocam_off</span>
+  </button>
+
+  <!-- End Call (Return to Chat) -->
+  <button class="voice-action-circle end-call" onclick="location.href='chat.html'" title="End Voice Session">
+    <span class="material-symbols-outlined">close</span>
+  </button>
+</div>
+
+<script>
+let isSpeaking = true;
+let isMuted = false;
+let isVideoOn = false;
+
+const voices = ['Juniper', 'Sol', 'Cove', 'Breeze', 'Ember'];
+let voiceIndex = 0;
+
+function cycleVoice() {
+  voiceIndex = (voiceIndex + 1) % voices.length;
+  document.getElementById('currentVoiceName').innerText = voices[voiceIndex];
+}
+
+function toggleSpeechState() {
+  const orb = document.getElementById('orbContainer');
+  const transcriptText = document.getElementById('transcriptText');
+  const transcriptSpeaker = document.getElementById('transcriptSpeaker');
+  const statusText = document.getElementById('voiceStatusText');
+  
+  isSpeaking = !isSpeaking;
+  if (isSpeaking) {
+    orb.classList.add('speaking');
+    transcriptSpeaker.innerText = "Karen · " + voices[voiceIndex];
+    transcriptText.innerText = '"I\'ve verified the hardware governor parameters and committed MAKEFLAGS=-j6 into TreeVision."';
+    statusText.innerText = "Karen Advanced Voice";
+  } else {
+    orb.classList.remove('speaking');
+    transcriptSpeaker.innerText = "Listening...";
+    transcriptText.innerText = '"..."';
+    statusText.innerText = "Listening to you...";
+  }
+}
+
+function toggleMute() {
+  isMuted = !isMuted;
+  const btn = document.getElementById('muteBtn');
+  const icon = btn.querySelector('.material-symbols-outlined');
+  if (isMuted) {
+    btn.classList.add('muted');
+    icon.innerText = 'mic_off';
+  } else {
+    btn.classList.remove('muted');
+    icon.innerText = 'mic';
+  }
+}
+
+function toggleVideo() {
+  isVideoOn = !isVideoOn;
+  const btn = document.getElementById('videoBtn');
+  const icon = btn.querySelector('.material-symbols-outlined');
+  if (isVideoOn) {
+    btn.style.background = 'var(--accent-blue)';
+    icon.innerText = 'videocam';
+  } else {
+    btn.style.background = 'rgba(255, 255, 255, 0.12)';
+    icon.innerText = 'videocam_off';
+  }
+}
+</script>
+
+</body>
+</html>

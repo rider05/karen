@@ -156,7 +156,7 @@ private fun CodeCanvasView() {
         modifier = Modifier
             .fillMaxSize()
             .padding(horizontal = 14.dp),
-        contentPadding = PaddingValues(top = 10.dp, bottom = 80.dp)
+        contentPadding = PaddingValues(top = 0.dp, bottom = 80.dp)
     ) {
         // AI Review Card
         item {

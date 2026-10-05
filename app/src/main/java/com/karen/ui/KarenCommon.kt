@@ -7,6 +7,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -33,6 +35,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.karen.formatSize
 
 // Legacy colors kept for backward compatibility, mapped to active theme
 val KBg get() = KarenThemeState.colors.background
@@ -55,33 +58,50 @@ fun ChatGPTTopAppBar(
     onMenuClick: () -> Unit = {},
     onModelClick: () -> Unit = {},
     onNewChatClick: () -> Unit = {},
-    onMoreClick: () -> Unit = {}
+    onMoreClick: () -> Unit = {},
+    onBackClick: (() -> Unit)? = null,
+    onMoreOption: (String) -> Unit = {},
+    moreOptions: List<Triple<String, ImageVector, () -> Unit>> = emptyList()
 ) {
     val colors = LocalKarenColors.current
     val currentMode = LocalKarenThemeMode.current
 
-    Row(
+    Box(
         modifier = Modifier
             .fillMaxWidth()
             .statusBarsPadding()
             .height(56.dp)
             .background(colors.background)
             .padding(horizontal = 8.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
+        contentAlignment = Alignment.CenterStart
     ) {
-        // Left: Drawer menu toggle
-        IconButton(onClick = onMenuClick) {
-            Icon(
-                imageVector = Icons.Default.Menu,
-                contentDescription = "Open sidebar",
-                tint = colors.textPrimary
-            )
+        // Left: Back (when provided) + Drawer menu toggle
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.align(Alignment.CenterStart)
+        ) {
+            if (onBackClick != null) {
+                IconButton(onClick = onBackClick) {
+                    Icon(
+                        imageVector = Icons.Default.ArrowBack,
+                        contentDescription = "Back to Home",
+                        tint = colors.textPrimary
+                    )
+                }
+            }
+            IconButton(onClick = onMenuClick) {
+                Icon(
+                    imageVector = Icons.Default.Menu,
+                    contentDescription = "Open sidebar",
+                    tint = colors.textPrimary
+                )
+            }
         }
 
         // Center: Model selector capsule pill
         Row(
             modifier = Modifier
+                .align(Alignment.Center)
                 .clip(RoundedCornerShape(20.dp))
                 .clickable { onModelClick() }
                 .background(colors.surface)
@@ -104,28 +124,42 @@ fun ChatGPTTopAppBar(
             )
         }
 
-        // Right actions
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = { KarenThemeState.toggleTheme() }) {
-                Icon(
-                    imageVector = if (currentMode == KarenThemeMode.LIGHT) Icons.Default.DarkMode else Icons.Default.LightMode,
-                    contentDescription = "Toggle Theme",
-                    tint = colors.textPrimary
-                )
-            }
+        // Right: New Chat + More actions
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.align(Alignment.CenterEnd)
+        ) {
+            var showMoreMenu by remember { mutableStateOf(false) }
             IconButton(onClick = onNewChatClick) {
                 Icon(
-                    imageVector = Icons.Default.Edit,
+                    imageVector = Icons.Default.AddCircle,
                     contentDescription = "New Chat",
                     tint = colors.textPrimary
                 )
             }
-            IconButton(onClick = onMoreClick) {
-                Icon(
-                    imageVector = Icons.Default.MoreVert,
-                    contentDescription = "More Options",
-                    tint = colors.textMuted
-                )
+            Box {
+                IconButton(onClick = { showMoreMenu = true }) {
+                    Icon(
+                        imageVector = Icons.Default.MoreVert,
+                        contentDescription = "More Options",
+                        tint = colors.textMuted
+                    )
+                }
+                DropdownMenu(
+                    expanded = showMoreMenu,
+                    onDismissRequest = { showMoreMenu = false }
+                ) {
+                    moreOptions.forEach { (label, icon, action) ->
+                        DropdownMenuItem(
+                            leadingIcon = { Icon(icon, contentDescription = label, modifier = Modifier.size(18.dp)) },
+                            text = { Text(label, fontSize = 14.sp, color = colors.textPrimary) },
+                            onClick = {
+                                showMoreMenu = false
+                                action()
+                            }
+                        )
+                    }
+                }
             }
         }
     }
@@ -514,6 +548,7 @@ fun MessageActionBar(
 @Composable
 fun UserMessageBubble(
     text: String,
+    attachments: List<Attachment> = emptyList(),
     modifier: Modifier = Modifier
 ) {
     val colors = LocalKarenColors.current
@@ -521,19 +556,48 @@ fun UserMessageBubble(
         modifier = modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.End
     ) {
-        Box(
-            modifier = Modifier
-                .widthIn(max = 310.dp)
-                .clip(RoundedCornerShape(20.dp, 20.dp, 4.dp, 20.dp))
-                .background(colors.userBubble)
-                .padding(horizontal = 16.dp, vertical = 12.dp)
-        ) {
-            Text(
-                text = text,
-                color = colors.userBubbleText,
-                fontSize = 14.5.sp,
-                lineHeight = 21.sp
-            )
+        Column(horizontalAlignment = Alignment.End) {
+            if (attachments.isNotEmpty()) {
+                Column(
+                    horizontalAlignment = Alignment.End,
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.padding(bottom = 6.dp)
+                ) {
+                    attachments.forEach { a ->
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(colors.surfaceHover)
+                                .border(1.dp, colors.border, RoundedCornerShape(12.dp))
+                                .padding(horizontal = 10.dp, vertical = 6.dp)
+                        ) {
+                            Icon(Icons.Default.AttachFile, contentDescription = null, tint = colors.textPrimary, modifier = Modifier.size(14.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Column {
+                                Text(a.name, color = colors.textPrimary, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                                if (a.sizeBytes > 0) Text(formatSize(a.sizeBytes), color = colors.textMuted, fontSize = 10.5.sp)
+                            }
+                        }
+                    }
+                }
+            }
+            if (text.isNotBlank()) {
+                Box(
+                    modifier = Modifier
+                        .widthIn(max = 310.dp)
+                        .clip(RoundedCornerShape(20.dp, 20.dp, 4.dp, 20.dp))
+                        .background(colors.userBubble)
+                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                ) {
+                    Text(
+                        text = text,
+                        color = colors.userBubbleText,
+                        fontSize = 14.5.sp,
+                        lineHeight = 21.sp
+                    )
+                }
+            }
         }
     }
 }
@@ -551,10 +615,13 @@ fun ChatGPTFloatingComposer(
     onVoiceModeClick: () -> Unit,
     isListening: Boolean = false,
     listeningText: String = "",
+    attachmentsPreview: List<Attachment> = emptyList(),
+    onRemoveAttachment: (Int) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val colors = LocalKarenColors.current
     val hasText = value.isNotBlank()
+    val canSend = hasText || attachmentsPreview.isNotEmpty()
 
     val infiniteTransition = rememberInfiniteTransition(label = "composer_mic_pulse")
     val micPulseScale by infiniteTransition.animateFloat(
@@ -572,19 +639,56 @@ fun ChatGPTFloatingComposer(
             .fillMaxWidth()
             .padding(horizontal = 14.dp, vertical = 8.dp)
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(28.dp))
-                .background(colors.composerBackground)
-                .border(
-                    1.dp,
-                    if (isListening) colors.accentGreen else colors.composerBorder,
-                    RoundedCornerShape(28.dp)
-                )
-                .padding(horizontal = 6.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            if (attachmentsPreview.isNotEmpty()) {
+                androidx.compose.foundation.lazy.LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 6.dp)
+                ) {
+                    items(attachmentsPreview.size) { i ->
+                        val a = attachmentsPreview[i]
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(colors.surfaceHover)
+                                .border(1.dp, colors.border, RoundedCornerShape(14.dp))
+                                .padding(horizontal = 10.dp, vertical = 6.dp)
+                        ) {
+                            Icon(Icons.Default.AttachFile, contentDescription = null, tint = colors.textPrimary, modifier = Modifier.size(14.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Column {
+                                Text(a.name, color = colors.textPrimary, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                                if (a.sizeBytes > 0) Text(formatSize(a.sizeBytes), color = colors.textMuted, fontSize = 10.5.sp)
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            Icon(
+                                Icons.Default.Close,
+                                contentDescription = "Remove",
+                                tint = colors.textMuted,
+                                modifier = Modifier
+                                    .size(16.dp)
+                                    .clickable { onRemoveAttachment(i) }
+                            )
+                        }
+                    }
+                }
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(28.dp))
+                    .background(colors.composerBackground)
+                    .border(
+                        1.dp,
+                        if (isListening) colors.accentGreen else colors.composerBorder,
+                        RoundedCornerShape(28.dp)
+                    )
+                    .padding(horizontal = 6.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
             // Plus attachment button
             Box(
                 modifier = Modifier
@@ -641,7 +745,7 @@ fun ChatGPTFloatingComposer(
                     ),
                     keyboardActions = KeyboardActions(
                         onSend = {
-                            if (value.isNotBlank()) onSend()
+                            if (canSend) onSend()
                         }
                     ),
                     maxLines = 4,
@@ -653,7 +757,7 @@ fun ChatGPTFloatingComposer(
 
             // Actions row: Dictate, Advanced Voice, Send
             Row(verticalAlignment = Alignment.CenterVertically) {
-                if (!hasText) {
+                if (!canSend) {
                     // Mic button for dictation with native STT pulse
                     Box(
                         modifier = Modifier
@@ -705,6 +809,7 @@ fun ChatGPTFloatingComposer(
                     }
                 }
             }
+        }
         }
     }
 }
@@ -888,6 +993,59 @@ fun AttachmentSheet(
             }
 
             Spacer(Modifier.height(24.dp))
+        }
+    }
+}
+
+/**
+ * Themed More-options menu: theme-following surface, an icon per row,
+ * and centered 75%-width faded dividers between rows.
+ */
+@Composable
+fun ThemedMoreMenu(
+    items: List<Triple<String, ImageVector, () -> Unit>>,
+    onDismiss: () -> Unit
+) {
+    val colors = LocalKarenColors.current
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.18f))
+            .clickable { onDismiss() }
+    ) {
+        Column(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .statusBarsPadding()
+                .padding(top = 56.dp, end = 8.dp)
+                .width(260.dp)
+                .clip(RoundedCornerShape(18.dp))
+                .background(colors.surface)
+                .border(1.dp, colors.border, RoundedCornerShape(18.dp))
+                .padding(vertical = 6.dp)
+        ) {
+            items.forEachIndexed { idx, (label, icon, action) ->
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onDismiss(); action() }
+                        .padding(horizontal = 16.dp, vertical = 10.dp)
+                ) {
+                    Icon(icon, contentDescription = label, tint = colors.textSecondary, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(12.dp))
+                    Text(label, color = colors.textPrimary, fontSize = 14.sp)
+                }
+                if (idx != items.lastIndex) {
+                    Divider(
+                        modifier = Modifier
+                            .fillMaxWidth(0.75f)
+                            .align(Alignment.CenterHorizontally),
+                        thickness = 0.75.dp,
+                        color = colors.border.copy(alpha = 0.35f)
+                    )
+                }
+            }
         }
     }
 }

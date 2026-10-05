@@ -80,7 +80,7 @@ fun KarenApp() {
         val coroutineScope = rememberCoroutineScope()
         val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
 
-        var currentScreen by remember { mutableStateOf("Chat") }
+        var currentScreen by remember { mutableStateOf("Home") }
 
         ModalNavigationDrawer(
             drawerState = drawerState,
@@ -129,7 +129,8 @@ fun KarenApp() {
                             )
                             "Chat" -> ChatScreen(
                                 onOpenDrawer = { coroutineScope.launch { drawerState.open() } },
-                                onNavigateToVoice = { currentScreen = "Voice" }
+                                onNavigateToVoice = { currentScreen = "Voice" },
+                                onNavigateToHome = { currentScreen = "Home" }
                             )
                             "Workspace" -> WorkspaceScreen(
                                 onOpenDrawer = { coroutineScope.launch { drawerState.open() } }
@@ -155,7 +156,8 @@ fun KarenApp() {
                             )
                             else -> ChatScreen(
                                 onOpenDrawer = { coroutineScope.launch { drawerState.open() } },
-                                onNavigateToVoice = { currentScreen = "Voice" }
+                                onNavigateToVoice = { currentScreen = "Voice" },
+                                onNavigateToHome = { currentScreen = "Home" }
                             )
                         }
                     }

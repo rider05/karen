@@ -89,7 +89,9 @@ fun readDeviceTelemetry(context: Context): DeviceTelemetry {
 
     // Network state
     val cm = app.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-    val caps = cm.getNetworkCapabilities(cm.activeNetwork)
+    val caps = try {
+        cm.getNetworkCapabilities(cm.activeNetwork)
+    } catch (_: Throwable) { null }
     val netUp = caps != null && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
     val wifiUp = caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
     val cellularUp = caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)

@@ -176,7 +176,7 @@ fun VoiceScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(horizontal = 24.dp)
-                .padding(top = 80.dp, bottom = 120.dp),
+                .padding(top = 16.dp, bottom = 120.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {

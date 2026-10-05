@@ -88,7 +88,7 @@ fun MemoryScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(horizontal = 16.dp),
-            contentPadding = PaddingValues(top = 10.dp, bottom = 80.dp),
+            contentPadding = PaddingValues(top = 0.dp, bottom = 80.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             // Memory Governance Card

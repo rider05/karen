@@ -41,12 +41,12 @@ fun HomeScreen(
             .fillMaxSize()
             .background(colors.background)
             .padding(horizontal = 16.dp),
-        contentPadding = PaddingValues(top = 16.dp, bottom = 80.dp),
+        contentPadding = PaddingValues(top = 0.dp, bottom = 80.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         // Greeting Header
         item {
-            Column(modifier = Modifier.padding(top = 8.dp, bottom = 6.dp)) {
+            Column(modifier = Modifier.padding(bottom = 6.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(
                         modifier = Modifier

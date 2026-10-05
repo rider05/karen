@@ -48,7 +48,7 @@ fun FilesScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(horizontal = 16.dp),
-            contentPadding = PaddingValues(top = 10.dp, bottom = 80.dp),
+            contentPadding = PaddingValues(top = 0.dp, bottom = 80.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             // Header stats card
@@ -148,6 +148,25 @@ fun FilesScreen(
                                 "md", "txt", "pdf" -> Icons.Default.Description
                                 else -> Icons.AutoMirrored.Filled.InsertDriveFile
                             }
+                        )
+                    }
+                }
+            }
+
+            // Knowledge Vault section (mirrors Sovereign Storage, for knowledge assets)
+            item {
+                Text("Knowledge Vault", color = colors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(6.dp))
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val kvFiles = sandboxFiles(context).filter { it.extension.lowercase() in listOf("pdf", "md", "txt") }
+                    if (kvFiles.isEmpty()) {
+                        Text("Drop PDFs/notes into the vault to build your knowledge base", color = colors.textMuted, fontSize = 12.sp)
+                    }
+                    kvFiles.forEach { f ->
+                        VaultFileRow(
+                            f.name,
+                            "${formatSize(f.length())} · ${java.text.DateFormat.getDateTimeInstance().format(java.util.Date(f.lastModified()))}",
+                            Icons.Default.MenuBook
                         )
                     }
                 }

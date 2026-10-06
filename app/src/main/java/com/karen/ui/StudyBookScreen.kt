@@ -36,32 +36,12 @@ fun StudyBookScreen(
     val device = rememberDeviceTelemetry()
 
     val flashcards = remember {
-        listOf(
-            FlashcardItem(
-                question = "What distinguishes BCNF (Boyce-Codd) from standard 3NF?",
-                answer = "In BCNF, for every non-trivial functional dependency X → Y, X must be a strict superkey. In 3NF, Y is allowed to be a prime attribute even if X is not a superkey.",
-                citation = "Page 8 · Section 3.7 · Cosine similarity 0.98"
-            ),
-            FlashcardItem(
-                question = "What defines a Lossless Join Decomposition?",
-                answer = "A decomposition of relation R into R1 and R2 is lossless if and only if R1 ∩ R2 contains a candidate key for either R1 or R2.",
-                citation = "Page 5 · Section 2.4 · Cosine similarity 0.95"
-            ),
-            FlashcardItem(
-                question = "What is Armstrong's Axiom of Transitivity?",
-                answer = "If X → Y and Y → Z, then X → Z. This rule forms the basis for computing attribute closures (X+).",
-                citation = "Page 3 · Section 1.8 · Cosine similarity 0.97"
-            ),
-            FlashcardItem(
-                question = "Why might a relation in 3NF not be in BCNF?",
-                answer = "When there are multiple overlapping candidate keys with non-superkey determinants driving prime attributes.",
-                citation = "Page 9 · Section 3.9 · Cosine similarity 0.96"
-            )
-        )
+        mutableStateListOf<FlashcardItem>()
     }
 
     var currentCardIndex by remember { mutableStateOf(0) }
-    val card = flashcards[currentCardIndex]
+    val card = flashcards.getOrNull(currentCardIndex)
+    val ctx = androidx.compose.ui.platform.LocalContext.current
 
     Column(
         modifier = Modifier
@@ -70,7 +50,12 @@ fun StudyBookScreen(
     ) {
         ChatGPTTopAppBar(
             selectedModel = "DBMS Study Companion",
-            onMenuClick = onOpenDrawer
+            onMenuClick = onOpenDrawer,
+            moreActions = listOf(
+                Triple("Flip card", Icons.Default.Refresh) { android.widget.Toast.makeText(ctx, "Flip card", android.widget.Toast.LENGTH_SHORT).show() },
+                Triple("Mark known", Icons.Default.Done) { android.widget.Toast.makeText(ctx, "Marked known", android.widget.Toast.LENGTH_SHORT).show() },
+                Triple("Reset progress", Icons.Default.Delete) { android.widget.Toast.makeText(ctx, "Progress reset", android.widget.Toast.LENGTH_SHORT).show() }
+            )
         )
 
         LazyColumn(
@@ -107,11 +92,13 @@ fun StudyBookScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("Active Flashcard · ${currentCardIndex + 1} of ${flashcards.size}", color = colors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    Text("Active Flashcard · ${if (flashcards.isEmpty()) 0 else currentCardIndex + 1} of ${flashcards.size}", color = colors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                     Text("Tap to flip/next", color = colors.accentGreen, fontSize = 11.sp)
                 }
                 Spacer(Modifier.height(4.dp))
-                Column(
+                if (card == null) {
+                    Text("No data found", color = colors.textMuted, fontSize = 12.sp)
+                } else Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(16.dp))
@@ -144,7 +131,7 @@ fun StudyBookScreen(
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(
                             onClick = {
-                                currentCardIndex = (currentCardIndex + 1) % flashcards.size
+                                if (flashcards.isNotEmpty()) currentCardIndex = (currentCardIndex + 1) % flashcards.size
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = colors.accentGreen, contentColor = Color.White),
                             shape = RoundedCornerShape(8.dp),
@@ -154,7 +141,7 @@ fun StudyBookScreen(
                         }
                         OutlinedButton(
                             onClick = {
-                                currentCardIndex = (currentCardIndex + 1) % flashcards.size
+                                if (flashcards.isNotEmpty()) currentCardIndex = (currentCardIndex + 1) % flashcards.size
                             },
                             shape = RoundedCornerShape(8.dp),
                             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
@@ -170,9 +157,7 @@ fun StudyBookScreen(
                 Text("Extracted Key Concepts", color = colors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(4.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    ConceptCard("1. 1NF — Atomicity", "Each column contains atomic values; no repeating groups. Page 2.")
-                    ConceptCard("2. 2NF — Full Dependency", "In 1NF and all non-key attributes fully depend on candidate keys. Page 4.")
-                    ConceptCard("3. 3NF & BCNF", "No transitive dependencies; X → Y requires X as superkey in BCNF. Page 7.")
+                    Text("No data found", color = colors.textMuted, fontSize = 12.sp)
                 }
             }
         }

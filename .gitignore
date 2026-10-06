@@ -4,15 +4,32 @@
 build/
 */build/
 local.properties
+.cxx/
+.externalNativeBuild/
+captures/
+*.hprof
 
 # IDE
 .idea/
 *.iml
+.vscode/
+*.iws
+*.ipr
+
+# Logs
+*.log
+logs/
 
 # Keystores & secrets
 *.jks
 *.keystore
 google-services.json
+*.pem
+*.p12
+.env
+.env.*
+secrets.properties
+!*.env.example
 
 # Generated artifacts
 app/build/outputs/
@@ -22,3 +39,12 @@ app/build/outputs/
 # OS
 Thumbs.db
 .DS_Store
+desktop.ini
+
+# Node / web tooling
+node_modules/
+npm-debug.log*
+yarn-error.log*
+dist/
+.vite/
+.parcel-cache/

@@ -25,7 +25,8 @@ import com.karen.rememberDeviceTelemetry
 
 @Composable
 fun HomeScreen(
-    onNavigate: (String) -> Unit = {}
+    onNavigate: (String) -> Unit = {},
+    onOpenSettings: () -> Unit = {}
 ) {
     val colors = LocalKarenColors.current
     val device = rememberDeviceTelemetry()
@@ -41,42 +42,51 @@ fun HomeScreen(
             .fillMaxSize()
             .background(colors.background)
             .padding(horizontal = 16.dp),
-        contentPadding = PaddingValues(top = 0.dp, bottom = 80.dp),
+        contentPadding = PaddingValues(top = 14.dp, bottom = 80.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         // Greeting Header
         item {
             Column(modifier = Modifier.padding(bottom = 6.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(colors.accentGreen.copy(alpha = 0.15f))
-                            .padding(horizontal = 8.dp, vertical = 3.dp)
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                Icons.Default.Lock,
-                                contentDescription = "Air-Gapped",
-                                tint = colors.accentGreen,
-                                modifier = Modifier.size(12.dp)
-                            )
-                            Spacer(Modifier.width(4.dp))
-                            Text(
-                                "Air-Gapped Sovereign",
-                                color = colors.accentGreen,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.SemiBold
-                            )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(colors.accentGreen.copy(alpha = 0.15f))
+                                .padding(horizontal = 8.dp, vertical = 3.dp)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    Icons.Default.Lock,
+                                    contentDescription = "Air-Gapped",
+                                    tint = colors.accentGreen,
+                                    modifier = Modifier.size(12.dp)
+                                )
+                                Spacer(Modifier.width(4.dp))
+                                Text(
+                                    "Air-Gapped Sovereign",
+                                    color = colors.accentGreen,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
                         }
+                        Spacer(Modifier.width(8.dp))
+                        Text(if (device.networkUp) "Network Up" else "0 KB Egress", color = colors.textMuted, fontSize = 11.sp)
                     }
-                    Spacer(Modifier.width(8.dp))
-                    Text(if (device.networkUp) "Network Up" else "0 KB Egress", color = colors.textMuted, fontSize = 11.sp)
+                    Spacer(Modifier.weight(1f))
+                    IconButton(onClick = onOpenSettings) {
+                        Icon(Icons.Default.Settings, contentDescription = "Settings", tint = colors.textPrimary)
+                    }
                 }
 
                 Spacer(Modifier.height(10.dp))
                 Text(
-                    text = "$greeting, Alex",
+                    text = "$greeting, ${UserPrefs.name(androidx.compose.ui.platform.LocalContext.current)}",
                     color = colors.textPrimary,
                     fontSize = 26.sp,
                     fontWeight = FontWeight.Bold,
@@ -99,20 +109,20 @@ fun HomeScreen(
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     PromptShortcutCard(
-                        title = "Coding Agent",
-                        subtitle = "TreeVision flow",
-                        icon = Icons.Default.Code,
+                        title = "Ask Karen",
+                        subtitle = "Type or paste anything",
+                        icon = Icons.Default.ChatBubble,
                         iconTint = colors.accentBlue,
                         modifier = Modifier.weight(1f)
-                    ) { onNavigate("Workspace") }
+                    ) { onNavigate("Chat") }
 
                     PromptShortcutCard(
-                        title = "Exam Timetable",
-                        subtitle = "Lab 4B reminder",
-                        icon = Icons.Default.Event,
+                        title = "Voice Chat",
+                        subtitle = "Hands-free AI",
+                        icon = Icons.Default.GraphicEq,
                         iconTint = colors.accentGreen,
                         modifier = Modifier.weight(1f)
-                    ) { onNavigate("Chat") }
+                    ) { onNavigate("Voice") }
                 }
 
                 Row(
@@ -120,20 +130,20 @@ fun HomeScreen(
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     PromptShortcutCard(
-                        title = "DBMS Study",
-                        subtitle = "BCNF Normalization",
-                        icon = Icons.AutoMirrored.Filled.MenuBook,
+                        title = "Knowledge Vault",
+                        subtitle = "Your files & notes",
+                        icon = Icons.Default.Folder,
                         iconTint = colors.accentAmber,
                         modifier = Modifier.weight(1f)
-                    ) { onNavigate("StudyBook") }
+                    ) { onNavigate("Files") }
 
                     PromptShortcutCard(
-                        title = "Voice Mode",
-                        subtitle = "Whisper + Piper",
-                        icon = Icons.Default.GraphicEq,
+                        title = "Canvas",
+                        subtitle = "Write & plan",
+                        icon = Icons.Default.Terminal,
                         iconTint = Color(0xFFEC4899),
                         modifier = Modifier.weight(1f)
-                    ) { onNavigate("Voice") }
+                    ) { onNavigate("Workspace") }
                 }
             }
         }
@@ -173,13 +183,13 @@ fun HomeScreen(
 
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "TreeVision Biometrics Compilation",
+                    "No active task",
                     color = colors.textPrimary,
                     fontSize = 15.sp,
                     fontWeight = FontWeight.SemiBold
                 )
                 Text(
-                    "MAKEFLAGS=-j${device.cpuCores} · Junction ${String.format("%.1f", device.batteryTempC)}°C · Uptime ${device.uptimeMinutes}m",
+                    "No data found",
                     color = colors.textMuted,
                     fontSize = 12.sp,
                     modifier = Modifier.padding(top = 2.dp)
@@ -224,17 +234,7 @@ fun HomeScreen(
             )
             Spacer(Modifier.height(6.dp))
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                RecentDocRow(
-                    title = "Timetable_Sem5.pdf",
-                    sub = "12 pages · RAG Active · 384-dim embedded",
-                    icon = Icons.AutoMirrored.Filled.InsertDriveFile
-                ) { onNavigate("Files") }
-
-                RecentDocRow(
-                    title = "TreeVision_Design_Notes.md",
-                    sub = "Updated 14m ago · Sovereign storage",
-                    icon = Icons.Default.Description
-                ) { onNavigate("Workspace") }
+                Text("No data found", color = colors.textMuted, fontSize = 12.5.sp)
             }
         }
 

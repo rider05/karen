@@ -36,7 +36,6 @@ fun VoiceScreen(
     var isSpeaking by remember { mutableStateOf(false) }
     var userSpokenText by remember { mutableStateOf("") }
     var isVisionActive by remember { mutableStateOf(false) }
-    var voiceName by remember { mutableStateOf("Karen Alto") }
 
     val voiceStt = rememberVoiceStt(
         onResult = { result ->
@@ -144,19 +143,20 @@ fun VoiceScreen(
                 )
             }
 
-            // Voice Selector Dropdown
+            // Voice engine dropdown: system STT/TTS + models from Model Manager
+            val engineOptions = listOf("System Speech-to-Text", "System Text-to-Speech") + UserPrefs.models(androidx.compose.ui.platform.LocalContext.current)
+            var engineMenu by remember { mutableStateOf(false) }
+            var engineName by remember { mutableStateOf("Karen Alto") }
             Row(
                 modifier = Modifier
                     .clip(RoundedCornerShape(20.dp))
                     .background(Color(0x22FFFFFF))
-                    .clickable {
-                        voiceName = if (voiceName == "Karen Alto") "Karen Sovereign" else "Karen Alto"
-                    }
+                    .clickable { engineMenu = true }
                     .padding(horizontal = 12.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = voiceName,
+                    text = engineName,
                     color = Color.White,
                     fontSize = 12.5.sp,
                     fontWeight = FontWeight.SemiBold
@@ -164,10 +164,24 @@ fun VoiceScreen(
                 Spacer(Modifier.width(4.dp))
                 Icon(
                     imageVector = Icons.Default.KeyboardArrowDown,
-                    contentDescription = "Select voice",
+                    contentDescription = "Select engine",
                     tint = Color(0xFF8E8E93),
                     modifier = Modifier.size(16.dp)
                 )
+            }
+            DropdownMenu(expanded = engineMenu, onDismissRequest = { engineMenu = false }) {
+                engineOptions.forEach { e ->
+                    DropdownMenuItem(
+                        text = { Text(e, color = if (e == engineName) Color(0xFF10A37F) else Color(0xFFECECEC)) },
+                        onClick = {
+                            engineName = e
+                            engineMenu = false
+                        }
+                    )
+                }
+                if (engineOptions.isEmpty()) {
+                    DropdownMenuItem(text = { Text("No data found") }, onClick = { engineMenu = false })
+                }
             }
         }
 
@@ -293,7 +307,7 @@ fun VoiceScreen(
                     text = if (userSpokenText.isNotEmpty() && !isSpeaking) {
                         "“$userSpokenText”"
                     } else if (isSpeaking) {
-                        "“Under an 8-thread compile, CPU power will spike to 9.4W, raising junction temp by ~7°C. I recommend 6 threads to stay under throttle threshold.”"
+                        "No data found"
                     } else {
                         "Tap orb to speak. Karen native STT is ready..."
                     },
@@ -319,6 +333,32 @@ fun VoiceScreen(
                     fontSize = 11.sp,
                     fontFamily = FontFamily.Monospace
                 )
+
+                // Live amplitude waveform strip
+                Spacer(Modifier.height(12.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(24.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    val bars = 24
+                    for (i in 0 until bars) {
+                        val phase = kotlin.math.sin((i.toFloat() / bars) * Math.PI).toFloat()
+                        val h = if (voiceStt.state.isListening) {
+                            (4f + phase * (4f + voiceStt.state.rmsDb * 40f)).coerceIn(4f, 22f)
+                        } else 4f
+                        Box(
+                            modifier = Modifier
+                                .padding(horizontal = 1.5.dp)
+                                .width(3.dp)
+                                .height(h.dp)
+                                .clip(RoundedCornerShape(2.dp))
+                                .background(if (voiceStt.state.isListening) Color(0xFF10A37F) else Color(0xFF3A3A3C))
+                        )
+                    }
+                }
             }
         }
 

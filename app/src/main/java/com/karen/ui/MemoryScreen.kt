@@ -35,45 +35,14 @@ fun MemoryScreen(
     val colors = LocalKarenColors.current
 
     val pendingTraits = remember {
-        mutableStateListOf(
-            MemoryTrait(
-                id = "p1",
-                category = "UI & Tone",
-                text = "“User prefers high-contrast OLED dark mode with concise technical explanations without disclaimers.”",
-                confidence = "94%"
-            )
-        )
+        mutableStateListOf<MemoryTrait>()
     }
 
     val verifiedTraits = remember {
-        mutableStateListOf(
-            MemoryTrait(
-                id = "v1",
-                category = "Coding Architecture",
-                text = "Default target is Android SDK 34 using Jetpack Compose, Kotlin Coroutines, and Clean Architecture.",
-                confidence = "98%"
-            ),
-            MemoryTrait(
-                id = "v2",
-                category = "Academic Schedule",
-                text = "Distributed Systems Lab exam is scheduled on Thursday, Oct 24, 2:00 PM in Lab 4B.",
-                confidence = "99%"
-            ),
-            MemoryTrait(
-                id = "v3",
-                category = "Hardware Guard",
-                text = "Limit background compile jobs to 6 worker threads to prevent SoC junction temp exceeding 58°C.",
-                confidence = "91%"
-            ),
-            MemoryTrait(
-                id = "v4",
-                category = "Project Context",
-                text = "TreeVision-Android is a biometric security vault app targeting offline seccomp kernel sandboxing.",
-                confidence = "95%"
-            )
-        )
+        mutableStateListOf<MemoryTrait>()
     }
 
+    val ctx = androidx.compose.ui.platform.LocalContext.current
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -81,7 +50,12 @@ fun MemoryScreen(
     ) {
         ChatGPTTopAppBar(
             selectedModel = "Memory & Preferences",
-            onMenuClick = onOpenDrawer
+            onMenuClick = onOpenDrawer,
+            moreActions = listOf(
+                Triple("Export JSON", Icons.Default.Share) { android.widget.Toast.makeText(ctx, "Export JSON", android.widget.Toast.LENGTH_SHORT).show() },
+                Triple("Flush cache", Icons.Default.Delete) { android.widget.Toast.makeText(ctx, "Flush cache", android.widget.Toast.LENGTH_SHORT).show() },
+                Triple("Clear pending", Icons.Default.Clear) { android.widget.Toast.makeText(ctx, "Clear pending", android.widget.Toast.LENGTH_SHORT).show() }
+            )
         )
 
         LazyColumn(
@@ -208,6 +182,10 @@ fun MemoryScreen(
                     text = trait.text,
                     confidence = trait.confidence
                 )
+            }
+
+            if (verifiedTraits.isEmpty() && pendingTraits.isEmpty()) {
+                item { Text("No data found", color = colors.textMuted, fontSize = 12.5.sp) }
             }
         }
     }

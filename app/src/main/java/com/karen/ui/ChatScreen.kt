@@ -62,8 +62,22 @@ fun ChatScreen(
     var selectedModel by remember { mutableStateOf("Karen 4B") }
     var showModelSheet by remember { mutableStateOf(false) }
     var showAttachmentSheet by remember { mutableStateOf(false) }
-    var showMoreMenu by remember { mutableStateOf(false) }
+
+    // System back button: dismiss open sheets first, otherwise route to Home
+    androidx.activity.compose.BackHandler {
+        when {
+            showModelSheet -> showModelSheet = false
+            showAttachmentSheet -> showAttachmentSheet = false
+            else -> onNavigateToHome()
+        }
+    }
     var resettingNewChat by remember { mutableStateOf(false) }
+    var temporaryChat by remember { mutableStateOf(false) }
+    val karenCtx = androidx.compose.ui.platform.LocalContext.current
+    var effort by remember { mutableStateOf(UserPrefs.defaultEffort(karenCtx)) }
+    var streamingText by remember { mutableStateOf<String?>(null) }
+    var cancelGeneration by remember { mutableStateOf(false) }
+    var streamStartMs by remember { mutableStateOf(0L) }
 
     val voiceStt = rememberVoiceStt(
         onResult = { speechText ->
@@ -124,12 +138,7 @@ fun ChatScreen(
     }
 
     val messages = remember {
-        mutableStateListOf<ChatItem>(
-            ChatItem.Assistant(
-                id = "welcome",
-                text = "Hello Alex! I am Karen, your sovereign on-device assistant running locally on your hardware. How can I help you today?"
-            )
-        )
+        mutableStateListOf<ChatItem>()
     }
 
     Box(
@@ -147,23 +156,60 @@ fun ChatScreen(
                 onMenuClick = onOpenDrawer,
                 onModelClick = { showModelSheet = true },
                 onBackClick = onNavigateToHome,
+                effort = effort,
+                efforts = listOf("Low", "Medium", "High", "Max", "Extreme", "Theme"),
+                onSelectEffort = { effort = it },
                 onNewChatClick = {
                     resettingNewChat = true
                     coroutineScope.launch {
                         kotlinx.coroutines.delay(700)
                         messages.clear()
-                        messages.add(
-                            ChatItem.Assistant(
-                                id = "welcome",
-                                text = "Hello Alex! I am Karen, your sovereign on-device assistant running locally on your hardware. How can I help you today?"
-                            )
-                        )
                         kotlinx.coroutines.delay(100)
                         resettingNewChat = false
                     }
                 },
-                onMoreClick = { showMoreMenu = true }
+                moreActions = listOf(
+                    Triple("Search in chat", Icons.Default.Search) {
+                        android.widget.Toast.makeText(context, "Search in chat", android.widget.Toast.LENGTH_SHORT).show()
+                    },
+                    Triple("Customize instructions", Icons.Default.Settings) {
+                        android.widget.Toast.makeText(context, "Custom instructions", android.widget.Toast.LENGTH_SHORT).show()
+                    },
+                    Triple("Share chat link", Icons.Default.Share) {
+                        android.widget.Toast.makeText(context, "Chat link copied", android.widget.Toast.LENGTH_SHORT).show()
+                    },
+                    Triple("Archive this chat", Icons.Default.Archive) {
+                        android.widget.Toast.makeText(context, "Chat archived", android.widget.Toast.LENGTH_SHORT).show()
+                    },
+                    Triple("Temporary chat", Icons.Default.AutoAwesome) {
+                        temporaryChat = !temporaryChat
+                        if (temporaryChat) messages.clear()
+                        android.widget.Toast.makeText(context, if (temporaryChat) "Temporary chat on — not saved" else "Temporary chat off", android.widget.Toast.LENGTH_SHORT).show()
+                    },
+                    Triple("Clear conversation", Icons.Default.Delete) {
+                        messages.clear()
+                    },
+                    Triple("Report a problem", Icons.Default.Flag) {
+                        android.widget.Toast.makeText(context, "Report submitted", android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                )
             )
+
+            // Temporary chat indicator banner
+            if (temporaryChat) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(colors.accentAmber.copy(alpha = 0.12f))
+                        .padding(horizontal = 16.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = colors.accentAmber, modifier = Modifier.size(14.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Temporary chat · this conversation won't be saved", color = colors.accentAmber, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                }
+            }
 
             // Chat Messages Stream
             LazyColumn(
@@ -290,26 +336,71 @@ fun ChatScreen(
         // ChatGPT-style prompt suggestion chips: shown on a fresh chat,
         // hidden as soon as the user sends their first prompt.
         if (messages.size <= 1) {
-            androidx.compose.foundation.lazy.LazyRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            val suggestions = listOf("Inspect my timetable", "Summarize a document", "Set a reminder", "Open Workspace")
+            @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+            androidx.compose.foundation.layout.FlowRow(
+                horizontalArrangement = Arrangement.Center,
+                verticalArrangement = Arrangement.spacedBy(10.dp),
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .navigationBarsPadding()
-                    .padding(bottom = 104.dp, start = 14.dp, end = 14.dp)
+                    .padding(bottom = 104.dp, start = 20.dp, end = 20.dp)
             ) {
-                val suggestions = listOf("Inspect my timetable", "Summarize a document", "Set a reminder", "Open Workspace")
-                items(suggestions.size) { i ->
-                    Text(
-                        suggestions[i],
-                        color = colors.textPrimary,
-                        fontSize = 13.sp,
+                suggestions.forEach { suggestion ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier
-                            .clip(RoundedCornerShape(18.dp))
+                            .padding(horizontal = 4.dp)
+                            .clip(RoundedCornerShape(20.dp))
                             .background(colors.surface)
-                            .border(1.dp, colors.border, RoundedCornerShape(18.dp))
-                            .clickable { input = suggestions[i] }
-                            .padding(horizontal = 14.dp, vertical = 8.dp)
-                    )
+                            .border(1.dp, colors.border.copy(alpha = 0.6f), RoundedCornerShape(20.dp))
+                            .clickable { input = suggestion }
+                            .padding(horizontal = 14.dp, vertical = 9.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.AutoAwesome,
+                            contentDescription = null,
+                            tint = colors.accentGreen,
+                            modifier = Modifier.size(13.dp)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            suggestion,
+                            color = colors.textPrimary,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                }
+            }
+        }
+
+        // Live streaming response bubble (while generating)
+        if (streamingText != null) {
+            val tokens = streamingText!!.length / 4
+            val elapsedSec = ((System.currentTimeMillis() - streamStartMs) / 1000).coerceAtLeast(1)
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .imePadding()
+                    .padding(bottom = 96.dp, start = 14.dp, end = 14.dp)
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(colors.surface)
+                    .border(1.dp, colors.border, RoundedCornerShape(14.dp))
+                    .padding(12.dp)
+            ) {
+                Text(streamingText!!, color = colors.textPrimary, fontSize = 14.sp, lineHeight = 20.sp)
+                Spacer(Modifier.height(4.dp))
+                Text("~${elapsedSec}s to respond · ~$tokens tokens", color = colors.textMuted, fontSize = 10.5.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    TextButton(onClick = { cancelGeneration = true }) {
+                        Text("Stop generating", color = colors.accentRed, fontSize = 12.sp)
+                    }
                 }
             }
         }
@@ -326,7 +417,7 @@ fun ChatScreen(
                     val newId = System.currentTimeMillis().toString()
                     messages.add(ChatItem.User(id = "user_$newId", text = userText.ifBlank { sentAttachments.joinToString(", ") { it.name } }, attachments = sentAttachments))
 
-                    // Simulate Karen on-device response
+                    // Simulate Karen on-device response (token streaming)
                     coroutineScope.launch {
                         listState.animateScrollToItem(messages.size - 1)
                         kotlinx.coroutines.delay(400)
@@ -334,14 +425,32 @@ fun ChatScreen(
                             val names = sentAttachments.joinToString(", ") { it.name }
                             " I received ${sentAttachments.size} file(s): $names. Files are stored locally in the vault — 0 bytes sent externally."
                         } else ""
-                        messages.add(
-                            ChatItem.Assistant(
-                                id = "asst_$newId",
-                                thought = "• Evaluated user query via on-device 4B model\n• 0 bytes transmitted externally\n• Executed local inference in 184ms",
-                                text = "I received your request: \"$userText\". Operating in sovereign air-gapped mode on your local hardware.$fileNote",
-                                toolCall = "local_executor() · 0.05s"
+                        val fullText = "No data found — connect a local model in Model Manager.$fileNote"
+                        cancelGeneration = false
+                        streamStartMs = System.currentTimeMillis()
+                        streamingText = ""
+                        for (idx in fullText.indices) {
+                            if (cancelGeneration) break
+                            streamingText = fullText.substring(0, idx + 1)
+                            kotlinx.coroutines.delay(
+                                when (effort) {
+                                    "Low" -> 8L
+                                    "High" -> 24L
+                                    "Max" -> 36L
+                                    "Extreme" -> 50L
+                                    else -> 12L
+                                }
                             )
-                        )
+                        }
+                        if (!cancelGeneration) {
+                            messages.add(
+                                ChatItem.Assistant(
+                                    id = "asst_$newId",
+                                    text = fullText
+                                )
+                            )
+                        }
+                        streamingText = null
                         listState.animateScrollToItem(messages.size - 1)
                     }
                 }
@@ -380,39 +489,6 @@ fun ChatScreen(
                         "Take Photo" -> takePhoto()
                     }
                 }
-            )
-        }
-
-        // More options themed dropdown (theme-following, with icons + separators)
-        if (showMoreMenu) {
-            ThemedMoreMenu(
-                onDismiss = { showMoreMenu = false },
-                items = listOf(
-                    Triple("Search in chat", Icons.Default.Search) {
-                        android.widget.Toast.makeText(context, "Search in chat", android.widget.Toast.LENGTH_SHORT).show()
-                    },
-                    Triple("Customize instructions", Icons.Default.Settings) {
-                        android.widget.Toast.makeText(context, "Custom instructions", android.widget.Toast.LENGTH_SHORT).show()
-                    },
-                    Triple("Share chat link", Icons.Default.Share) {
-                        android.widget.Toast.makeText(context, "Chat link copied", android.widget.Toast.LENGTH_SHORT).show()
-                    },
-                    Triple("Archive this chat", Icons.Default.Archive) {
-                        android.widget.Toast.makeText(context, "Chat archived", android.widget.Toast.LENGTH_SHORT).show()
-                    },
-                    Triple("Clear conversation", Icons.Default.Delete) {
-                        messages.clear()
-                        messages.add(
-                            ChatItem.Assistant(
-                                id = "welcome",
-                                text = "Hello Alex! I am Karen, your sovereign on-device assistant running locally on your hardware. How can I help you today?"
-                            )
-                        )
-                    },
-                    Triple("Report a problem", Icons.Default.Flag) {
-                        android.widget.Toast.makeText(context, "Report submitted", android.widget.Toast.LENGTH_SHORT).show()
-                    }
-                )
             )
         }
 

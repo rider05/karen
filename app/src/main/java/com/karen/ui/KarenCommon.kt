@@ -50,6 +50,22 @@ val KCyan get() = KarenThemeState.colors.accentBlue
 val KErr get() = KarenThemeState.colors.accentRed
 
 /**
+ * Per-effort accent color. Theme-aware: each level has its own hue that
+ * stays readable in both dark and light themes.
+ */
+fun effortColor(name: String, colors: KarenColors): Color {
+    return when (name) {
+        "Low" -> colors.accentGreen
+        "Medium" -> colors.accentBlue
+        "High" -> colors.accentAmber
+        "Max" -> Color(0xFFF97316)
+        "Extreme" -> colors.accentRed
+        "Theme" -> if (colors.isDark) Color(0xFFC084FC) else Color(0xFF7E22CE)
+        else -> colors.textMuted
+    }
+}
+
+/**
  * Top App Bar matching the minimalist ChatGPT mobile app.
  */
 @Composable
@@ -61,10 +77,15 @@ fun ChatGPTTopAppBar(
     onMoreClick: () -> Unit = {},
     onBackClick: (() -> Unit)? = null,
     onMoreOption: (String) -> Unit = {},
-    moreOptions: List<Triple<String, ImageVector, () -> Unit>> = emptyList()
+    moreActions: List<Triple<String, ImageVector, () -> Unit>> = emptyList(),
+    effort: String? = null,
+    efforts: List<String> = emptyList(),
+    onSelectEffort: (String) -> Unit = {}
 ) {
     val colors = LocalKarenColors.current
     val currentMode = LocalKarenThemeMode.current
+    var showMoreMenu by remember { mutableStateOf(false) }
+    var effortMenu by remember { mutableStateOf(false) }
 
     Box(
         modifier = Modifier
@@ -98,30 +119,98 @@ fun ChatGPTTopAppBar(
             }
         }
 
-        // Center: Model selector capsule pill
+        // Center: Model selector capsule pill + Effort dropdown (theme-aware)
         Row(
             modifier = Modifier
-                .align(Alignment.Center)
-                .clip(RoundedCornerShape(20.dp))
-                .clickable { onModelClick() }
-                .background(colors.surface)
-                .padding(horizontal = 14.dp, vertical = 6.dp),
+                .align(Alignment.Center),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.Center
         ) {
-            Text(
-                text = selectedModel,
-                color = colors.textPrimary,
-                fontSize = 14.sp,
-                fontWeight = FontWeight.SemiBold
-            )
-            Spacer(Modifier.width(4.dp))
-            Icon(
-                imageVector = Icons.Default.KeyboardArrowDown,
-                contentDescription = "Select model",
-                tint = colors.textMuted,
-                modifier = Modifier.size(18.dp)
-            )
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(20.dp))
+                    .clickable { onModelClick() }
+                    .background(colors.surface)
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = selectedModel,
+                    color = colors.textPrimary,
+                    fontSize = 13.5.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Spacer(Modifier.width(4.dp))
+                Icon(
+                    imageVector = Icons.Default.KeyboardArrowDown,
+                    contentDescription = "Select model",
+                    tint = colors.textMuted,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+
+            if (effort != null && efforts.isNotEmpty()) {
+                val effortTint = effortColor(effort, colors)
+                Spacer(Modifier.width(6.dp))
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(20.dp))
+                        .clickable { effortMenu = true }
+                        .background(colors.surface)
+                        .border(
+                            1.dp,
+                            effortTint.copy(alpha = 0.55f),
+                            RoundedCornerShape(20.dp)
+                        )
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(7.dp)
+                            .clip(CircleShape)
+                            .background(effortTint)
+                    )
+                    Spacer(Modifier.width(5.dp))
+                    Icon(Icons.Default.Bolt, contentDescription = null, tint = effortTint, modifier = Modifier.size(13.dp))
+                    Spacer(Modifier.width(3.dp))
+                    Text(effort, color = effortTint, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.width(2.dp))
+                    Icon(
+                        imageVector = Icons.Default.KeyboardArrowDown,
+                        contentDescription = "Select effort",
+                        tint = colors.textMuted,
+                        modifier = Modifier.size(15.dp)
+                    )
+                }
+                DropdownMenu(
+                    expanded = effortMenu,
+                    onDismissRequest = { effortMenu = false },
+                    modifier = Modifier.background(colors.surface)
+                ) {
+                    efforts.forEach { e ->
+                        val tint = effortColor(e, colors)
+                        DropdownMenuItem(
+                            text = {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(8.dp)
+                                            .clip(CircleShape)
+                                            .background(tint)
+                                    )
+                                    Spacer(Modifier.width(10.dp))
+                                    Text(e, color = if (e == effort) tint else colors.textPrimary)
+                                }
+                            },
+                            onClick = {
+                                onSelectEffort(e)
+                                effortMenu = false
+                            }
+                        )
+                    }
+                }
+            }
         }
 
         // Right: New Chat + More actions
@@ -129,7 +218,6 @@ fun ChatGPTTopAppBar(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.align(Alignment.CenterEnd)
         ) {
-            var showMoreMenu by remember { mutableStateOf(false) }
             IconButton(onClick = onNewChatClick) {
                 Icon(
                     imageVector = Icons.Default.AddCircle,
@@ -137,28 +225,72 @@ fun ChatGPTTopAppBar(
                     tint = colors.textPrimary
                 )
             }
-            Box {
-                IconButton(onClick = { showMoreMenu = true }) {
-                    Icon(
-                        imageVector = Icons.Default.MoreVert,
-                        contentDescription = "More Options",
-                        tint = colors.textMuted
-                    )
-                }
-                DropdownMenu(
-                    expanded = showMoreMenu,
-                    onDismissRequest = { showMoreMenu = false }
+            IconButton(onClick = {
+                if (moreActions.isNotEmpty()) showMoreMenu = true else onMoreClick()
+            }) {
+                Icon(
+                    imageVector = Icons.Default.MoreVert,
+                    contentDescription = "More Options",
+                    tint = colors.textMuted
+                )
+            }
+        }
+    }
+
+    if (showMoreMenu && moreActions.isNotEmpty()) {
+        ThemedMoreMenu(
+            actions = moreActions,
+            onDismiss = { showMoreMenu = false }
+        )
+    }
+}
+
+/** Theme-following card menu with one icon per row and faded centered separators. */
+@Composable
+fun ThemedMoreMenu(
+    actions: List<Triple<String, ImageVector, () -> Unit>>,
+    onDismiss: () -> Unit
+) {
+    val colors = LocalKarenColors.current
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.18f))
+            .clickable { onDismiss() }
+    ) {
+        Column(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = 56.dp, end = 8.dp)
+                .width(260.dp)
+                .clip(RoundedCornerShape(18.dp))
+                .background(colors.surface)
+                .border(1.dp, colors.border, RoundedCornerShape(18.dp))
+                .padding(vertical = 6.dp)
+        ) {
+            actions.forEachIndexed { idx, action ->
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            onDismiss()
+                            action.third.invoke()
+                        }
+                        .padding(horizontal = 16.dp, vertical = 10.dp)
                 ) {
-                    moreOptions.forEach { (label, icon, action) ->
-                        DropdownMenuItem(
-                            leadingIcon = { Icon(icon, contentDescription = label, modifier = Modifier.size(18.dp)) },
-                            text = { Text(label, fontSize = 14.sp, color = colors.textPrimary) },
-                            onClick = {
-                                showMoreMenu = false
-                                action()
-                            }
-                        )
-                    }
+                    Icon(action.second, contentDescription = action.first, tint = colors.textSecondary, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(12.dp))
+                    Text(action.first, color = colors.textPrimary, fontSize = 14.sp)
+                }
+                if (idx != actions.lastIndex) {
+                    Divider(
+                        modifier = Modifier
+                            .fillMaxWidth(0.75f)
+                            .align(Alignment.CenterHorizontally),
+                        thickness = 0.75.dp,
+                        color = colors.border.copy(alpha = 0.35f)
+                    )
                 }
             }
         }
@@ -998,59 +1130,6 @@ fun AttachmentSheet(
 }
 
 /**
- * Themed More-options menu: theme-following surface, an icon per row,
- * and centered 75%-width faded dividers between rows.
- */
-@Composable
-fun ThemedMoreMenu(
-    items: List<Triple<String, ImageVector, () -> Unit>>,
-    onDismiss: () -> Unit
-) {
-    val colors = LocalKarenColors.current
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.18f))
-            .clickable { onDismiss() }
-    ) {
-        Column(
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .statusBarsPadding()
-                .padding(top = 56.dp, end = 8.dp)
-                .width(260.dp)
-                .clip(RoundedCornerShape(18.dp))
-                .background(colors.surface)
-                .border(1.dp, colors.border, RoundedCornerShape(18.dp))
-                .padding(vertical = 6.dp)
-        ) {
-            items.forEachIndexed { idx, (label, icon, action) ->
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { onDismiss(); action() }
-                        .padding(horizontal = 16.dp, vertical = 10.dp)
-                ) {
-                    Icon(icon, contentDescription = label, tint = colors.textSecondary, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(12.dp))
-                    Text(label, color = colors.textPrimary, fontSize = 14.sp)
-                }
-                if (idx != items.lastIndex) {
-                    Divider(
-                        modifier = Modifier
-                            .fillMaxWidth(0.75f)
-                            .align(Alignment.CenterHorizontally),
-                        thickness = 0.75.dp,
-                        color = colors.border.copy(alpha = 0.35f)
-                    )
-                }
-            }
-        }
-    }
-}
-
-/**
  * Slide-out Navigation Drawer matching ChatGPT Mobile
  */
 @Composable
@@ -1153,6 +1232,42 @@ fun ChatGPTDrawerContent(
                 .weight(1f)
                 .fillMaxWidth()
         ) {
+            // Section Capabilities & Tools (system screens first)
+            item {
+                Text(
+                    "Capabilities & Tools",
+                    color = colors.textMuted,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(vertical = 6.dp)
+                )
+                DrawerNavItem("Home Dashboard", Icons.Default.Home, currentScreen == "Home") {
+                    onNavigate("Home"); onCloseDrawer()
+                }
+                DrawerNavItem("Advanced Voice Mode", Icons.Default.GraphicEq, currentScreen == "Voice") {
+                    onNavigate("Voice"); onCloseDrawer()
+                }
+                DrawerNavItem("Dev Workspace / Canvas", Icons.Default.Terminal, currentScreen == "Workspace") {
+                    onNavigate("Workspace"); onCloseDrawer()
+                }
+                DrawerNavItem("Knowledge Vault & Files", Icons.Default.Folder, currentScreen == "Files") {
+                    onNavigate("Files"); onCloseDrawer()
+                }
+                DrawerNavItem("Memory & Preferences", Icons.Default.Psychology, currentScreen == "Memory") {
+                    onNavigate("Memory"); onCloseDrawer()
+                }
+                DrawerNavItem("Local Models (GGUF)", Icons.Default.Memory, currentScreen == "ModelManager") {
+                    onNavigate("ModelManager"); onCloseDrawer()
+                }
+                DrawerNavItem("Performance & TTFT", Icons.Default.Speed, currentScreen == "Performance") {
+                    onNavigate("Performance"); onCloseDrawer()
+                }
+                DrawerNavItem("Hardware & Governance", Icons.Default.Shield, currentScreen == "Hardware") {
+                    onNavigate("Hardware"); onCloseDrawer()
+                }
+                Spacer(Modifier.height(12.dp))
+            }
+
             // Section Today
             item {
                 Text(
@@ -1185,42 +1300,6 @@ fun ChatGPTDrawerContent(
                 }
                 DrawerNavItem("Thermal Compile Discussion", Icons.Default.RecordVoiceOver, currentScreen == "Voice") {
                     onNavigate("Voice"); onCloseDrawer()
-                }
-                Spacer(Modifier.height(12.dp))
-            }
-
-            // Section Capabilities & Tools
-            item {
-                Text(
-                    "Capabilities & Tools",
-                    color = colors.textMuted,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.padding(vertical = 6.dp)
-                )
-                DrawerNavItem("Home Dashboard", Icons.Default.Home, currentScreen == "Home") {
-                    onNavigate("Home"); onCloseDrawer()
-                }
-                DrawerNavItem("Advanced Voice Mode", Icons.Default.GraphicEq, currentScreen == "Voice") {
-                    onNavigate("Voice"); onCloseDrawer()
-                }
-                DrawerNavItem("Dev Workspace / Canvas", Icons.Default.Terminal, currentScreen == "Workspace") {
-                    onNavigate("Workspace"); onCloseDrawer()
-                }
-                DrawerNavItem("Knowledge Vault & Files", Icons.Default.Folder, currentScreen == "Files") {
-                    onNavigate("Files"); onCloseDrawer()
-                }
-                DrawerNavItem("Memory & Preferences", Icons.Default.Psychology, currentScreen == "Memory") {
-                    onNavigate("Memory"); onCloseDrawer()
-                }
-                DrawerNavItem("Local Models (GGUF)", Icons.Default.Memory, currentScreen == "ModelManager") {
-                    onNavigate("ModelManager"); onCloseDrawer()
-                }
-                DrawerNavItem("Performance & TTFT", Icons.Default.Speed, currentScreen == "Performance") {
-                    onNavigate("Performance"); onCloseDrawer()
-                }
-                DrawerNavItem("Hardware & Governance", Icons.Default.Shield, currentScreen == "Hardware") {
-                    onNavigate("Hardware"); onCloseDrawer()
                 }
                 Spacer(Modifier.height(12.dp))
             }
@@ -1323,7 +1402,7 @@ fun ChatGPTDrawerContent(
                 }
                 Spacer(Modifier.width(8.dp))
                 Column {
-                    Text("Alex Morgan", color = colors.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    Text(UserPrefs.name(androidx.compose.ui.platform.LocalContext.current), color = colors.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                     Text("Karen Sovereign · 4B NPU", color = colors.textMuted, fontSize = 11.sp)
                 }
             }

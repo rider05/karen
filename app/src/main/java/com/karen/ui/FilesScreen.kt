@@ -33,6 +33,8 @@ fun FilesScreen(
     val colors = LocalKarenColors.current
     val device = rememberDeviceTelemetry()
     val context = androidx.compose.ui.platform.LocalContext.current
+    var selectedVault by remember { mutableStateOf("Knowledge Vault") }
+    var showVaultSheet by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -40,8 +42,14 @@ fun FilesScreen(
             .background(colors.background)
     ) {
         ChatGPTTopAppBar(
-            selectedModel = "Knowledge Vault",
-            onMenuClick = onOpenDrawer
+            selectedModel = selectedVault,
+            onMenuClick = onOpenDrawer,
+            onModelClick = { showVaultSheet = true },
+            moreActions = listOf(
+                Triple("Index all", Icons.Default.DoneAll) { android.widget.Toast.makeText(context, "Indexing all", android.widget.Toast.LENGTH_SHORT).show() },
+                Triple("Refresh", Icons.Default.Refresh) { android.widget.Toast.makeText(context, "Refresh", android.widget.Toast.LENGTH_SHORT).show() },
+                Triple("Open in Study Book", Icons.Default.MenuBook) { onNavigate("StudyBook") }
+            )
         )
 
         LazyColumn(
@@ -128,8 +136,8 @@ fun FilesScreen(
                 }
             }
 
-            // File items list
-            item {
+            // File items list (Secure Vault view)
+            if (selectedVault == "Secure Vault") item {
                 Text("Indexed Vault Items (${sandboxFiles(context).size})", color = colors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(6.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -154,7 +162,7 @@ fun FilesScreen(
             }
 
             // Knowledge Vault section (mirrors Sovereign Storage, for knowledge assets)
-            item {
+            if (selectedVault == "Knowledge Vault") item {
                 Text("Knowledge Vault", color = colors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(6.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -171,6 +179,91 @@ fun FilesScreen(
                     }
                 }
             }
+        }
+
+        if (showVaultSheet) {
+            VaultSelectorSheet(
+                selectedVault = selectedVault,
+                onSelectVault = { selectedVault = it },
+                onDismiss = { showVaultSheet = false }
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun VaultSelectorSheet(
+    selectedVault: String,
+    onSelectVault: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val colors = LocalKarenColors.current
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = colors.surface,
+        dragHandle = { BottomSheetDefaults.DragHandle(color = colors.border) }
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 8.dp)
+        ) {
+            Text("Vault Selector", color = colors.textPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+            Text(
+                "Switch between vault views — one secure screen, two logical stores",
+                color = colors.textMuted,
+                fontSize = 12.sp,
+                modifier = Modifier.padding(top = 2.dp, bottom = 16.dp)
+            )
+            val vaults = listOf(
+                Triple("Knowledge Vault", "PDFs, notes & markdown embedded for on-device RAG", "Active"),
+                Triple("Secure Vault", "All indexed files in sovereign sandboxed storage", "Ready")
+            )
+            vaults.forEach { (name, desc, badge) ->
+                val isSelected = selectedVault == name
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 6.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(if (isSelected) colors.surfaceHover else Color.Transparent)
+                        .border(1.dp, if (isSelected) colors.accentGreen else colors.border, RoundedCornerShape(12.dp))
+                        .clickable {
+                            onSelectVault(name)
+                            onDismiss()
+                        }
+                        .padding(14.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(name, color = colors.textPrimary, fontSize = 14.5.sp, fontWeight = FontWeight.SemiBold)
+                            Spacer(Modifier.width(8.dp))
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(if (isSelected) colors.accentGreen.copy(alpha = 0.2f) else colors.border.copy(alpha = 0.4f))
+                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                            ) {
+                                Text(badge, color = if (isSelected) colors.accentGreen else colors.textMuted, fontSize = 10.5.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        Text(desc, color = colors.textMuted, fontSize = 11.5.sp)
+                    }
+                    RadioButton(
+                        selected = isSelected,
+                        onClick = {
+                            onSelectVault(name)
+                            onDismiss()
+                        },
+                        colors = RadioButtonDefaults.colors(selectedColor = colors.accentGreen, unselectedColor = colors.textMuted)
+                    )
+                }
+            }
+            Spacer(Modifier.height(24.dp))
         }
     }
 }

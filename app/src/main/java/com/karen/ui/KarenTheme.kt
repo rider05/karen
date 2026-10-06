@@ -1,8 +1,5 @@
 package com.karen.ui
 
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.lightColorScheme
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.compositionLocalOf
@@ -139,20 +136,6 @@ fun KarenTheme(
         LocalKarenColors provides colors,
         LocalKarenThemeMode provides mode
     ) {
-        MaterialTheme(
-            colorScheme = if (colors.isDark) darkColorScheme(
-                background = colors.background,
-                surface = colors.surface,
-                onBackground = colors.textPrimary,
-                onSurface = colors.textPrimary
-            ) else lightColorScheme(
-                background = colors.background,
-                surface = colors.surface,
-                onBackground = colors.textPrimary,
-                onSurface = colors.textPrimary
-            )
-        ) {
-            content()
-        }
+        content()
     }
 }

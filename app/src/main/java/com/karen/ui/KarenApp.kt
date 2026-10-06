@@ -79,8 +79,15 @@ fun KarenApp() {
         val colors = LocalKarenColors.current
         val coroutineScope = rememberCoroutineScope()
         val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+        val context = androidx.compose.ui.platform.LocalContext.current
+        var onboarded by remember { mutableStateOf(UserPrefs.isOnboarded(context)) }
 
         var currentScreen by remember { mutableStateOf("Home") }
+
+        if (!onboarded) {
+            OnboardingScreen(onDone = { onboarded = true })
+            return@KarenTheme
+        }
 
         ModalNavigationDrawer(
             drawerState = drawerState,
@@ -125,8 +132,10 @@ fun KarenApp() {
                     ) {
                         when (currentScreen) {
                             "Home" -> HomeScreen(
-                                onNavigate = { currentScreen = it }
+                                onNavigate = { currentScreen = it },
+                                onOpenSettings = { currentScreen = "Settings" }
                             )
+                            "Settings" -> SettingsScreen(onBack = { currentScreen = "Home" })
                             "Chat" -> ChatScreen(
                                 onOpenDrawer = { coroutineScope.launch { drawerState.open() } },
                                 onNavigateToVoice = { currentScreen = "Voice" },
@@ -185,10 +194,25 @@ private fun MinimalistBottomNav(
         Triple("Files", Icons.Default.Folder, "Files")
     )
 
-    Surface(
-        color = colors.background,
-        border = androidx.compose.foundation.BorderStroke(0.5.dp, colors.border)
-    ) {
+    Column {
+        // Glowing top divider
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(1.dp)
+                .background(
+                    androidx.compose.ui.graphics.Brush.horizontalGradient(
+                        colors = listOf(
+                            Color.Transparent,
+                            (if (colors.isDark) Color(0xFFE5E5EA) else Color(0xFF8E8E93)).copy(alpha = 0.35f),
+                            Color.Transparent
+                        )
+                    )
+                )
+        )
+        Surface(
+            color = colors.background,
+        ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -244,6 +268,7 @@ private fun MinimalistBottomNav(
                     }
                 }
             }
+        }
         }
     }
 }

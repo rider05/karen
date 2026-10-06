@@ -31,9 +31,15 @@ fun PerformanceScreen(
             .fillMaxSize()
             .background(colors.background)
     ) {
+        val ctx = androidx.compose.ui.platform.LocalContext.current
         ChatGPTTopAppBar(
             selectedModel = "Performance & TTFT",
-            onMenuClick = onOpenDrawer
+            onMenuClick = onOpenDrawer,
+            moreActions = listOf(
+                Triple("Run benchmark", Icons.Default.Speed) { android.widget.Toast.makeText(ctx, "Run benchmark", android.widget.Toast.LENGTH_SHORT).show() },
+                Triple("Copy metrics", Icons.Default.Share) { android.widget.Toast.makeText(ctx, "Copy metrics", android.widget.Toast.LENGTH_SHORT).show() },
+                Triple("Clear log", Icons.Default.Delete) { android.widget.Toast.makeText(ctx, "Clear log", android.widget.Toast.LENGTH_SHORT).show() }
+            )
         )
 
         LazyColumn(
@@ -117,9 +123,9 @@ fun PerformanceScreen(
 
             // Benchmark Card
             item {
-                var benchmarkRunning by remember { mutableStateOf(false) }
-                var benchmarkResult by remember { mutableStateOf<String?>("TTFT: 142 ms · Throughput: 18.4 tok/s · Prefill: 42.6 tok/s") }
-                Column(
+                    var benchmarkResult by remember { mutableStateOf<String?>(null) }
+                    var benchmarkRunning by remember { mutableStateOf(false) }
+                    Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(14.dp))
@@ -136,7 +142,7 @@ fun PerformanceScreen(
                         Button(
                             onClick = {
                                 benchmarkRunning = true
-                                benchmarkResult = "✓ Verified: TTFT 138 ms · Throughput 19.1 tok/s · Vulkan PASS"
+                                benchmarkResult = "No data found — no local model loaded"
                                 benchmarkRunning = false
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = colors.accentGreen, contentColor = Color.White),
@@ -149,6 +155,35 @@ fun PerformanceScreen(
                     if (benchmarkResult != null) {
                         Spacer(Modifier.height(8.dp))
                         Text(benchmarkResult!!, color = colors.accentGreen, fontSize = 11.5.sp, fontFamily = FontFamily.Monospace)
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Text("Throughput history (tok/s)", color = colors.textMuted, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.height(8.dp))
+                    val history = emptyList<Float>()
+                    if (history.isEmpty()) {
+                        Text("No data found", color = colors.textMuted, fontSize = 12.sp)
+                    } else Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(56.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.Start),
+                        verticalAlignment = Alignment.Bottom
+                    ) {
+                        history.forEachIndexed { i, v ->
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height((v / 20f * 44f).dp)
+                                        .clip(RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp))
+                                        .background(if (i == history.lastIndex) colors.accentGreen else colors.accentGreen.copy(alpha = 0.35f))
+                                )
+                                Text(String.format("%.0f", v), color = colors.textMuted, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                            }
+                        }
                     }
                 }
             }

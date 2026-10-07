@@ -52,7 +52,12 @@ data class Attachment(val name: String, val sizeBytes: Long, val mime: String? =
 fun ChatScreen(
     onOpenDrawer: () -> Unit = {},
     onNavigateToVoice: () -> Unit = {},
-    onNavigateToHome: () -> Unit = {}
+    onNavigateToHome: () -> Unit = {},
+    onNavigateToModelManager: () -> Unit = {},
+    openConversationId: String? = null,
+    newChatSignal: Int = 0,
+    onConversationOpened: () -> Unit = {},
+    onHistoryChanged: () -> Unit = {}
 ) {
     val colors = LocalKarenColors.current
     val coroutineScope = rememberCoroutineScope()
@@ -140,6 +145,33 @@ fun ChatScreen(
     val messages = remember {
         mutableStateListOf<ChatItem>()
     }
+    var conversationId by remember { mutableStateOf(System.currentTimeMillis().toString()) }
+
+    /** Writes the current conversation to local history (skipped for temporary chats). */
+    fun persist() {
+        if (temporaryChat || messages.isEmpty()) return
+        ChatHistoryStore.saveConversation(context, conversationId, messages.toList())
+        onHistoryChanged()
+    }
+
+    // Open a saved conversation from the history list.
+    LaunchedEffect(openConversationId) {
+        val id = openConversationId ?: return@LaunchedEffect
+        persist()
+        val loaded = ChatHistoryStore.loadMessages(context, id)
+        messages.clear()
+        messages.addAll(loaded)
+        conversationId = id
+        onConversationOpened()
+    }
+
+    // Fresh chat requested from the drawer while already on this screen.
+    LaunchedEffect(newChatSignal) {
+        if (newChatSignal == 0) return@LaunchedEffect
+        persist()
+        messages.clear()
+        conversationId = System.currentTimeMillis().toString()
+    }
 
     Box(
         modifier = Modifier
@@ -163,7 +195,9 @@ fun ChatScreen(
                     resettingNewChat = true
                     coroutineScope.launch {
                         kotlinx.coroutines.delay(700)
+                        persist()
                         messages.clear()
+                        conversationId = System.currentTimeMillis().toString()
                         kotlinx.coroutines.delay(100)
                         resettingNewChat = false
                     }
@@ -179,15 +213,25 @@ fun ChatScreen(
                         android.widget.Toast.makeText(context, "Chat link copied", android.widget.Toast.LENGTH_SHORT).show()
                     },
                     Triple("Archive this chat", Icons.Default.Archive) {
-                        android.widget.Toast.makeText(context, "Chat archived", android.widget.Toast.LENGTH_SHORT).show()
+                        persist()
+                        messages.clear()
+                        conversationId = System.currentTimeMillis().toString()
+                        android.widget.Toast.makeText(context, "Chat archived to history", android.widget.Toast.LENGTH_SHORT).show()
                     },
                     Triple("Temporary chat", Icons.Default.AutoAwesome) {
+                        if (!temporaryChat) {
+                            persist()
+                            messages.clear()
+                            conversationId = System.currentTimeMillis().toString()
+                        }
                         temporaryChat = !temporaryChat
-                        if (temporaryChat) messages.clear()
                         android.widget.Toast.makeText(context, if (temporaryChat) "Temporary chat on — not saved" else "Temporary chat off", android.widget.Toast.LENGTH_SHORT).show()
                     },
                     Triple("Clear conversation", Icons.Default.Delete) {
+                        ChatHistoryStore.deleteConversation(context, conversationId)
                         messages.clear()
+                        conversationId = System.currentTimeMillis().toString()
+                        onHistoryChanged()
                     },
                     Triple("Report a problem", Icons.Default.Flag) {
                         android.widget.Toast.makeText(context, "Report submitted", android.widget.Toast.LENGTH_SHORT).show()
@@ -449,6 +493,7 @@ fun ChatScreen(
                                     text = fullText
                                 )
                             )
+                            persist()
                         }
                         streamingText = null
                         listState.animateScrollToItem(messages.size - 1)
@@ -473,7 +518,8 @@ fun ChatScreen(
             ModelSelectorSheet(
                 selectedModel = selectedModel,
                 onSelectModel = { selectedModel = it },
-                onDismiss = { showModelSheet = false }
+                onDismiss = { showModelSheet = false },
+                onOpenModelManager = onNavigateToModelManager
             )
         }
 

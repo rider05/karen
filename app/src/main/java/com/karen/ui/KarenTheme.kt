@@ -7,6 +7,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
 
 enum class KarenThemeMode {
     OLED,
@@ -33,6 +37,7 @@ data class KarenColors(
     val accentBlue: Color = Color(0xFF38BDF8),
     val accentAmber: Color = Color(0xFFF59E0B),
     val accentRed: Color = Color(0xFFEF4444),
+    val accentSuccess: Color = Color(0xFF10A37F),
     val drawerBackground: Color,
     val drawerItemHover: Color
 )
@@ -118,8 +123,40 @@ object KarenThemeState {
     }
 }
 
+data class KarenType(
+    val sans: FontFamily = FontFamily.SansSerif,
+    val mono: FontFamily = FontFamily.Monospace,
+    val headlineLg: TextStyle = TextStyle(
+        fontFamily = FontFamily.SansSerif, fontSize = 26.sp, lineHeight = 34.sp,
+        fontWeight = FontWeight.SemiBold, letterSpacing = (-0.5).sp
+    ),
+    val headlineSm: TextStyle = TextStyle(
+        fontFamily = FontFamily.SansSerif, fontSize = 20.sp, lineHeight = 28.sp,
+        fontWeight = FontWeight.Medium, letterSpacing = (-0.25).sp
+    ),
+    val titleMd: TextStyle = TextStyle(
+        fontFamily = FontFamily.SansSerif, fontSize = 16.sp, lineHeight = 24.sp,
+        fontWeight = FontWeight.Medium
+    ),
+    val bodyLg: TextStyle = TextStyle(
+        fontFamily = FontFamily.SansSerif, fontSize = 16.sp, lineHeight = 24.sp
+    ),
+    val bodyMd: TextStyle = TextStyle(
+        fontFamily = FontFamily.SansSerif, fontSize = 14.sp, lineHeight = 20.sp
+    ),
+    val monoMd: TextStyle = TextStyle(
+        fontFamily = FontFamily.Monospace, fontSize = 13.sp, lineHeight = 18.sp,
+        fontWeight = FontWeight.Medium
+    ),
+    val monoSm: TextStyle = TextStyle(
+        fontFamily = FontFamily.Monospace, fontSize = 11.sp, lineHeight = 16.sp,
+        letterSpacing = 0.2.sp
+    )
+)
+
 val LocalKarenColors = compositionLocalOf { OledThemeColors }
 val LocalKarenThemeMode = compositionLocalOf { KarenThemeMode.OLED }
+val LocalKarenType = compositionLocalOf { KarenType() }
 
 @Composable
 fun KarenTheme(
@@ -134,7 +171,8 @@ fun KarenTheme(
 
     CompositionLocalProvider(
         LocalKarenColors provides colors,
-        LocalKarenThemeMode provides mode
+        LocalKarenThemeMode provides mode,
+        LocalKarenType provides KarenType()
     ) {
         content()
     }

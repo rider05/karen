@@ -66,7 +66,38 @@ fun effortColor(name: String, colors: KarenColors): Color {
 }
 
 /**
- * Top App Bar matching the minimalist ChatGPT mobile app.
+ * Standing convention: every screen stays in-app on system back — it never
+ * exits to the phone home. Screens must call this with their Home route and
+ * consume the press first when a sheet/dialog is open or an inner level
+ * (e.g. open project, selected tab) can be popped.
+ *
+ * Pair with `onBackClick = onNavigateToHome` on [ChatGPTTopAppBar] and wire
+ * `onNavigateToHome = { currentScreen = "Home" }` in KarenApp.
+ *
+ * Example:
+ * ```
+ * KarenHomeBackHandler(onNavigateToHome = onNavigateToHome) {
+ *     if (showSheet) { showSheet = false; true } else false
+ * }
+ * ```
+ */
+@Composable
+fun KarenHomeBackHandler(
+    onNavigateToHome: () -> Unit,
+    onBackPressed: () -> Boolean = { false }
+) {
+    androidx.activity.compose.BackHandler {
+        if (!onBackPressed()) onNavigateToHome()
+    }
+}
+
+/**
+ * Shared header for chat and the tool screens.
+ *
+ * Back/menu pinned left, model + effort pills in the true center, chat
+ * actions pinned right. `selectedModel` doubles as the header's status pill
+ * label. The overflow menu is a Popup anchored to the more button, so it
+ * never disturbs header layout.
  */
 @Composable
 fun ChatGPTTopAppBar(
@@ -80,220 +111,227 @@ fun ChatGPTTopAppBar(
     moreActions: List<Triple<String, ImageVector, () -> Unit>> = emptyList(),
     effort: String? = null,
     efforts: List<String> = emptyList(),
-    onSelectEffort: (String) -> Unit = {}
+    onSelectEffort: (String) -> Unit = {},
+    eyebrow: String = "Dialogue"
 ) {
     val colors = LocalKarenColors.current
-    val currentMode = LocalKarenThemeMode.current
     var showMoreMenu by remember { mutableStateOf(false) }
     var effortMenu by remember { mutableStateOf(false) }
 
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .statusBarsPadding()
-            .height(56.dp)
-            .background(colors.background)
-            .padding(horizontal = 8.dp),
-        contentAlignment = Alignment.CenterStart
-    ) {
-        // Left: Back (when provided) + Drawer menu toggle
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.align(Alignment.CenterStart)
+    Column {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(colors.background)
+                .statusBarsPadding()
+                .height(56.dp)
+                .padding(start = 6.dp, end = 6.dp),
+            contentAlignment = Alignment.Center
         ) {
-            if (onBackClick != null) {
-                IconButton(onClick = onBackClick) {
+            // Left: navigation affordances
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.align(Alignment.CenterStart)
+            ) {
+                if (onBackClick != null) {
+                    KIconButton(onClick = onBackClick) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back",
+                            tint = colors.textSecondary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+
+                KIconButton(onClick = onMenuClick) {
                     Icon(
-                        imageVector = Icons.Default.ArrowBack,
-                        contentDescription = "Back to Home",
-                        tint = colors.textPrimary
+                        imageVector = Icons.Default.Menu,
+                        contentDescription = "Open navigation",
+                        tint = colors.textSecondary,
+                        modifier = Modifier.size(20.dp)
                     )
                 }
             }
-            IconButton(onClick = onMenuClick) {
-                Icon(
-                    imageVector = Icons.Default.Menu,
-                    contentDescription = "Open sidebar",
-                    tint = colors.textPrimary
-                )
-            }
-        }
 
-        // Center: Model selector capsule pill + Effort dropdown (theme-aware)
-        Row(
-            modifier = Modifier
-                .align(Alignment.Center),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.Center
-        ) {
+            // Center: model + effort selectors
             Row(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(20.dp))
-                    .clickable { onModelClick() }
-                    .background(colors.surface)
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.align(Alignment.Center)
             ) {
-                Text(
-                    text = selectedModel,
-                    color = colors.textPrimary,
-                    fontSize = 13.5.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
-                Spacer(Modifier.width(4.dp))
-                Icon(
-                    imageVector = Icons.Default.KeyboardArrowDown,
-                    contentDescription = "Select model",
-                    tint = colors.textMuted,
-                    modifier = Modifier.size(18.dp)
-                )
-            }
-
-            if (effort != null && efforts.isNotEmpty()) {
-                val effortTint = effortColor(effort, colors)
-                Spacer(Modifier.width(6.dp))
+                // Model / surface status pill
                 Row(
                     modifier = Modifier
-                        .clip(RoundedCornerShape(20.dp))
-                        .clickable { effortMenu = true }
+                        .clip(CircleShape)
                         .background(colors.surface)
-                        .border(
-                            1.dp,
-                            effortTint.copy(alpha = 0.55f),
-                            RoundedCornerShape(20.dp)
-                        )
-                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                        .border(1.dp, colors.accentGreen.copy(alpha = 0.32f), CircleShape)
+                        .clickable { onModelClick() }
+                        .padding(start = 9.dp, end = 6.dp, top = 4.dp, bottom = 4.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Box(
-                        modifier = Modifier
-                            .size(7.dp)
+                        Modifier
+                            .size(6.dp)
                             .clip(CircleShape)
-                            .background(effortTint)
+                            .background(colors.accentSuccess)
                     )
-                    Spacer(Modifier.width(5.dp))
-                    Icon(Icons.Default.Bolt, contentDescription = null, tint = effortTint, modifier = Modifier.size(13.dp))
-                    Spacer(Modifier.width(3.dp))
-                    Text(effort, color = effortTint, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        text = selectedModel,
+                        color = colors.textPrimary,
+                        fontFamily = LocalKarenType.current.mono,
+                        fontSize = 10.5.sp,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1
+                    )
                     Spacer(Modifier.width(2.dp))
                     Icon(
                         imageVector = Icons.Default.KeyboardArrowDown,
-                        contentDescription = "Select effort",
+                        contentDescription = "Select model",
                         tint = colors.textMuted,
                         modifier = Modifier.size(15.dp)
                     )
                 }
-                DropdownMenu(
-                    expanded = effortMenu,
-                    onDismissRequest = { effortMenu = false },
-                    modifier = Modifier.background(colors.surface)
-                ) {
-                    efforts.forEach { e ->
-                        val tint = effortColor(e, colors)
-                        DropdownMenuItem(
-                            text = {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(8.dp)
-                                            .clip(CircleShape)
-                                            .background(tint)
-                                    )
-                                    Spacer(Modifier.width(10.dp))
-                                    Text(e, color = if (e == effort) tint else colors.textPrimary)
-                                }
-                            },
-                            onClick = {
-                                onSelectEffort(e)
-                                effortMenu = false
-                            }
+
+                if (effort != null && efforts.isNotEmpty()) {
+                    val effortTint = effortColor(effort, colors)
+                    Spacer(Modifier.width(4.dp))
+                    Row(
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .background(effortTint.copy(alpha = 0.12f))
+                            .border(1.dp, effortTint.copy(alpha = 0.45f), CircleShape)
+                            .clickable { effortMenu = true }
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            Modifier
+                                .size(6.dp)
+                                .clip(CircleShape)
+                                .background(effortTint)
                         )
+                        Spacer(Modifier.width(5.dp))
+                        Text(effort, color = effortTint, fontSize = 10.5.sp, fontWeight = FontWeight.SemiBold)
+                        Icon(
+                            imageVector = Icons.Default.KeyboardArrowDown,
+                            contentDescription = "Select effort",
+                            tint = effortTint,
+                            modifier = Modifier.size(13.dp)
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = effortMenu,
+                        onDismissRequest = { effortMenu = false },
+                        modifier = Modifier.background(colors.cardBackground)
+                    ) {
+                        efforts.forEach { e ->
+                            val tint = effortColor(e, colors)
+                            DropdownMenuItem(
+                                text = {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Box(
+                                            Modifier
+                                                .size(8.dp)
+                                                .clip(CircleShape)
+                                                .background(tint)
+                                        )
+                                        Spacer(Modifier.width(10.dp))
+                                        Text(e, color = if (e == effort) tint else colors.textPrimary)
+                                    }
+                                },
+                                onClick = {
+                                    onSelectEffort(e)
+                                    effortMenu = false
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Right: chat actions — the overflow menu is anchored here so its
+            // popup never participates in header layout (a fillMaxSize overlay
+            // inside the header Column would expand the header and blank content).
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.align(Alignment.CenterEnd)
+            ) {
+                KIconButton(onClick = onNewChatClick) {
+                    Icon(
+                        imageVector = Icons.Default.AddCircle,
+                        contentDescription = "New Chat",
+                        tint = colors.textSecondary,
+                        modifier = Modifier.size(19.dp)
+                    )
+                }
+                Box {
+                    KIconButton(onClick = {
+                        if (moreActions.isNotEmpty()) showMoreMenu = true else onMoreClick()
+                    }) {
+                        Icon(
+                            imageVector = Icons.Default.MoreVert,
+                            contentDescription = "More options",
+                            tint = colors.textSecondary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = showMoreMenu && moreActions.isNotEmpty(),
+                        onDismissRequest = { showMoreMenu = false },
+                        modifier = Modifier
+                            .width(260.dp)
+                            .background(colors.surface)
+                            .border(1.dp, colors.border, RoundedCornerShape(18.dp))
+                    ) {
+                        moreActions.forEachIndexed { idx, action ->
+                            DropdownMenuItem(
+                                text = {
+                                    Text(action.first, color = colors.textPrimary, fontSize = 14.sp)
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        action.second,
+                                        contentDescription = null,
+                                        tint = colors.textSecondary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                },
+                                onClick = {
+                                    showMoreMenu = false
+                                    action.third.invoke()
+                                }
+                            )
+                            if (idx != moreActions.lastIndex) {
+                                HorizontalDivider(
+                                    modifier = Modifier
+                                        .fillMaxWidth(0.75f)
+                                        .align(Alignment.CenterHorizontally),
+                                    thickness = 0.75.dp,
+                                    color = colors.border.copy(alpha = 0.35f)
+                                )
+                            }
+                        }
                     }
                 }
             }
         }
 
-        // Right: New Chat + More actions
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.align(Alignment.CenterEnd)
-        ) {
-            IconButton(onClick = onNewChatClick) {
-                Icon(
-                    imageVector = Icons.Default.AddCircle,
-                    contentDescription = "New Chat",
-                    tint = colors.textPrimary
-                )
-            }
-            IconButton(onClick = {
-                if (moreActions.isNotEmpty()) showMoreMenu = true else onMoreClick()
-            }) {
-                Icon(
-                    imageVector = Icons.Default.MoreVert,
-                    contentDescription = "More Options",
-                    tint = colors.textMuted
-                )
-            }
-        }
-    }
-
-    if (showMoreMenu && moreActions.isNotEmpty()) {
-        ThemedMoreMenu(
-            actions = moreActions,
-            onDismiss = { showMoreMenu = false }
-        )
-    }
-}
-
-/** Theme-following card menu with one icon per row and faded centered separators. */
-@Composable
-fun ThemedMoreMenu(
-    actions: List<Triple<String, ImageVector, () -> Unit>>,
-    onDismiss: () -> Unit
-) {
-    val colors = LocalKarenColors.current
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.18f))
-            .clickable { onDismiss() }
-    ) {
-        Column(
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(top = 56.dp, end = 8.dp)
-                .width(260.dp)
-                .clip(RoundedCornerShape(18.dp))
-                .background(colors.surface)
-                .border(1.dp, colors.border, RoundedCornerShape(18.dp))
-                .padding(vertical = 6.dp)
-        ) {
-            actions.forEachIndexed { idx, action ->
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable {
-                            onDismiss()
-                            action.third.invoke()
-                        }
-                        .padding(horizontal = 16.dp, vertical = 10.dp)
-                ) {
-                    Icon(action.second, contentDescription = action.first, tint = colors.textSecondary, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(12.dp))
-                    Text(action.first, color = colors.textPrimary, fontSize = 14.sp)
-                }
-                if (idx != actions.lastIndex) {
-                    Divider(
-                        modifier = Modifier
-                            .fillMaxWidth(0.75f)
-                            .align(Alignment.CenterHorizontally),
-                        thickness = 0.75.dp,
-                        color = colors.border.copy(alpha = 0.35f)
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(1.dp)
+                .background(
+                    androidx.compose.ui.graphics.Brush.horizontalGradient(
+                        listOf(
+                            Color.Transparent,
+                            colors.accentGreen.copy(alpha = 0.35f),
+                            colors.accentGreen.copy(alpha = 0.12f),
+                            Color.Transparent
+                        )
                     )
-                }
-            }
-        }
+                )
+        )
     }
 }
 
@@ -388,24 +426,24 @@ fun ToolExecutionPill(
     val colors = LocalKarenColors.current
     Row(
         modifier = Modifier
-            .clip(RoundedCornerShape(20.dp))
+            .clip(KR.chip)
             .background(colors.surface)
-            .border(1.dp, colors.border, RoundedCornerShape(20.dp))
+            .border(1.dp, colors.accentSuccess.copy(alpha = 0.30f), KR.chip)
             .padding(horizontal = 10.dp, vertical = 5.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(
-            imageVector = Icons.Default.CheckCircle,
-            contentDescription = "Success",
-            tint = colors.accentGreen,
-            modifier = Modifier.size(14.dp)
+        Box(
+            Modifier
+                .size(6.dp)
+                .clip(CircleShape)
+                .background(colors.accentSuccess)
         )
         Spacer(Modifier.width(6.dp))
         Text(
             text = "$toolName · $statusText",
             color = colors.textSecondary,
             fontSize = 11.5.sp,
-            fontFamily = FontFamily.Monospace
+            fontFamily = LocalKarenType.current.mono
         )
     }
 }
@@ -445,16 +483,16 @@ fun ActionConfirmationCard(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
-            .background(colors.cardBackground)
-            .border(1.dp, colors.cardBorder, RoundedCornerShape(16.dp))
+            .clip(KR.card)
+            .background(colors.accentAmber.copy(alpha = 0.06f))
+            .border(1.dp, colors.accentAmber.copy(alpha = 0.32f), KR.card)
             .padding(14.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(
                 imageVector = Icons.Default.Event,
                 contentDescription = "Event",
-                tint = colors.accentBlue,
+                tint = colors.accentAmber,
                 modifier = Modifier.size(18.dp)
             )
             Spacer(Modifier.width(8.dp))
@@ -479,13 +517,13 @@ fun ActionConfirmationCard(
                 Icon(
                     imageVector = Icons.Default.CheckCircle,
                     contentDescription = "Confirmed",
-                    tint = colors.accentGreen,
+                    tint = colors.accentSuccess,
                     modifier = Modifier.size(16.dp)
                 )
                 Spacer(Modifier.width(6.dp))
                 Text(
                     text = "Added to local system calendar (Zero egress)",
-                    color = colors.accentGreen,
+                    color = colors.accentSuccess,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Medium
                 )
@@ -502,9 +540,9 @@ fun ActionConfirmationCard(
                     },
                     colors = ButtonDefaults.buttonColors(
                         containerColor = colors.accentGreen,
-                        contentColor = Color.White
+                        contentColor = Color(0xFFF8FAFC)
                     ),
-                    shape = RoundedCornerShape(10.dp),
+                    shape = RoundedCornerShape(8.dp),
                     contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
                 ) {
                     Text(confirmLabel, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
@@ -675,7 +713,8 @@ fun MessageActionBar(
 }
 
 /**
- * User Message Bubble (ChatGPT style, rounded right pill)
+ * User message card — right-aligned, Level 2 surface, 16dp radius with the
+ * lower-right corner notched to 4dp so the flow reads left-to-right.
  */
 @Composable
 fun UserMessageBubble(
@@ -699,16 +738,23 @@ fun UserMessageBubble(
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(colors.surfaceHover)
-                                .border(1.dp, colors.border, RoundedCornerShape(12.dp))
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(colors.surface)
+                                .border(1.dp, colors.border, RoundedCornerShape(8.dp))
                                 .padding(horizontal = 10.dp, vertical = 6.dp)
                         ) {
-                            Icon(Icons.Default.AttachFile, contentDescription = null, tint = colors.textPrimary, modifier = Modifier.size(14.dp))
+                            Icon(Icons.Default.AttachFile, contentDescription = null, tint = colors.accentGreen, modifier = Modifier.size(14.dp))
                             Spacer(Modifier.width(6.dp))
                             Column {
                                 Text(a.name, color = colors.textPrimary, fontSize = 12.sp, fontWeight = FontWeight.Medium)
-                                if (a.sizeBytes > 0) Text(formatSize(a.sizeBytes), color = colors.textMuted, fontSize = 10.5.sp)
+                                if (a.sizeBytes > 0) {
+                                    Text(
+                                        formatSize(a.sizeBytes),
+                                        color = colors.textMuted,
+                                        fontFamily = LocalKarenType.current.mono,
+                                        fontSize = 10.5.sp
+                                    )
+                                }
                             }
                         }
                     }
@@ -718,8 +764,9 @@ fun UserMessageBubble(
                 Box(
                     modifier = Modifier
                         .widthIn(max = 310.dp)
-                        .clip(RoundedCornerShape(20.dp, 20.dp, 4.dp, 20.dp))
+                        .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = 16.dp, bottomEnd = 4.dp))
                         .background(colors.userBubble)
+                        .border(1.dp, colors.cardBorder, RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = 16.dp, bottomEnd = 4.dp))
                         .padding(horizontal = 16.dp, vertical = 12.dp)
                 ) {
                     Text(
@@ -811,14 +858,14 @@ fun ChatGPTFloatingComposer(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(28.dp))
+                    .clip(RoundedCornerShape(16.dp))
                     .background(colors.composerBackground)
                     .border(
                         1.dp,
                         if (isListening) colors.accentGreen else colors.composerBorder,
-                        RoundedCornerShape(28.dp)
+                        RoundedCornerShape(16.dp)
                     )
-                    .padding(horizontal = 6.dp, vertical = 6.dp),
+                    .padding(horizontal = 8.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
             // Plus attachment button
@@ -923,11 +970,11 @@ fun ChatGPTFloatingComposer(
                         )
                     }
                 } else {
-                    // Send button
+                    // Send button — solid primary, no shadow
                     Box(
                         modifier = Modifier
                             .size(36.dp)
-                            .clip(CircleShape)
+                            .clip(RoundedCornerShape(8.dp))
                             .background(colors.accentGreen)
                             .clickable { onSend() },
                         contentAlignment = Alignment.Center
@@ -936,7 +983,7 @@ fun ChatGPTFloatingComposer(
                             imageVector = Icons.Default.ArrowUpward,
                             contentDescription = "Send",
                             tint = Color.White,
-                            modifier = Modifier.size(20.dp)
+                            modifier = Modifier.size(19.dp)
                         )
                     }
                 }
@@ -954,7 +1001,8 @@ fun ChatGPTFloatingComposer(
 fun ModelSelectorSheet(
     selectedModel: String,
     onSelectModel: (String) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    onOpenModelManager: () -> Unit = {}
 ) {
     val colors = LocalKarenColors.current
 
@@ -1053,6 +1101,50 @@ fun ModelSelectorSheet(
                 }
             }
 
+            Spacer(Modifier.height(10.dp))
+
+            // Shortcut into the full Model Manager (import / export / GGUF weights)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(colors.accentGreen.copy(alpha = 0.10f))
+                    .border(1.dp, colors.accentGreen.copy(alpha = 0.45f), RoundedCornerShape(12.dp))
+                    .clickable {
+                        onDismiss()
+                        onOpenModelManager()
+                    }
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Memory,
+                    contentDescription = null,
+                    tint = colors.accentGreen,
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        text = "Open Model Manager",
+                        color = colors.textPrimary,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = "Import · export · installed GGUF weights",
+                        color = colors.textMuted,
+                        fontSize = 11.5.sp
+                    )
+                }
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = colors.accentGreen,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+
             Spacer(Modifier.height(24.dp))
         }
     }
@@ -1136,11 +1228,21 @@ fun AttachmentSheet(
 fun ChatGPTDrawerContent(
     currentScreen: String = "Chat",
     onNavigate: (String) -> Unit = {},
-    onCloseDrawer: () -> Unit = {}
+    onCloseDrawer: () -> Unit = {},
+    historyVersion: Int = 0,
+    onOpenConversation: (String) -> Unit = {},
+    onDeleteConversation: (String) -> Unit = {},
+    onNewChat: () -> Unit = {}
 ) {
     val colors = LocalKarenColors.current
     val currentMode = LocalKarenThemeMode.current
     var searchQuery by remember { mutableStateOf("") }
+    val drawerCtx = androidx.compose.ui.platform.LocalContext.current
+    val conversations = remember(historyVersion) { ChatHistoryStore.loadConversations(drawerCtx) }
+    val visibleConversations = remember(conversations, searchQuery) {
+        if (searchQuery.isBlank()) conversations
+        else conversations.filter { it.title.contains(searchQuery, ignoreCase = true) }
+    }
 
     Column(
         modifier = Modifier
@@ -1213,7 +1315,7 @@ fun ChatGPTDrawerContent(
                 .clip(RoundedCornerShape(12.dp))
                 .background(colors.surfaceHover)
                 .clickable {
-                    onNavigate("Chat")
+                    onNewChat()
                     onCloseDrawer()
                 }
                 .padding(horizontal = 14.dp, vertical = 10.dp),
@@ -1265,41 +1367,104 @@ fun ChatGPTDrawerContent(
                 DrawerNavItem("Hardware & Governance", Icons.Default.Shield, currentScreen == "Hardware") {
                     onNavigate("Hardware"); onCloseDrawer()
                 }
-                Spacer(Modifier.height(12.dp))
-            }
-
-            // Section Today
-            item {
+                Spacer(Modifier.height(6.dp))
                 Text(
-                    "Today",
+                    "Managers · v2.2 preview",
                     color = colors.textMuted,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.padding(vertical = 6.dp)
                 )
-                DrawerNavItem("Lab Exam & Timetable", Icons.Default.ChatBubble, currentScreen == "Chat") {
-                    onNavigate("Chat"); onCloseDrawer()
+                DrawerNavItem("Model Import", Icons.Default.FolderOpen, currentScreen == "ModelImport") {
+                    onNavigate("ModelImport"); onCloseDrawer()
                 }
-                DrawerNavItem("TreeVision Biometrics", Icons.Default.Code, currentScreen == "Workspace") {
-                    onNavigate("Workspace"); onCloseDrawer()
+                DrawerNavItem("Model Export", Icons.Default.Upload, currentScreen == "ModelExport") {
+                    onNavigate("ModelExport"); onCloseDrawer()
+                }
+                DrawerNavItem("Memory Transfer", Icons.Default.Sync, currentScreen == "MemoryTransfer") {
+                    onNavigate("MemoryTransfer"); onCloseDrawer()
+                }
+                DrawerNavItem("Backup Package", Icons.Default.Archive, currentScreen == "BackupPackage") {
+                    onNavigate("BackupPackage"); onCloseDrawer()
+                }
+                DrawerNavItem("Karen Storage", Icons.Default.Storage, currentScreen == "StorageManager") {
+                    onNavigate("StorageManager"); onCloseDrawer()
+                }
+                DrawerNavItem("Device Migration", Icons.Default.SwapHoriz, currentScreen == "Migration") {
+                    onNavigate("Migration"); onCloseDrawer()
                 }
                 Spacer(Modifier.height(12.dp))
             }
 
-            // Section Previous 7 Days
+            // Chat history from local storage, grouped by recency.
             item {
-                Text(
-                    "Previous 7 Days",
-                    color = colors.textMuted,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.padding(vertical = 6.dp)
-                )
-                DrawerNavItem("DBMS Normalization BCNF", Icons.AutoMirrored.Filled.MenuBook, currentScreen == "StudyBook") {
-                    onNavigate("StudyBook"); onCloseDrawer()
-                }
-                DrawerNavItem("Thermal Compile Discussion", Icons.Default.RecordVoiceOver, currentScreen == "Voice") {
-                    onNavigate("Voice"); onCloseDrawer()
+                if (visibleConversations.isEmpty()) {
+                    Text(
+                        if (searchQuery.isBlank()) "No saved chats yet — they appear here after your first message."
+                        else "No chats match your search.",
+                        color = colors.textMuted,
+                        fontSize = 12.sp,
+                        modifier = Modifier.padding(vertical = 6.dp)
+                    )
+                } else {
+                    val now = System.currentTimeMillis()
+                    val dayMs = 24L * 60 * 60 * 1000
+                    val startOfToday = now - (now % dayMs)
+                    val groups = listOf(
+                        "Today" to visibleConversations.filter { it.updatedAt >= startOfToday },
+                        "Previous 7 Days" to visibleConversations.filter { it.updatedAt < startOfToday && it.updatedAt >= startOfToday - 7 * dayMs },
+                        "Older" to visibleConversations.filter { it.updatedAt < startOfToday - 7 * dayMs }
+                    )
+                    val dateFmt = java.text.SimpleDateFormat("dd MMM, HH:mm", java.util.Locale.getDefault())
+                    groups.forEach { (label, items) ->
+                        if (items.isNotEmpty()) {
+                            Text(
+                                label,
+                                color = colors.textMuted,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.padding(vertical = 6.dp)
+                            )
+                            items.take(30).forEach { convo ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 2.dp)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(Color.Transparent)
+                                        .clickable {
+                                            onOpenConversation(convo.id)
+                                            onCloseDrawer()
+                                        }
+                                        .padding(start = 10.dp, top = 8.dp, bottom = 8.dp, end = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text(
+                                            convo.title,
+                                            color = colors.textSecondary,
+                                            fontSize = 13.sp,
+                                            maxLines = 1
+                                        )
+                                        Text(
+                                            dateFmt.format(java.util.Date(convo.updatedAt)),
+                                            color = colors.textMuted,
+                                            fontFamily = FontFamily.Monospace,
+                                            fontSize = 10.sp,
+                                            maxLines = 1
+                                        )
+                                    }
+                                    IconButton(
+                                        onClick = { onDeleteConversation(convo.id) },
+                                        modifier = Modifier.size(30.dp)
+                                    ) {
+                                        Icon(Icons.Default.DeleteOutline, contentDescription = "Delete chat", tint = colors.textMuted, modifier = Modifier.size(15.dp))
+                                    }
+                                }
+                            }
+                            Spacer(Modifier.height(6.dp))
+                        }
+                    }
                 }
                 Spacer(Modifier.height(12.dp))
             }

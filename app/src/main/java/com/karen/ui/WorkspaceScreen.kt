@@ -132,7 +132,8 @@ private fun diffLines(old: String, new: String): List<Pair<Char, String>> {
 
 @Composable
 fun WorkspaceScreen(
-    onOpenDrawer: () -> Unit = {}
+    onOpenDrawer: () -> Unit = {},
+    onNavigateToHome: () -> Unit = {}
 ) {
     val colors = LocalKarenColors.current
     var activeTab by remember { mutableStateOf("Code") }
@@ -148,6 +149,16 @@ fun WorkspaceScreen(
     var selected by remember { mutableStateOf<Project?>(null) }
     var showNewProject by remember { mutableStateOf(false) }
     var newName by remember { mutableStateOf("") }
+
+    // System back: dismiss dialog first, then step out of the open project,
+    // then route to Home — same in-app behaviour as the chat screen.
+    KarenHomeBackHandler(onNavigateToHome = onNavigateToHome) {
+        when {
+            showNewProject -> { showNewProject = false; true }
+            selected != null -> { selected = null; true }
+            else -> false
+        }
+    }
 
     // Session timer for the active project (tick forces recomposition each second)
     var running by remember { mutableStateOf(false) }
@@ -210,6 +221,7 @@ fun WorkspaceScreen(
         ChatGPTTopAppBar(
             selectedModel = "Canvas",
             onMenuClick = onOpenDrawer,
+            onBackClick = onNavigateToHome,
             moreActions = listOf(
                 Triple("New project", Icons.Default.Add) { showNewProject = true },
                 Triple("Export canvas", Icons.Default.Share) { android.widget.Toast.makeText(ctx, "Export canvas", android.widget.Toast.LENGTH_SHORT).show() },

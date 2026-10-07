@@ -17,6 +17,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.karen.rememberDeviceTelemetry
@@ -29,6 +31,25 @@ data class GgufModel(
     val ramRequired: String,
     val throughput: String,
     val quant: String
+)
+
+/** Third-party cloud providers connectable from the Model Manager. */
+data class CloudProvider(
+    val id: String,
+    val name: String,
+    val keyUrl: String,
+    val note: String
+)
+
+private val cloudProviders = listOf(
+    CloudProvider("openai", "OpenAI GPT-4o", "platform.openai.com/api-keys", "GPT-4o + o-series via API"),
+    CloudProvider("anthropic", "Anthropic Claude", "console.anthropic.com", "Claude Sonnet + Opus via API"),
+    CloudProvider("gemini", "Google Gemini", "aistudio.google.com/apikey", "Gemini Flash + Pro via API"),
+    CloudProvider("mistral", "Mistral Large", "console.mistral.ai", "Mistral Large + Codestral"),
+    CloudProvider("grok", "xAI Grok", "console.x.ai", "Grok 3 + mini via API"),
+    CloudProvider("openrouter", "OpenRouter", "openrouter.ai/keys", "One key → 200+ models gateway"),
+    CloudProvider("deepseek", "DeepSeek", "platform.deepseek.com", "DeepSeek V3 + R1 via API"),
+    CloudProvider("groq", "Groq", "console.groq.com", "Ultra-low-latency LPU inference")
 )
 
 @Composable
@@ -86,6 +107,11 @@ fun ModelManagerScreen(
     var showApiDialog by remember { mutableStateOf(false) }
     var apiError by remember { mutableStateOf<String?>(null) }
     val connectedApis = remember { mutableStateListOf<String>() }
+    // API-key entry flow: step 0 = provider list, step 1 = key entry.
+    var apiStep by remember { mutableStateOf(0) }
+    var selectedProvider by remember { mutableStateOf<CloudProvider?>(null) }
+    var apiKeyInput by remember { mutableStateOf("") }
+    var keyVisible by remember { mutableStateOf(false) }
 
     val importModelLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
@@ -173,6 +199,8 @@ fun ModelManagerScreen(
                         onClick = {
                             if (device.networkUp) {
                                 apiError = null
+                                apiStep = 0
+                                selectedProvider = null
                                 showApiDialog = true
                             } else {
                                 apiError = "No internet connection. Cloud API models require connectivity."
@@ -200,12 +228,19 @@ fun ModelManagerScreen(
                         Spacer(Modifier.height(6.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             connectedApis.forEach { api ->
-                                Box(
+                                val providerId = cloudProviders.find { it.name == api }?.id
+                                val hasKey = providerId != null && UserPrefs.apiKey(ctx, providerId).isNotBlank()
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
                                     modifier = Modifier
                                         .clip(RoundedCornerShape(8.dp))
                                         .background(colors.accentBlue.copy(alpha = 0.12f))
                                         .padding(horizontal = 8.dp, vertical = 4.dp)
                                 ) {
+                                    if (hasKey) {
+                                        Icon(Icons.Default.Lock, contentDescription = "Key stored", tint = colors.accentGreen, modifier = Modifier.size(11.dp))
+                                        Spacer(Modifier.width(4.dp))
+                                    }
                                     Text(api, color = colors.accentBlue, fontSize = 11.sp, fontWeight = FontWeight.Medium)
                                 }
                             }
@@ -346,38 +381,133 @@ fun ModelManagerScreen(
             )
         }
 
-        // Cloud API connect dialog (internet required)
+        // Cloud API connect dialog: step 0 = pick provider, step 1 = enter key.
+        // Keys persist in on-device SharedPreferences via UserPrefs.
         if (showApiDialog) {
+            val provider = selectedProvider
             AlertDialog(
-                onDismissRequest = { showApiDialog = false },
-                title = { Text("Connect Cloud API") },
+                onDismissRequest = { showApiDialog = false; apiStep = 0 },
+                title = { Text(if (apiStep == 0) "Connect Cloud API" else (provider?.name ?: "API key")) },
                 text = {
                     Column {
-                        Text("Select a provider (requires internet connection):", fontSize = 13.sp)
-                        Spacer(Modifier.height(10.dp))
-                        listOf("OpenAI GPT-4o", "Anthropic Claude", "Google Gemini", "Mistral Large", "xAI Grok").forEach { provider ->
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable {
-                                        if (provider !in connectedApis) {
-                                        connectedApis.add(provider)
-                                        UserPrefs.saveModels(ctx, models.map { it.name } + provider)
+                        if (apiStep == 0) {
+                            Text("Select a provider, then paste its API key (stored only on this device):", fontSize = 13.sp)
+                            Spacer(Modifier.height(10.dp))
+                            cloudProviders.forEach { p ->
+                                val keySet = UserPrefs.apiKey(ctx, p.id).isNotBlank()
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            selectedProvider = p
+                                            apiKeyInput = UserPrefs.apiKey(ctx, p.id)
+                                            keyVisible = false
+                                            apiStep = 1
+                                        }
+                                        .padding(vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        if (keySet) Icons.Default.CheckCircle else Icons.Default.Cloud,
+                                        contentDescription = null,
+                                        tint = if (keySet) colors.accentGreen else colors.accentBlue,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(Modifier.width(10.dp))
+                                    Column(Modifier.weight(1f)) {
+                                        Text(p.name, color = colors.textPrimary, fontSize = 13.5.sp)
+                                        Text(
+                                            if (keySet) "key stored on device" else p.note,
+                                            color = if (keySet) colors.accentGreen else colors.textMuted,
+                                            fontSize = 11.sp,
+                                            fontFamily = if (keySet) FontFamily.Monospace else null
+                                        )
                                     }
-                                        showApiDialog = false
-                                        android.widget.Toast.makeText(ctx, "$provider connected", android.widget.Toast.LENGTH_SHORT).show()
+                                    Icon(Icons.Default.ChevronRight, contentDescription = null, tint = colors.textMuted, modifier = Modifier.size(16.dp))
+                                }
+                            }
+                        } else if (provider != null) {
+                            val stored = UserPrefs.apiKey(ctx, provider.id)
+                            Text(
+                                "Paste your ${provider.name} key. It stays in on-device storage — only sent to ${provider.name} when you invoke it.",
+                                fontSize = 13.sp
+                            )
+                            Spacer(Modifier.height(10.dp))
+                            Text(
+                                "Get a key: ${provider.keyUrl}",
+                                fontSize = 12.sp,
+                                fontFamily = FontFamily.Monospace,
+                                color = colors.accentBlue
+                            )
+                            Spacer(Modifier.height(10.dp))
+                            OutlinedTextField(
+                                value = apiKeyInput,
+                                onValueChange = { apiKeyInput = it },
+                                label = { Text("API key") },
+                                placeholder = { Text("sk-…") },
+                                singleLine = true,
+                                visualTransformation = if (keyVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                                trailingIcon = {
+                                    IconButton(onClick = { keyVisible = !keyVisible }) {
+                                        Icon(
+                                            if (keyVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                            contentDescription = if (keyVisible) "Hide key" else "Show key"
+                                        )
                                     }
-                                    .padding(vertical = 8.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(Icons.Default.Cloud, contentDescription = null, tint = colors.accentBlue, modifier = Modifier.size(18.dp))
-                                Spacer(Modifier.width(10.dp))
-                                Text(provider, color = colors.textPrimary, fontSize = 13.5.sp)
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            if (stored.isNotBlank()) {
+                                Spacer(Modifier.height(6.dp))
+                                Text(
+                                    "Current: ••••${stored.takeLast(4)}",
+                                    fontSize = 12.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = colors.textMuted
+                                )
                             }
                         }
                     }
                 },
-                confirmButton = { TextButton(onClick = { showApiDialog = false }) { Text("Done") } }
+                confirmButton = {
+                    if (apiStep == 0) {
+                        TextButton(onClick = { showApiDialog = false }) { Text("Done") }
+                    } else {
+                        TextButton(onClick = { apiStep = 0 }) { Text("Back") }
+                    }
+                },
+                dismissButton = {
+                    if (apiStep == 1 && provider != null) {
+                        Row {
+                            val stored = UserPrefs.apiKey(ctx, provider.id)
+                            if (stored.isNotBlank() || provider.name in connectedApis) {
+                                TextButton(onClick = {
+                                    UserPrefs.clearApiKey(ctx, provider.id)
+                                    connectedApis.remove(provider.name)
+                                    apiKeyInput = ""
+                                    showApiDialog = false
+                                    apiStep = 0
+                                    android.widget.Toast.makeText(ctx, "${provider.name} key removed", android.widget.Toast.LENGTH_SHORT).show()
+                                }) { Text("Remove", color = colors.accentRed) }
+                            }
+                            TextButton(onClick = {
+                                val key = apiKeyInput.trim()
+                                if (key.isNotBlank()) {
+                                    UserPrefs.saveApiKey(ctx, provider.id, key)
+                                    if (provider.name !in connectedApis) {
+                                        connectedApis.add(provider.name)
+                                        UserPrefs.saveModels(ctx, models.map { it.name } + provider.name)
+                                    }
+                                    showApiDialog = false
+                                    apiStep = 0
+                                    android.widget.Toast.makeText(ctx, "${provider.name} connected", android.widget.Toast.LENGTH_SHORT).show()
+                                } else {
+                                    android.widget.Toast.makeText(ctx, "Paste a key first", android.widget.Toast.LENGTH_SHORT).show()
+                                }
+                            }) { Text("Save & Connect") }
+                        }
+                    }
+                }
             )
         }
     }

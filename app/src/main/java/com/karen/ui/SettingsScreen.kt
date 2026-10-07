@@ -16,6 +16,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -129,7 +130,8 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                 Spacer(Modifier.height(6.dp))
                 var gpuAcceleration by remember { mutableStateOf(true) }
                 var cpuThreads by remember { mutableStateOf(Runtime.getRuntime().availableProcessors().toFloat()) }
-                var thermalGuard by remember { mutableStateOf(true) }
+                var thermalGuard by remember { mutableStateOf(UserPrefs.thermalGuard(context)) }
+                var thermalLimit by remember { mutableStateOf(UserPrefs.thermalLimitC(context)) }
                 var backend by remember { mutableStateOf("Auto") }
                 var defaultEffort by remember { mutableStateOf(UserPrefs.defaultEffort(context)) }
                 Column(
@@ -222,11 +224,18 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                     ) {
                         Column(Modifier.weight(1f)) {
                             Text("Thermal Guard", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
-                            Text("Throttle jobs above 58°C", color = colors.textMuted, fontSize = 11.5.sp)
+                            Text(
+                                if (thermalGuard) "Stop work above ${thermalLimit.toInt()}°C" else "Guard off — work runs unthrottled",
+                                color = colors.textMuted,
+                                fontSize = 11.5.sp
+                            )
                         }
                         Switch(
                             checked = thermalGuard,
-                            onCheckedChange = { thermalGuard = it },
+                            onCheckedChange = {
+                                thermalGuard = it
+                                UserPrefs.setThermalGuard(context, it)
+                            },
                             colors = SwitchDefaults.colors(
                                 checkedThumbColor = Color.White,
                                 checkedTrackColor = colors.accentGreen,
@@ -234,6 +243,36 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                                 uncheckedTrackColor = colors.surfaceHover
                             )
                         )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Trip point", color = colors.textSecondary, fontSize = 12.5.sp)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            OutlinedButton(
+                                onClick = {
+                                    thermalLimit = (thermalLimit - 1f).coerceAtLeast(40f)
+                                    UserPrefs.setThermalLimitC(context, thermalLimit)
+                                },
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 2.dp)
+                            ) { Text("−", fontSize = 14.sp) }
+                            Text(
+                                "${thermalLimit.toInt()}°C",
+                                color = colors.textPrimary,
+                                fontSize = 13.sp,
+                                fontFamily = FontFamily.Monospace,
+                                modifier = Modifier.padding(horizontal = 10.dp)
+                            )
+                            OutlinedButton(
+                                onClick = {
+                                    thermalLimit = (thermalLimit + 1f).coerceAtMost(60f)
+                                    UserPrefs.setThermalLimitC(context, thermalLimit)
+                                },
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 2.dp)
+                            ) { Text("+", fontSize = 14.sp) }
+                        }
                     }
                 }
             }

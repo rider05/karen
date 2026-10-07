@@ -28,13 +28,20 @@ import com.karen.formatSize
 @Composable
 fun FilesScreen(
     onOpenDrawer: () -> Unit = {},
-    onNavigate: (String) -> Unit = {}
+    onNavigate: (String) -> Unit = {},
+    onNavigateToHome: () -> Unit = {}
 ) {
     val colors = LocalKarenColors.current
     val device = rememberDeviceTelemetry()
     val context = androidx.compose.ui.platform.LocalContext.current
     var selectedVault by remember { mutableStateOf("Knowledge Vault") }
     var showVaultSheet by remember { mutableStateOf(false) }
+
+    // System back: dismiss the vault sheet first, otherwise route to Home —
+    // same in-app behaviour as the chat screen (never exits to phone home).
+    KarenHomeBackHandler(onNavigateToHome = onNavigateToHome) {
+        if (showVaultSheet) { showVaultSheet = false; true } else false
+    }
 
     Column(
         modifier = Modifier
@@ -44,6 +51,7 @@ fun FilesScreen(
         ChatGPTTopAppBar(
             selectedModel = selectedVault,
             onMenuClick = onOpenDrawer,
+            onBackClick = onNavigateToHome,
             onModelClick = { showVaultSheet = true },
             moreActions = listOf(
                 Triple("Index all", Icons.Default.DoneAll) { android.widget.Toast.makeText(context, "Indexing all", android.widget.Toast.LENGTH_SHORT).show() },

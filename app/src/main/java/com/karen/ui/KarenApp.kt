@@ -83,6 +83,28 @@ fun KarenApp() {
         var onboarded by remember { mutableStateOf(UserPrefs.isOnboarded(context)) }
 
         var currentScreen by remember { mutableStateOf("Home") }
+        var showModelSheet by remember { mutableStateOf(false) }
+        var showProfileSheet by remember { mutableStateOf(false) }
+        // Chat history plumbing: bump to refresh the drawer list, openChatId to
+        // load a saved conversation, newChatSignal for drawer "New chat" in Chat.
+        var historyVersion by remember { mutableStateOf(0) }
+        var openChatId by remember { mutableStateOf<String?>(null) }
+        var newChatSignal by remember { mutableStateOf(0) }
+
+        // Section eyebrow shown under the wordmark, mirroring the design comps.
+        val headerEyebrow = when (currentScreen) {
+            "Home" -> "Dashboard"
+            "Chat" -> "Dialogue"
+            "Workspace" -> "Canvas"
+            "Files" -> "Vault"
+            "Memory" -> "Memory"
+            "ModelManager" -> "Models"
+            "Performance" -> "Performance"
+            "Hardware" -> "Performance"
+            "StudyBook" -> "Study"
+            "Settings" -> "Settings"
+            else -> "Dashboard"
+        }
 
         if (!onboarded) {
             OnboardingScreen(onDone = { onboarded = true })
@@ -101,6 +123,19 @@ fun KarenApp() {
                         onNavigate = { screen ->
                             currentScreen = screen
                         },
+                        historyVersion = historyVersion,
+                        onNewChat = {
+                            newChatSignal++
+                            currentScreen = "Chat"
+                        },
+                        onOpenConversation = { id ->
+                            openChatId = id
+                            currentScreen = "Chat"
+                        },
+                        onDeleteConversation = { id ->
+                            ChatHistoryStore.deleteConversation(context, id)
+                            historyVersion++
+                        },
                         onCloseDrawer = {
                             coroutineScope.launch { drawerState.close() }
                         }
@@ -117,9 +152,10 @@ fun KarenApp() {
                 Scaffold(
                     bottomBar = {
                         if (currentScreen != "Chat") {
-                            MinimalistBottomNav(
+                            KNavigationDock(
                                 currentScreen = currentScreen,
-                                onSelectScreen = { currentScreen = it }
+                                onSelectScreen = { currentScreen = it },
+                                onOpenVoice = { currentScreen = "Voice" }
                             )
                         }
                     },
@@ -139,14 +175,21 @@ fun KarenApp() {
                             "Chat" -> ChatScreen(
                                 onOpenDrawer = { coroutineScope.launch { drawerState.open() } },
                                 onNavigateToVoice = { currentScreen = "Voice" },
-                                onNavigateToHome = { currentScreen = "Home" }
+                                onNavigateToHome = { currentScreen = "Home" },
+                                onNavigateToModelManager = { currentScreen = "ModelManager" },
+                                openConversationId = openChatId,
+                                newChatSignal = newChatSignal,
+                                onConversationOpened = { openChatId = null },
+                                onHistoryChanged = { historyVersion++ }
                             )
                             "Workspace" -> WorkspaceScreen(
-                                onOpenDrawer = { coroutineScope.launch { drawerState.open() } }
+                                onOpenDrawer = { coroutineScope.launch { drawerState.open() } },
+                                onNavigateToHome = { currentScreen = "Home" }
                             )
                             "Files" -> FilesScreen(
                                 onOpenDrawer = { coroutineScope.launch { drawerState.open() } },
-                                onNavigate = { currentScreen = it }
+                                onNavigate = { currentScreen = it },
+                                onNavigateToHome = { currentScreen = "Home" }
                             )
                             "Memory" -> MemoryScreen(
                                 onOpenDrawer = { coroutineScope.launch { drawerState.open() } }
@@ -163,10 +206,33 @@ fun KarenApp() {
                             "StudyBook" -> StudyBookScreen(
                                 onOpenDrawer = { coroutineScope.launch { drawerState.open() } }
                             )
+                            "ModelImport" -> ModelImportScreen(
+                                onOpenDrawer = { coroutineScope.launch { drawerState.open() } }
+                            )
+                            "ModelExport" -> ModelExportScreen(
+                                onOpenDrawer = { coroutineScope.launch { drawerState.open() } }
+                            )
+                            "MemoryTransfer" -> MemoryTransferScreen(
+                                onOpenDrawer = { coroutineScope.launch { drawerState.open() } }
+                            )
+                            "BackupPackage" -> BackupPackageScreen(
+                                onOpenDrawer = { coroutineScope.launch { drawerState.open() } }
+                            )
+                            "StorageManager" -> StorageManagerScreen(
+                                onOpenDrawer = { coroutineScope.launch { drawerState.open() } }
+                            )
+                            "Migration" -> MigrationScreen(
+                                onOpenDrawer = { coroutineScope.launch { drawerState.open() } }
+                            )
                             else -> ChatScreen(
                                 onOpenDrawer = { coroutineScope.launch { drawerState.open() } },
                                 onNavigateToVoice = { currentScreen = "Voice" },
-                                onNavigateToHome = { currentScreen = "Home" }
+                                onNavigateToHome = { currentScreen = "Home" },
+                                onNavigateToModelManager = { currentScreen = "ModelManager" },
+                                openConversationId = openChatId,
+                                newChatSignal = newChatSignal,
+                                onConversationOpened = { openChatId = null },
+                                onHistoryChanged = { historyVersion++ }
                             )
                         }
                     }
@@ -176,99 +242,4 @@ fun KarenApp() {
     }
 }
 
-/**
- * Minimalist Bottom Bar with subtle pill indicators and direct Voice mode access.
- */
-@Composable
-private fun MinimalistBottomNav(
-    currentScreen: String,
-    onSelectScreen: (String) -> Unit
-) {
-    val colors = LocalKarenColors.current
 
-    val navItems = listOf(
-        Triple("Home", Icons.Default.Home, "Home"),
-        Triple("Chat", Icons.Default.ChatBubble, "Chat"),
-        Triple("Voice", Icons.Default.GraphicEq, "Voice"),
-        Triple("Canvas", Icons.Default.Terminal, "Workspace"),
-        Triple("Files", Icons.Default.Folder, "Files")
-    )
-
-    Column {
-        // Glowing top divider
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(1.dp)
-                .background(
-                    androidx.compose.ui.graphics.Brush.horizontalGradient(
-                        colors = listOf(
-                            Color.Transparent,
-                            (if (colors.isDark) Color(0xFFE5E5EA) else Color(0xFF8E8E93)).copy(alpha = 0.35f),
-                            Color.Transparent
-                        )
-                    )
-                )
-        )
-        Surface(
-            color = colors.background,
-        ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .navigationBarsPadding()
-                .height(60.dp)
-                .padding(horizontal = 8.dp),
-            horizontalArrangement = Arrangement.SpaceAround,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            navItems.forEach { (label, icon, route) ->
-                val isSelected = currentScreen == route
-                val isVoice = route == "Voice"
-
-                if (isVoice) {
-                    // Elevated pill button for voice
-                    Box(
-                        modifier = Modifier
-                            .size(42.dp)
-                            .clip(CircleShape)
-                            .background(if (colors.isDark) Color(0xFF1C1C1E) else Color(0xFFE9E9EB))
-                            .border(1.dp, colors.border, CircleShape)
-                            .clickable { onSelectScreen(route) },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = icon,
-                            contentDescription = label,
-                            tint = colors.textPrimary,
-                            modifier = Modifier.size(22.dp)
-                        )
-                    }
-                } else {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .clickable { onSelectScreen(route) }
-                            .padding(horizontal = 12.dp, vertical = 6.dp)
-                    ) {
-                        Icon(
-                            imageVector = icon,
-                            contentDescription = label,
-                            tint = if (isSelected) colors.accentGreen else colors.textMuted,
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Spacer(Modifier.height(2.dp))
-                        Text(
-                            text = label,
-                            color = if (isSelected) colors.accentGreen else colors.textMuted,
-                            fontSize = 11.sp,
-                            fontWeight = if (isSelected) androidx.compose.ui.text.font.FontWeight.SemiBold else androidx.compose.ui.text.font.FontWeight.Normal
-                        )
-                    }
-                }
-            }
-        }
-        }
-    }
-}

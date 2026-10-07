@@ -165,7 +165,7 @@ fun WorkspaceScreen(
     // System back: dismiss dialog first, then step out of the open project,
     // then route to Home — same in-app behaviour as the chat screen.
     // Cloud model for project chat — same selection as Chat (locals + keyed APIs).
-    var selectedModel by remember { mutableStateOf(UserPrefs.models(ctx).firstOrNull { !isCloudProviderName(it) } ?: "Karen 4B") }
+    var selectedModel by remember { mutableStateOf(UserPrefs.models(ctx).firstOrNull { !isCloudProviderName(it) } ?: modelCatalog.first().name) }
     var effort by remember { mutableStateOf(UserPrefs.defaultEffort(ctx)) }
     var showModelSheet by remember { mutableStateOf(false) }
 
@@ -238,7 +238,12 @@ fun WorkspaceScreen(
                             else -> null
                         }
                     }
-                    val reply = cloud.complete(cloudKey, history.takeLast(20), maxTokensFor(effort))
+                    val reply = cloud.complete(
+                        cloudKey,
+                        history.takeLast(20),
+                        maxTokensFor(effort),
+                        thinkingBudget = if (cloud.reasoning) thinkingBudgetFor(effort) else null
+                    )
                     project.chat.add(ProjectChat("assistant", reply))
                 } catch (e: CloudApiException) {
                     project.chat.add(
@@ -271,7 +276,7 @@ fun WorkspaceScreen(
             onMenuClick = onOpenDrawer,
             onModelClick = { showModelSheet = true },
             onBackClick = onNavigateToHome,
-            effort = effort,
+            effort = if (findCloudProviderByName(selectedModel)?.reasoning == true) effort else null,
             efforts = listOf("Low", "Medium", "High", "Max", "Extreme", "Theme"),
             onSelectEffort = { effort = it },
             moreActions = listOf(

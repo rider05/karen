@@ -339,6 +339,7 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                 Spacer(Modifier.height(6.dp))
                 var incognito by remember { mutableStateOf(false) }
                 var wipeOnExit by remember { mutableStateOf(false) }
+                var webSearch by remember { mutableStateOf(UserPrefs.webSearchEnabled(context)) }
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -369,6 +370,29 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                             Text("Clear cache when app closes", color = colors.textMuted, fontSize = 11.5.sp)
                         }
                         Switch(checked = wipeOnExit, onCheckedChange = { wipeOnExit = it }, colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = colors.accentGreen, uncheckedThumbColor = colors.textMuted, uncheckedTrackColor = colors.surfaceHover))
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Web Search", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
+                            Text(
+                                if (UserPrefs.webSearchAsked(context)) "Look up fresh info online when needed"
+                                else "Asks permission on first use",
+                                color = colors.textMuted,
+                                fontSize = 11.5.sp
+                            )
+                        }
+                        Switch(
+                            checked = webSearch,
+                            onCheckedChange = {
+                                webSearch = it
+                                UserPrefs.setWebSearchEnabled(context, it)
+                            },
+                            colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = colors.accentGreen, uncheckedThumbColor = colors.textMuted, uncheckedTrackColor = colors.surfaceHover)
+                        )
                     }
                 }
             }

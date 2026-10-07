@@ -36,6 +36,9 @@ app/build/outputs/
 *.apk
 *.aab
 
+# llama.cpp sources (fetched per AGENTS.md — too large to version)
+app/src/main/cpp/llama.cpp/
+
 # OS
 Thumbs.db
 .DS_Store

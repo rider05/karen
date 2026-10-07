@@ -59,7 +59,7 @@ import androidx.compose.ui.unit.sp
 fun KConsoleHeader(
     eyebrow: String,
     modifier: Modifier = Modifier,
-    modelLabel: String = "Karen 4B Q4",
+    modelLabel: String = "Qwen 3.5 2B",
     modelState: String = "Offline",
     modelOnline: Boolean = true,
     onMenuClick: () -> Unit = {},

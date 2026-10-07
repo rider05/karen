@@ -168,7 +168,7 @@ fun ModelExportScreen(onOpenDrawer: () -> Unit = {}) {
     Column { ManagerHeader("Model Export", onOpenDrawer) }
     KScreen(title = "Portable Model Export", subtitle = "§91.3 · §91.4 — UI preview") {
         Section(title = "Selected model") {
-            KCard("karen-4b-q4.gguf", "2.72 GB · Q4_K_M · installed")
+            KCard("Qwen3.5-2B-IQ4_XS.gguf", "1.1 GB · IQ4_XS · installed")
         }
         Section(title = "Destination") {
             KCard("Not chosen", "User-selected storage via system picker (not wired)")
@@ -188,8 +188,8 @@ fun ModelExportScreen(onOpenDrawer: () -> Unit = {}) {
             }
             if (includeMetadata) {
                 KCard(
-                    "karen-4b-q4.json",
-                    "model_id · format GGUF · quant Q4_K_M · version 1.0.0 · sha256 · exported_at · source"
+                    "Qwen3.5-2B-IQ4_XS.json",
+                    "model_id · format GGUF · quant IQ4_XS · version 1.0.0 · sha256 · exported_at · source"
                 )
             }
             KV("Installed copy", "Kept — never auto-deleted", hl = true)

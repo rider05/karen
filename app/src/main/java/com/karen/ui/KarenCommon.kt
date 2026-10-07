@@ -140,7 +140,7 @@ fun KarenHomeBackHandler(
  */
 @Composable
 fun ChatGPTTopAppBar(
-    selectedModel: String = "Karen 4B",
+    selectedModel: String = "Qwen 3.5 2B",
     onMenuClick: () -> Unit = {},
     onModelClick: () -> Unit = {},
     onNewChatClick: () -> Unit = {},
@@ -1223,7 +1223,7 @@ fun ModelSelectorSheet(
                                         .padding(horizontal = 6.dp, vertical = 2.dp)
                                 ) {
                                     Text(
-                                        text = "Live",
+                                        text = if (provider.reasoning) "Live · Thinks" else "Live",
                                         color = colors.accentBlue,
                                         fontSize = 10.5.sp,
                                         fontWeight = FontWeight.Bold

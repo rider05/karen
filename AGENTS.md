@@ -49,5 +49,9 @@ KarenHomeBackHandler(onNavigateToHome = onNavigateToHome) {
   masked display (`••••abcd`), explicit Save/Remove. Never log keys.
   Live calls live in `ui/CloudChatApi.kt` (HttpURLConnection + org.json, no new
   deps); chat routes to a keyed provider selected in the model sheet.
+  Reasoning providers (`reasoning = true`) get effort-driven thinking budgets
+  and show the effort pill; all other models hide it.
 - Text inputs: every `OutlinedTextField` must use `karenFieldColors(colors)`
   (`ui/KarenCommon.kt`) — M3 defaults are light-scheme and vanish on dark.
+- Web search (`ui/WebSearch.kt`): keyless DDG + Wikipedia, heuristic trigger,
+  one-time consent dialog (`webSearchAsked`), Settings → Privacy toggle.

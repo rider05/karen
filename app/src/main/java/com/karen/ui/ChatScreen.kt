@@ -23,6 +23,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.karen.rememberVoiceStt
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CompletableDeferred
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.border
@@ -84,22 +85,36 @@ fun ChatScreen(
     var input by remember { mutableStateOf("") }
     var showModelSheet by remember { mutableStateOf(false) }
     var showAttachmentSheet by remember { mutableStateOf(false) }
+    var isGenerating by remember { mutableStateOf(false) }
+    var streamingId by remember { mutableStateOf<String?>(null) }
+    var streamingContent by remember { mutableStateOf(false) }
+    var cancelGeneration by remember { mutableStateOf(false) }
+    var streamStartMs by remember { mutableStateOf(0L) }
+    var genStats by remember { mutableStateOf<String?>(null) }
+    var genLive by remember { mutableStateOf<String?>(null) }
+    // One-time web-search consent: gate suspends the send until the user answers.
+    var webConsentGate by remember { mutableStateOf<CompletableDeferred<Boolean>?>(null) }
+    var webConsentPreview by remember { mutableStateOf<String?>(null) }
 
-    // System back button: dismiss open sheets first, otherwise route to Home
+    // System back button: dismiss open sheets first, stop generation, else Home
     androidx.activity.compose.BackHandler {
         when {
             showModelSheet -> showModelSheet = false
             showAttachmentSheet -> showAttachmentSheet = false
+            webConsentGate != null -> {
+                webConsentGate?.complete(false)
+                webConsentGate = null
+                webConsentPreview = null
+            }
+            isGenerating -> { cancelGeneration = true; KarenLlama.cancel() }
             else -> onNavigateToHome()
         }
     }
     var resettingNewChat by remember { mutableStateOf(false) }
     var temporaryChat by remember { mutableStateOf(false) }
     val karenCtx = androidx.compose.ui.platform.LocalContext.current
+    val device = com.karen.rememberDeviceTelemetry()
     var effort by remember { mutableStateOf(UserPrefs.defaultEffort(karenCtx)) }
-    var streamingText by remember { mutableStateOf<String?>(null) }
-    var cancelGeneration by remember { mutableStateOf(false) }
-    var streamStartMs by remember { mutableStateOf(0L) }
 
     val voiceStt = rememberVoiceStt(
         onResult = { speechText ->
@@ -110,7 +125,7 @@ fun ChatScreen(
     // ---------- File upload / attachments ----------
     val context = LocalContext.current
     // Default to the first downloaded weight; selection lists installed-only.
-    var selectedModel by remember { mutableStateOf(UserPrefs.models(context).firstOrNull { !isCloudProviderName(it) } ?: "Karen 4B") }
+    var selectedModel by remember { mutableStateOf(UserPrefs.models(context).firstOrNull { !isCloudProviderName(it) } ?: modelCatalog.first().name) }
     var attachments by remember { mutableStateOf(listOf<Attachment>()) }
     var pendingCameraUri by remember { mutableStateOf<Uri?>(null) }
 
@@ -169,21 +184,79 @@ fun ChatScreen(
     /** Writes the current conversation to local history (skipped for temporary chats). */
     fun persist() {
         if (temporaryChat || messages.isEmpty()) return
-        ChatHistoryStore.saveConversation(context, conversationId, messages.toList())
+        val snapshot = messages.toList()
+        // Never archive a bare status/blank provisional bubble mid-generation.
+        val cleaned = if (isGenerating && streamingId != null && !streamingContent)
+            snapshot.filter { (it as? ChatItem.Assistant)?.id != streamingId } else snapshot
+        if (cleaned.isEmpty()) return
+        ChatHistoryStore.saveConversation(context, conversationId, cleaned)
         onHistoryChanged()
     }
 
-    /** Typing-effect playback shared by mock and live-cloud replies. */
-    suspend fun playOut(text: String) {
-        cancelGeneration = false
-        streamStartMs = System.currentTimeMillis()
-        streamingText = ""
+    /** Updates the in-list provisional reply (the reply streams in place). */
+    fun setStreamingText(id: String, text: String) {
+        val i = messages.indexOfFirst { (it as? ChatItem.Assistant)?.id == id }
+        if (i >= 0) {
+            val cur = messages[i] as ChatItem.Assistant
+            if (cur.text != text) messages[i] = cur.copy(text = text)
+        }
+    }
+
+    fun setStats(finalLen: Int) {
+        val elapsed = (System.currentTimeMillis() - streamStartMs) / 1000.0
+        val tok = finalLen / 4
+        val rate = if (elapsed > 0) tok / elapsed else 0.0
+        genStats = "%.1fs · ~%d tok · %.1f tok/s".format(elapsed, tok, rate)
+        genLive = null
+    }
+
+    /** Typing-effect playback writing straight into the chat-list message. */
+    suspend fun playOut(id: String, text: String) {
+        streamingContent = text.isNotEmpty()
+        var n = 0
         for (idx in text.indices) {
             if (cancelGeneration) break
-            streamingText = text.substring(0, idx + 1)
+            setStreamingText(id, text.substring(0, idx + 1))
+            n++
+            if (n % 8 == 0) {
+                try { listState.scrollToItem(messages.size - 1) } catch (_: Exception) {}
+            }
             kotlinx.coroutines.delay(effortDelayMs(effort))
         }
-        streamingText = null
+    }
+
+    /** End-of-generation after Stop: keep partial text, drop bare placeholders. */
+    suspend fun cancelSettle(id: String) {
+        if (!streamingContent) {
+            messages.removeAll { (it as? ChatItem.Assistant)?.id == id }
+        } else {
+            persist()
+        }
+        isGenerating = false
+        streamingId = null
+        genLive = null
+        listState.animateScrollToItem(messages.size - 1)
+    }
+
+    /** End-of-generation on success: stamp stats and archive. */
+    suspend fun completeSettle(finalLen: Int) {
+        setStats(finalLen)
+        persist()
+        isGenerating = false
+        streamingId = null
+        genLive = null
+        listState.animateScrollToItem(messages.size - 1)
+    }
+
+    /** Failed turn: show the error inline in the provisional bubble. */
+    suspend fun errorSettle(id: String, text: String) {
+        streamingContent = true
+        setStreamingText(id, text)
+        persist()
+        isGenerating = false
+        streamingId = null
+        genLive = null
+        listState.animateScrollToItem(messages.size - 1)
     }
 
     // Open a saved conversation from the history list.
@@ -205,6 +278,19 @@ fun ChatScreen(
         conversationId = System.currentTimeMillis().toString()
     }
 
+    // Live elapsed/token readout above the composer while a reply streams in.
+    LaunchedEffect(isGenerating) {
+        if (!isGenerating) return@LaunchedEffect
+        while (true) {
+            val id = streamingId
+            val len = messages.firstOrNull { (it as? ChatItem.Assistant)?.id == id }
+                ?.let { (it as ChatItem.Assistant).text.length } ?: 0
+            val elapsed = (System.currentTimeMillis() - streamStartMs) / 1000.0
+            genLive = "%.1fs · ~%d tok…".format(elapsed, len / 4)
+            kotlinx.coroutines.delay(250)
+        }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -215,12 +301,13 @@ fun ChatScreen(
             modifier = Modifier.fillMaxSize()
         ) {
             // ChatGPT Top App Bar
+            // Effort pill only for thinking models; otherwise it stays hidden.
             ChatGPTTopAppBar(
                 selectedModel = selectedModel,
                 onMenuClick = onOpenDrawer,
                 onModelClick = { showModelSheet = true },
                 onBackClick = onNavigateToHome,
-                effort = effort,
+                effort = if (findCloudProviderByName(selectedModel)?.reasoning == true) effort else null,
                 efforts = listOf("Low", "Medium", "High", "Max", "Extreme", "Theme"),
                 onSelectEffort = { effort = it },
                 onNewChatClick = {
@@ -451,40 +538,55 @@ fun ChatScreen(
             }
         }
 
-        // Live streaming response bubble (while generating)
-        if (streamingText != null) {
-            val tokens = streamingText!!.length / 4
-            val elapsedSec = ((System.currentTimeMillis() - streamStartMs) / 1000).coerceAtLeast(1)
-            Column(
+        // Slim stop pill while generating (the reply itself streams inline above).
+        if (isGenerating) {
+            Row(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .navigationBarsPadding()
                     .imePadding()
-                    .padding(bottom = 96.dp, start = 14.dp, end = 14.dp)
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(14.dp))
+                    .padding(bottom = 96.dp)
+                    .clip(RoundedCornerShape(20.dp))
                     .background(colors.surface)
-                    .border(1.dp, colors.border, RoundedCornerShape(14.dp))
-                    .padding(12.dp)
-            ) {
-                Text(streamingText!!, color = colors.textPrimary, fontSize = 14.sp, lineHeight = 20.sp)
-                Spacer(Modifier.height(4.dp))
-                Text("~${elapsedSec}s to respond · ~$tokens tokens", color = colors.textMuted, fontSize = 10.5.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End
-                ) {
-                    TextButton(onClick = { cancelGeneration = true }) {
-                        Text("Stop generating", color = colors.accentRed, fontSize = 12.sp)
+                    .border(1.dp, colors.border, RoundedCornerShape(20.dp))
+                    .clickable {
+                        cancelGeneration = true
+                        KarenLlama.cancel()
+                        webConsentGate?.complete(false)
+                        webConsentGate = null
+                        webConsentPreview = null
                     }
-                }
+                    .padding(horizontal = 16.dp, vertical = 9.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                CircularProgressIndicator(color = colors.accentGreen, strokeWidth = 2.dp, modifier = Modifier.size(13.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("Stop", color = colors.textPrimary, fontSize = 12.5.sp, fontWeight = FontWeight.Medium)
             }
         }
 
-        ChatGPTFloatingComposer(
-            value = input,
-            onValueChange = { input = it },
-            onSend = {
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .imePadding()
+        ) {
+            // Last-response stats: small readout pinned top-left above the composer.
+            val statsLine = genLive ?: genStats
+            if (statsLine != null) {
+                Row(
+                    modifier = Modifier.padding(start = 22.dp, bottom = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Default.Timer, contentDescription = null, tint = colors.textMuted, modifier = Modifier.size(12.dp))
+                    Spacer(Modifier.width(5.dp))
+                    Text(statsLine, color = colors.textMuted, fontSize = 10.5.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
+                }
+            }
+            ChatGPTFloatingComposer(
+                value = input,
+                onValueChange = { input = it },
+                onSend = {
                 val userText = input.trim()
                 if (userText.isNotBlank() || attachments.isNotEmpty()) {
                     input = ""
@@ -494,75 +596,153 @@ fun ChatScreen(
                     messages.add(ChatItem.User(id = "user_$newId", text = userText.ifBlank { sentAttachments.joinToString(", ") { it.name } }, attachments = sentAttachments))
 
                     // Live cloud model when one is selected (key stored in Model Manager),
-                    // otherwise the local mock response.
+                    // real on-device inference for downloaded weights, else the mock.
                     val cloud = findCloudProviderByName(selectedModel)
                     val cloudKey = cloud?.let { UserPrefs.apiKey(context, it.id) }.orEmpty()
+                    val weightFile = if (cloud == null) ModelDownloader.weightFileFor(context, selectedModel) else null
 
                     coroutineScope.launch {
+                        cancelGeneration = false
+                        streamStartMs = System.currentTimeMillis()
+                        streamingContent = false
+                        genLive = null
+                        val aid = "asst_$newId"
+                        messages.add(ChatItem.Assistant(id = aid, text = ""))
+                        streamingId = aid
+                        isGenerating = true
                         listState.animateScrollToItem(messages.size - 1)
+                        // Web search tool: runs when the message needs fresh info,
+                        // gated by the one-time permission dialog on first use.
+                        var web: String? = null
+                        val wantSearch = userText.isNotBlank() && WebSearch.needsSearch(userText) && UserPrefs.webSearchEnabled(context)
+                        if (wantSearch) {
+                            var allowed = true
+                            if (!UserPrefs.webSearchAsked(context)) {
+                                val gate = CompletableDeferred<Boolean>()
+                                webConsentPreview = userText
+                                webConsentGate = gate
+                                allowed = try { gate.await() } catch (_: Exception) { false }
+                                webConsentPreview = null
+                                webConsentGate = null
+                                if (cancelGeneration) {
+                                    cancelSettle(aid)
+                                    return@launch
+                                }
+                            }
+                            if (allowed) {
+                                setStreamingText(aid, "Searching the web…")
+                                web = try {
+                                    WebSearch.search(WebSearch.cleanQuery(userText))
+                                        .takeIf { it.isNotEmpty() }
+                                        ?.let(WebSearch::formatForModel)
+                                } catch (_: Exception) { null }
+                                if (cancelGeneration) {
+                                    cancelSettle(aid)
+                                    return@launch
+                                }
+                            }
+                        }
                         if (cloud != null && cloudKey.isNotBlank()) {
-                            cancelGeneration = false
-                            streamStartMs = System.currentTimeMillis()
-                            streamingText = "Contacting ${cloud.name}…"
+                            setStreamingText(aid, "Contacting ${cloud.name}…")
                             try {
-                                val history = messages.mapNotNull { item ->
+                                val base = messages.mapNotNull { item ->
                                     when (item) {
                                         is ChatItem.User -> "user" to item.text
-                                        is ChatItem.Assistant -> "assistant" to item.text
+                                        is ChatItem.Assistant -> if (item.id == aid) null else "assistant" to item.text
                                     }
                                 }.takeLast(20)
-                                val reply = cloud.complete(cloudKey, history, maxTokensFor(effort))
-                                if (!cancelGeneration) {
-                                    playOut(reply)
-                                    if (!cancelGeneration) {
-                                        messages.add(
-                                            ChatItem.Assistant(
-                                                id = "asst_$newId",
-                                                text = reply
-                                            )
-                                        )
-                                        persist()
-                                    }
+                                val history = if (web != null) {
+                                    (base + ("user" to "Use these fresh web results if relevant:\n$web")).takeLast(20)
+                                } else base
+                                val reply = cloud.complete(
+                                    cloudKey,
+                                    history,
+                                    maxTokensFor(effort),
+                                    thinkingBudget = if (cloud.reasoning) thinkingBudgetFor(effort) else null
+                                )
+                                if (cancelGeneration) {
+                                    cancelSettle(aid)
+                                } else {
+                                    playOut(aid, reply)
+                                    if (cancelGeneration) cancelSettle(aid) else completeSettle(reply.length)
                                 }
                             } catch (e: CloudApiException) {
-                                messages.add(
-                                    ChatItem.Assistant(
-                                        id = "asst_${newId}_err",
-                                        text = "⚠ ${cloud.name} error (HTTP ${e.status}): ${e.message}"
-                                    )
-                                )
-                                persist()
+                                errorSettle(aid, "⚠ ${cloud.name} error (HTTP ${e.status}): ${e.message}")
                             } catch (e: Exception) {
-                                messages.add(
-                                    ChatItem.Assistant(
-                                        id = "asst_${newId}_err",
-                                        text = "⚠ Could not reach ${cloud.name} — check internet and your API key. (${e.message})"
-                                    )
-                                )
-                                persist()
+                                errorSettle(aid, "⚠ Could not reach ${cloud.name} — check internet and your API key. (${e.message})")
                             }
-                            streamingText = null
-                            listState.animateScrollToItem(messages.size - 1)
+                        } else if (weightFile != null) {
+                            // Real on-device inference through the bundled llama.cpp core.
+                            if (!KarenLlama.ready) {
+                                errorSettle(aid, "Local runtime failed to load on this device.")
+                            } else if (UserPrefs.thermalGuard(context) && device.batteryTempC >= UserPrefs.thermalLimitC(context)) {
+                                errorSettle(
+                                    aid,
+                                    "Paused by Thermal Guard — battery ${"%.0f".format(device.batteryTempC)}°C " +
+                                        "is at/above your ${UserPrefs.thermalLimitC(context).toInt()}°C limit. Let the phone cool down."
+                                )
+                            } else {
+                                setStreamingText(aid, if (KarenLlama.isLoaded(selectedModel)) "Thinking on-device…" else "Loading $selectedModel…")
+                                try {
+                                    val threads = maxOf(2, minOf(6, Runtime.getRuntime().availableProcessors()))
+                                    val loaded = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                        KarenLlama.ensureLoaded(weightFile, selectedModel, 2048, threads)
+                                    }
+                                    if (!loaded) {
+                                        if (cancelGeneration) cancelSettle(aid)
+                                        else errorSettle(aid, "Could not load $selectedModel into RAM.")
+                                    } else if (cancelGeneration) {
+                                        cancelSettle(aid)
+                                    } else {
+                                        setStreamingText(aid, "Thinking on-device…")
+                                        val basePairs = messages.mapNotNull { item ->
+                                            when (item) {
+                                                is ChatItem.User -> "user" to item.text
+                                                is ChatItem.Assistant -> if (item.id == aid) null else "assistant" to item.text
+                                            }
+                                        }
+                                        val trimmedPairs = if (web != null) {
+                                            (basePairs + ("user" to "Use these fresh web results if relevant:\n$web")).takeLast(10)
+                                        } else basePairs.takeLast(10)
+                                        val reply = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                            KarenLlama.complete(
+                                                "You are Karen, a concise on-device assistant.",
+                                                trimmedPairs.map { it.first }.toTypedArray(),
+                                                trimmedPairs.map { it.second }.toTypedArray(),
+                                                maxTokensFor(effort)
+                                            )
+                                        }
+                                        if (cancelGeneration) {
+                                            cancelSettle(aid)
+                                        } else if (reply.isNotBlank()) {
+                                            playOut(aid, reply)
+                                            if (cancelGeneration) cancelSettle(aid) else completeSettle(reply.length)
+                                        } else {
+                                            errorSettle(aid, "The model returned an empty reply.")
+                                        }
+                                    }
+                                } catch (e: Exception) {
+                                    errorSettle(aid, "Local model error: ${e.message}")
+                                }
+                            }
                         } else {
                             // Simulate Karen on-device response (token streaming)
-                            kotlinx.coroutines.delay(400)
                             val fileNote = if (sentAttachments.isNotEmpty()) {
                                 val names = sentAttachments.joinToString(", ") { it.name }
                                 " I received ${sentAttachments.size} file(s): $names. Files are stored locally in the vault — 0 bytes sent externally."
                             } else ""
-                            val fullText = "No data found — connect a local model in Model Manager.$fileNote"
-                            playOut(fullText)
-                            if (!cancelGeneration) {
-                                messages.add(
-                                    ChatItem.Assistant(
-                                        id = "asst_$newId",
-                                        text = fullText
-                                    )
-                                )
-                                persist()
+                            val fullText = if (web != null) {
+                                "Fresh web results:\n$web"
+                            } else {
+                                "No data found — connect a local model in Model Manager.$fileNote"
                             }
-                            streamingText = null
-                            listState.animateScrollToItem(messages.size - 1)
+                            kotlinx.coroutines.delay(400)
+                            if (cancelGeneration) {
+                                cancelSettle(aid)
+                            } else {
+                                playOut(aid, fullText)
+                                if (cancelGeneration) cancelSettle(aid) else completeSettle(fullText.length)
+                            }
                         }
                     }
                 }
@@ -574,11 +754,9 @@ fun ChatScreen(
             onVoiceModeClick = onNavigateToVoice,
             isListening = voiceStt.state.isListening,
             listeningText = voiceStt.state.partialText,
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .navigationBarsPadding()
-                .imePadding()
+            modifier = Modifier.fillMaxWidth()
         )
+        }
 
         // Model Selector Bottom Sheet
         if (showModelSheet) {
@@ -587,6 +765,44 @@ fun ChatScreen(
                 onSelectModel = { selectedModel = it },
                 onDismiss = { showModelSheet = false },
                 onOpenModelManager = onNavigateToModelManager
+            )
+        }
+
+        // One-time web search permission (asked at most once ever).
+        val consentQuery = webConsentPreview
+        if (webConsentGate != null && consentQuery != null) {
+            AlertDialog(
+                onDismissRequest = {
+                    // Dismissed without answering: ask again next time.
+                    webConsentGate?.complete(false)
+                    webConsentGate = null
+                    webConsentPreview = null
+                },
+                title = { Text("Allow web search?") },
+                text = {
+                    Text(
+                        "Karen wants to search the web for:\n\"${consentQuery.take(100)}\"\n\nOnly the query leaves the device. You will only be asked this once — control it later in Settings → Privacy.",
+                        fontSize = 13.sp
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        UserPrefs.setWebSearchAsked(context, true)
+                        UserPrefs.setWebSearchEnabled(context, true)
+                        webConsentGate?.complete(true)
+                        webConsentGate = null
+                        webConsentPreview = null
+                    }) { Text("Allow") }
+                },
+                dismissButton = {
+                    TextButton(onClick = {
+                        UserPrefs.setWebSearchAsked(context, true)
+                        UserPrefs.setWebSearchEnabled(context, false)
+                        webConsentGate?.complete(false)
+                        webConsentGate = null
+                        webConsentPreview = null
+                    }) { Text("Don't allow") }
+                }
             )
         }
 

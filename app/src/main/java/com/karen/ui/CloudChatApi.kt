@@ -26,19 +26,31 @@ data class CloudProvider(
     val note: String,
     val apiBase: String,
     val defaultModel: String,
-    val protocol: CloudProtocol
+    val protocol: CloudProtocol,
+    /** True when the model reasons: effort controls thinking depth, and the
+        effort pill is shown. Non-reasoning models hide the pill. */
+    val reasoning: Boolean = false
 )
 
 val cloudProviders = listOf(
     CloudProvider("openai", "OpenAI GPT-4o", "platform.openai.com/api-keys", "GPT-4o + o-series via API", "https://api.openai.com/v1", "gpt-4o", CloudProtocol.OPENAI),
-    CloudProvider("anthropic", "Anthropic Claude", "console.anthropic.com", "Claude Sonnet + Opus via API", "https://api.anthropic.com/v1", "claude-sonnet-4-20250514", CloudProtocol.ANTHROPIC),
+    CloudProvider("anthropic", "Anthropic Claude", "console.anthropic.com", "Claude Sonnet + Opus via API", "https://api.anthropic.com/v1", "claude-sonnet-4-20250514", CloudProtocol.ANTHROPIC, reasoning = true),
     CloudProvider("gemini", "Google Gemini", "aistudio.google.com/apikey", "Gemini Flash + Pro via API", "https://generativelanguage.googleapis.com/v1beta", "gemini-2.0-flash", CloudProtocol.GEMINI),
     CloudProvider("mistral", "Mistral Large", "console.mistral.ai", "Mistral Large + Codestral", "https://api.mistral.ai/v1", "mistral-large-latest", CloudProtocol.OPENAI),
     CloudProvider("grok", "xAI Grok", "console.x.ai", "Grok 3 + mini via API", "https://api.x.ai/v1", "grok-3", CloudProtocol.OPENAI),
-    CloudProvider("openrouter", "OpenRouter", "openrouter.ai/keys", "One key → 200+ models gateway", "https://openrouter.ai/api/v1", "openrouter/auto", CloudProtocol.OPENAI),
+    CloudProvider("openrouter", "OpenRouter", "openrouter.ai/keys", "One key → 200+ models gateway", "https://openrouter.ai/api/v1", "openrouter/auto", CloudProtocol.OPENAI, reasoning = true),
     CloudProvider("deepseek", "DeepSeek", "platform.deepseek.com", "DeepSeek V3 + R1 via API", "https://api.deepseek.com", "deepseek-chat", CloudProtocol.OPENAI),
     CloudProvider("groq", "Groq", "console.groq.com", "Ultra-low-latency LPU inference", "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile", CloudProtocol.OPENAI)
 )
+
+/** Thinking-token budget per effort level for reasoning models. */
+fun thinkingBudgetFor(effort: String): Int = when (effort) {
+    "Low" -> 1000
+    "High" -> 4000
+    "Max" -> 8000
+    "Extreme" -> 16000
+    else -> 2000
+}
 
 fun findCloudProviderByName(name: String): CloudProvider? =
     cloudProviders.find { it.name == name }
@@ -53,7 +65,9 @@ class CloudApiException(val status: Int, message: String) : Exception(message)
 suspend fun CloudProvider.complete(
     apiKey: String,
     history: List<Pair<String, String>>,
-    maxTokens: Int
+    maxTokens: Int,
+    /** Thinking-token budget for reasoning models; null disables thinking. */
+    thinkingBudget: Int? = null
 ): String = withContext(Dispatchers.IO) {
     val trimmed = history.takeLast(20)
     when (protocol) {
@@ -67,6 +81,12 @@ suspend fun CloudProvider.complete(
                         JSONObject().put("role", role).put("content", text)
                     })
                 )
+                .apply {
+                    // Effort becomes thinking depth on reasoning-capable routes.
+                    if (id == "openrouter" && thinkingBudget != null) {
+                        put("reasoning", JSONObject().put("max_tokens", thinkingBudget))
+                    }
+                }
             val headers = mutableMapOf(
                 "Authorization" to "Bearer $apiKey",
                 "Content-Type" to "application/json"
@@ -85,15 +105,27 @@ suspend fun CloudProvider.complete(
             }
         }
         CloudProtocol.ANTHROPIC -> {
+            // Thinking budget must stay below max_tokens: headroom for the answer.
+            val total = if (thinkingBudget != null) maxOf(maxTokens, thinkingBudget + 1024) else maxTokens
             val body = JSONObject()
                 .put("model", defaultModel)
-                .put("max_tokens", maxTokens)
+                .put("max_tokens", total)
                 .put(
                     "messages",
                     JSONArray(trimmed.map { (role, text) ->
                         JSONObject().put("role", role).put("content", text)
                     })
                 )
+                .apply {
+                    if (thinkingBudget != null) {
+                        put(
+                            "thinking",
+                            JSONObject()
+                                .put("type", "enabled")
+                                .put("budget_tokens", thinkingBudget)
+                        )
+                    }
+                }
             val json = post(
                 URL("$apiBase/messages"),
                 mapOf(

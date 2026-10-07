@@ -26,20 +26,24 @@ data class CatalogModel(
 
 val modelCatalog = listOf(
     CatalogModel(
+        "Qwen2.5 0.5B Fast", "Qwen2.5-0.5B-Instruct-Q4_K_M.gguf", "≈0.4 GB", "Q4_K_M", "1.5 GB",
+        "https://huggingface.co/bartowski/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/Qwen2.5-0.5B-Instruct-Q4_K_M.gguf"
+    ),
+    CatalogModel(
         "Qwen 3.5 2B", "Qwen3.5-2B-IQ4_XS.gguf", "≈1.1 GB", "IQ4_XS", "2.0 GB",
         "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-IQ4_XS.gguf"
     ),
     CatalogModel(
-        "Karen 4B Q4", "karen-4b-q4.gguf", "≈2.5 GB", "Q4_K_M", "2.7 GB",
-        "https://huggingface.co/bartowski/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf"
-    ),
-    CatalogModel(
-        "Karen 2B Lightweight", "karen-2b-q4.gguf", "≈1.0 GB", "Q4_K_M", "2.1 GB",
+        "Qwen2.5 1.5B", "Qwen2.5-1.5B-Instruct-Q4_K_M.gguf", "≈1.0 GB", "Q4_K_M", "2.0 GB",
         "https://huggingface.co/bartowski/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf"
     ),
     CatalogModel(
-        "Karen 9B Reasoning", "karen-9b-q4.gguf", "≈5.4 GB", "Q4_K_M", "7.2 GB",
-        "https://huggingface.co/bartowski/gemma-2-9b-it-GGUF/resolve/main/gemma-2-9b-it-Q4_K_M.gguf"
+        "Qwen2.5 3B", "Qwen2.5-3B-Instruct-Q4_K_M.gguf", "≈1.9 GB", "Q4_K_M", "2.5 GB",
+        "https://huggingface.co/bartowski/Qwen2.5-3B-Instruct-GGUF/resolve/main/Qwen2.5-3B-Instruct-Q4_K_M.gguf"
+    ),
+    CatalogModel(
+        "Qwen2.5 7B", "Qwen2.5-7B-Instruct-Q4_K_M.gguf", "≈4.7 GB", "Q4_K_M", "5.5 GB",
+        "https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf"
     )
 )
 
@@ -69,6 +73,19 @@ object ModelDownloader {
 
     fun modelsDir(ctx: Context): File =
         (ctx.getExternalFilesDir("models") ?: File(ctx.filesDir, "models")).apply { mkdirs() }
+
+    /** Resolves an installed display name to its weight file, or null if missing. */
+    fun weightFileFor(ctx: Context, displayName: String): File? {
+        val dir = modelsDir(ctx)
+        if (isCloudProviderName(displayName)) return null
+        File(dir, displayName).takeIf { it.exists() && it.length() > 0 }?.let { return it }
+        File(dir, "$displayName.gguf").takeIf { it.exists() && it.length() > 0 }?.let { return it }
+        modelCatalog.find { it.name == displayName }?.let {
+            File(dir, it.fileName).takeIf { f -> f.exists() && f.length() > 0 }?.let { return it }
+        }
+        return dir.listFiles()
+            ?.firstOrNull { it.isFile && it.nameWithoutExtension == displayName && it.length() > 0 }
+    }
 
     fun modelFile(ctx: Context, fileName: String): File = File(modelsDir(ctx), fileName)
 

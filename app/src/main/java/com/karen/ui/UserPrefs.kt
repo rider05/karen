@@ -35,6 +35,20 @@ object UserPrefs {
         prefs(ctx).edit().putString(KEY_DEFAULT_EFFORT, value).apply()
     }
 
+    // Web search: enabled by default, but the permission dialog appears
+    // at most once — on the first message that would trigger a search.
+    private const val KEY_WEB_SEARCH_ASKED = "web_search_asked"
+    fun webSearchAsked(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_WEB_SEARCH_ASKED, false)
+    fun setWebSearchAsked(ctx: Context, asked: Boolean) {
+        prefs(ctx).edit().putBoolean(KEY_WEB_SEARCH_ASKED, asked).apply()
+    }
+
+    private const val KEY_WEB_SEARCH_ENABLED = "web_search_enabled"
+    fun webSearchEnabled(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_WEB_SEARCH_ENABLED, true)
+    fun setWebSearchEnabled(ctx: Context, enabled: Boolean) {
+        prefs(ctx).edit().putBoolean(KEY_WEB_SEARCH_ENABLED, enabled).apply()
+    }
+
     // Thermal guard: trip point that stops work. Defaults persist on-device.
     private const val KEY_THERMAL_GUARD = "thermal_guard"
     fun thermalGuard(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_THERMAL_GUARD, true)

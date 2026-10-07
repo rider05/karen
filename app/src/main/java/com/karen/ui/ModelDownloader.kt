@@ -26,6 +26,10 @@ data class CatalogModel(
 
 val modelCatalog = listOf(
     CatalogModel(
+        "Qwen 3.5 2B", "Qwen3.5-2B-IQ4_XS.gguf", "≈1.1 GB", "IQ4_XS", "2.0 GB",
+        "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-IQ4_XS.gguf"
+    ),
+    CatalogModel(
         "Karen 4B Q4", "karen-4b-q4.gguf", "≈2.5 GB", "Q4_K_M", "2.7 GB",
         "https://huggingface.co/bartowski/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf"
     ),

@@ -49,3 +49,5 @@ KarenHomeBackHandler(onNavigateToHome = onNavigateToHome) {
   masked display (`••••abcd`), explicit Save/Remove. Never log keys.
   Live calls live in `ui/CloudChatApi.kt` (HttpURLConnection + org.json, no new
   deps); chat routes to a keyed provider selected in the model sheet.
+- Text inputs: every `OutlinedTextField` must use `karenFieldColors(colors)`
+  (`ui/KarenCommon.kt`) — M3 defaults are light-scheme and vanish on dark.

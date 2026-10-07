@@ -607,7 +607,7 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                             label = { Text("Name", color = colors.textMuted) },
                             singleLine = true,
                             textStyle = androidx.compose.ui.text.TextStyle(color = colors.textPrimary),
-                            colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = colors.accentGreen, unfocusedBorderColor = colors.border, focusedLabelColor = colors.accentGreen, cursorColor = colors.accentGreen)
+                            colors = karenFieldColors(colors)
                         )
                         OutlinedTextField(
                             value = editAge,
@@ -615,7 +615,7 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                             label = { Text("Age", color = colors.textMuted) },
                             singleLine = true,
                             textStyle = androidx.compose.ui.text.TextStyle(color = colors.textPrimary),
-                            colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = colors.accentGreen, unfocusedBorderColor = colors.border, focusedLabelColor = colors.accentGreen, cursorColor = colors.accentGreen)
+                            colors = karenFieldColors(colors)
                         )
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             listOf("Student", "Personal", "Developer", "Researcher", "Professional").forEach { t ->

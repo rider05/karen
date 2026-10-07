@@ -62,7 +62,8 @@ fun OnboardingScreen(onDone: () -> Unit = {}) {
                 onValueChange = { name = it },
                 label = { Text("Your name") },
                 singleLine = true,
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier.fillMaxWidth(),
+                colors = karenFieldColors(colors)
             )
             Spacer(Modifier.height(12.dp))
             OutlinedTextField(
@@ -70,7 +71,8 @@ fun OnboardingScreen(onDone: () -> Unit = {}) {
                 onValueChange = { if (it.all { c -> c.isDigit() } && it.length <= 3) age = it },
                 label = { Text("Age") },
                 singleLine = true,
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier.fillMaxWidth(),
+                colors = karenFieldColors(colors)
             )
             Spacer(Modifier.height(16.dp))
             Text("Usage type", color = colors.textSecondary, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)

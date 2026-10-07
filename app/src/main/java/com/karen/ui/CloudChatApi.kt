@@ -43,6 +43,10 @@ val cloudProviders = listOf(
 fun findCloudProviderByName(name: String): CloudProvider? =
     cloudProviders.find { it.name == name }
 
+/** True for cloud entries that must never appear in installed-weights lists. */
+fun isCloudProviderName(name: String): Boolean =
+    cloudProviders.any { it.name == name }
+
 /** Carries the HTTP status so the chat can show actionable key/quota errors. */
 class CloudApiException(val status: Int, message: String) : Exception(message)
 
@@ -54,9 +58,9 @@ suspend fun CloudProvider.complete(
     val trimmed = history.takeLast(20)
     when (protocol) {
         CloudProtocol.OPENAI -> {
-            val body = JSONObject()
+            fun body(tokenField: String) = JSONObject()
                 .put("model", defaultModel)
-                .put("max_tokens", maxTokens)
+                .put(tokenField, maxTokens)
                 .put(
                     "messages",
                     JSONArray(trimmed.map { (role, text) ->
@@ -71,11 +75,14 @@ suspend fun CloudProvider.complete(
                 headers["HTTP-Referer"] = "https://karen.local"
                 headers["X-Title"] = "Karen"
             }
-            val json = post(URL("$apiBase/chat/completions"), headers, body)
-            json.getJSONArray("choices")
-                .getJSONObject(0)
-                .getJSONObject("message")
-                .getString("content")
+            try {
+                extractOpenAiText(post(URL("$apiBase/chat/completions"), headers, body("max_tokens")))
+            } catch (e: CloudApiException) {
+                // Newer models (o-series, GPT-5 class) reject max_tokens — retry once.
+                if (e.status == 400 && e.message.orEmpty().contains("max_completion_tokens")) {
+                    extractOpenAiText(post(URL("$apiBase/chat/completions"), headers, body("max_completion_tokens")))
+                } else throw e
+            }
         }
         CloudProtocol.ANTHROPIC -> {
             val body = JSONObject()
@@ -97,11 +104,20 @@ suspend fun CloudProvider.complete(
                 body
             )
             val blocks = json.getJSONArray("content")
-            (0 until blocks.length())
+            val text = (0 until blocks.length())
                 .map { blocks.getJSONObject(it) }
                 .firstOrNull { it.optString("type") == "text" }
-                ?.getString("text")
-                ?: throw CloudApiException(200, "empty response blocks")
+                ?.optString("text", "")
+            if (!text.isNullOrBlank()) text
+            else {
+                // Thinking-only reply: surface the thinking rather than nothing.
+                val thinking = (0 until blocks.length())
+                    .map { blocks.getJSONObject(it) }
+                    .firstOrNull { it.optString("type") == "thinking" }
+                    ?.optString("thinking", "")
+                if (!thinking.isNullOrBlank()) thinking
+                else throw CloudApiException(200, "model returned no text")
+            }
         }
         CloudProtocol.GEMINI -> {
             val body = JSONObject().put(
@@ -120,14 +136,42 @@ suspend fun CloudProvider.complete(
                 ),
                 body
             )
-            json.getJSONArray("candidates")
-                .getJSONObject(0)
-                .getJSONObject("content")
-                .getJSONArray("parts")
-                .getJSONObject(0)
-                .getString("text")
+            val text = json.optJSONArray("candidates")
+                ?.optJSONObject(0)
+                ?.optJSONObject("content")
+                ?.optJSONArray("parts")
+                ?.optJSONObject(0)
+                ?.optString("text", "")
+            if (text.isNullOrBlank()) throw CloudApiException(200, "model returned no text")
+            text
         }
     }
+}
+
+/**
+ * Reads a chat-completion reply without ever surfacing null: normal content
+ * first, then reasoning fallbacks (DeepSeek `reasoning_content`, OpenRouter
+ * `reasoning` / `reasoning_details`) used by thinking models.
+ */
+private fun extractOpenAiText(json: JSONObject): String {
+    val message = json.getJSONArray("choices")
+        .getJSONObject(0)
+        .getJSONObject("message")
+    val content = message.optString("content", "")
+    if (content.isNotBlank()) return content
+    val reasoning = message.optString("reasoning", "")
+        .ifBlank { message.optString("reasoning_content", "") }
+    if (reasoning.isNotBlank()) return reasoning
+    val details = message.optJSONArray("reasoning_details")
+    if (details != null) {
+        val sb = StringBuilder()
+        for (i in 0 until details.length()) {
+            val t = details.optJSONObject(i)?.optString("text", "")
+            if (!t.isNullOrBlank()) sb.append(t)
+        }
+        if (sb.isNotEmpty()) return sb.toString()
+    }
+    throw CloudApiException(200, "model returned no text — try a non-reasoning model")
 }
 
 private fun post(url: URL, headers: Map<String, String>, body: JSONObject): JSONObject {

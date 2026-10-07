@@ -50,6 +50,45 @@ val KCyan get() = KarenThemeState.colors.accentBlue
 val KErr get() = KarenThemeState.colors.accentRed
 
 /**
+ * Single themed palette for every text input. Material3 defaults follow the
+ * (unset) MaterialTheme light scheme — near-black text that vanishes on dark
+ * surfaces — so all OutlinedTextFields must use this.
+ */
+@Composable
+fun karenFieldColors(colors: KarenColors): TextFieldColors =
+    OutlinedTextFieldDefaults.colors(
+        focusedTextColor = colors.textPrimary,
+        unfocusedTextColor = colors.textPrimary,
+        disabledTextColor = colors.textMuted,
+        errorTextColor = colors.accentRed,
+        focusedContainerColor = Color.Transparent,
+        unfocusedContainerColor = Color.Transparent,
+        disabledContainerColor = Color.Transparent,
+        errorContainerColor = Color.Transparent,
+        cursorColor = colors.accentGreen,
+        errorCursorColor = colors.accentRed,
+        focusedBorderColor = colors.accentGreen,
+        unfocusedBorderColor = colors.border,
+        disabledBorderColor = colors.border.copy(alpha = 0.5f),
+        errorBorderColor = colors.accentRed,
+        focusedLabelColor = colors.accentGreen,
+        unfocusedLabelColor = colors.textMuted,
+        disabledLabelColor = colors.textMuted,
+        errorLabelColor = colors.accentRed,
+        focusedPlaceholderColor = colors.textMuted,
+        unfocusedPlaceholderColor = colors.textMuted,
+        disabledPlaceholderColor = colors.textMuted,
+        errorPlaceholderColor = colors.accentRed,
+        focusedLeadingIconColor = colors.textSecondary,
+        unfocusedLeadingIconColor = colors.textMuted,
+        focusedTrailingIconColor = colors.textSecondary,
+        unfocusedTrailingIconColor = colors.textMuted,
+        errorTrailingIconColor = colors.accentRed,
+        focusedSupportingTextColor = colors.textMuted,
+        unfocusedSupportingTextColor = colors.textMuted
+    )
+
+/**
  * Per-effort accent color. Theme-aware: each level has its own hue that
  * stays readable in both dark and light themes.
  */
@@ -1055,7 +1094,7 @@ fun ModelSelectorSheet(
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.padding(bottom = 4.dp)
             )
-            val installed = UserPrefs.models(sheetCtx)
+            val installed = UserPrefs.models(sheetCtx).filter { !isCloudProviderName(it) }
             if (installed.isEmpty()) {
                 Text(
                     text = "No local models on this device yet — download one below or add a cloud API key.",

@@ -184,7 +184,8 @@ fun KarenApp() {
                             )
                             "Workspace" -> WorkspaceScreen(
                                 onOpenDrawer = { coroutineScope.launch { drawerState.open() } },
-                                onNavigateToHome = { currentScreen = "Home" }
+                                onNavigateToHome = { currentScreen = "Home" },
+                                onNavigateToModelManager = { currentScreen = "ModelManager" }
                             )
                             "Files" -> FilesScreen(
                                 onOpenDrawer = { coroutineScope.launch { drawerState.open() } },

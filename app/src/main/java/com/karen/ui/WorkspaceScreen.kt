@@ -1,5 +1,15 @@
 package com.karen.ui
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -14,6 +24,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -133,7 +144,8 @@ private fun diffLines(old: String, new: String): List<Pair<Char, String>> {
 @Composable
 fun WorkspaceScreen(
     onOpenDrawer: () -> Unit = {},
-    onNavigateToHome: () -> Unit = {}
+    onNavigateToHome: () -> Unit = {},
+    onNavigateToModelManager: () -> Unit = {}
 ) {
     val colors = LocalKarenColors.current
     var activeTab by remember { mutableStateOf("Code") }
@@ -152,8 +164,14 @@ fun WorkspaceScreen(
 
     // System back: dismiss dialog first, then step out of the open project,
     // then route to Home — same in-app behaviour as the chat screen.
+    // Cloud model for project chat — same selection as Chat (locals + keyed APIs).
+    var selectedModel by remember { mutableStateOf(UserPrefs.models(ctx).firstOrNull { !isCloudProviderName(it) } ?: "Karen 4B") }
+    var effort by remember { mutableStateOf(UserPrefs.defaultEffort(ctx)) }
+    var showModelSheet by remember { mutableStateOf(false) }
+
     KarenHomeBackHandler(onNavigateToHome = onNavigateToHome) {
         when {
+            showModelSheet -> { showModelSheet = false; true }
             showNewProject -> { showNewProject = false; true }
             selected != null -> { selected = null; true }
             else -> false
@@ -203,12 +221,42 @@ fun WorkspaceScreen(
             project.terminalLog.add("$ $t".take(120))
             val lsOut = runShell("ls -la", dir)
             project.terminalLog.add("[tool] ls -la\n$lsOut")
-            project.chat.add(
-                ProjectChat(
-                    "assistant",
-                    "Planned ${steps.size} steps, updated main.txt and ran checks. See Plan / Code / Terminal."
+            // 4. Assistant reply — live cloud call when a keyed API model is selected.
+            val cloud = findCloudProviderByName(selectedModel)
+            val cloudKey = cloud?.let { UserPrefs.apiKey(ctx, it.id) }.orEmpty()
+            if (cloud != null && cloudKey.isNotBlank()) {
+                try {
+                    val history = mutableListOf<Pair<String, String>>()
+                    val codeCtx = project.codeNew.take(2000)
+                    if (codeCtx.isNotBlank()) {
+                        history.add("user" to "Project file main.txt so far:\n$codeCtx")
+                    }
+                    project.chat.mapNotNullTo(history) { m ->
+                        when (m.role) {
+                            "user" -> "user" to m.text
+                            "assistant" -> "assistant" to m.text
+                            else -> null
+                        }
+                    }
+                    val reply = cloud.complete(cloudKey, history.takeLast(20), maxTokensFor(effort))
+                    project.chat.add(ProjectChat("assistant", reply))
+                } catch (e: CloudApiException) {
+                    project.chat.add(
+                        ProjectChat("assistant", "⚠ ${cloud.name} error (HTTP ${e.status}): ${e.message}")
+                    )
+                } catch (e: Exception) {
+                    project.chat.add(
+                        ProjectChat("assistant", "⚠ Could not reach ${cloud.name} — check internet and your API key. (${e.message})")
+                    )
+                }
+            } else {
+                project.chat.add(
+                    ProjectChat(
+                        "assistant",
+                        "Planned ${steps.size} steps, updated main.txt and ran checks. See Plan / Code / Terminal."
+                    )
                 )
-            )
+            }
             chatBusy = false
         }
     }
@@ -219,9 +267,13 @@ fun WorkspaceScreen(
             .background(colors.background)
     ) {
         ChatGPTTopAppBar(
-            selectedModel = "Canvas",
+            selectedModel = selectedModel,
             onMenuClick = onOpenDrawer,
+            onModelClick = { showModelSheet = true },
             onBackClick = onNavigateToHome,
+            effort = effort,
+            efforts = listOf("Low", "Medium", "High", "Max", "Extreme", "Theme"),
+            onSelectEffort = { effort = it },
             moreActions = listOf(
                 Triple("New project", Icons.Default.Add) { showNewProject = true },
                 Triple("Export canvas", Icons.Default.Share) { android.widget.Toast.makeText(ctx, "Export canvas", android.widget.Toast.LENGTH_SHORT).show() },
@@ -290,11 +342,7 @@ fun WorkspaceScreen(
                             label = { Text("Project name", color = colors.textMuted) },
                             singleLine = true,
                             textStyle = androidx.compose.ui.text.TextStyle(color = colors.textPrimary),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = colors.accentGreen,
-                                unfocusedBorderColor = colors.border,
-                                cursorColor = colors.accentGreen
-                            )
+                            colors = karenFieldColors(colors)
                         )
                     },
                     confirmButton = {
@@ -458,11 +506,7 @@ fun WorkspaceScreen(
                 modifier = Modifier.weight(1f),
                 singleLine = true,
                 textStyle = androidx.compose.ui.text.TextStyle(color = colors.textPrimary),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = colors.accentGreen,
-                    unfocusedBorderColor = colors.border,
-                    cursorColor = colors.accentGreen
-                )
+                colors = karenFieldColors(colors)
             )
             Spacer(Modifier.width(8.dp))
             Box(
@@ -483,6 +527,16 @@ fun WorkspaceScreen(
                 }
             }
         }
+    }
+
+    // Model selector (locals + keyed cloud APIs), shared with Chat.
+    if (showModelSheet) {
+        ModelSelectorSheet(
+            selectedModel = selectedModel,
+            onSelectModel = { selectedModel = it },
+            onDismiss = { showModelSheet = false },
+            onOpenModelManager = onNavigateToModelManager
+        )
     }
 }
 
@@ -548,11 +602,7 @@ private fun CodeCanvasView(project: Project) {
             onValueChange = { content = it },
             modifier = Modifier.fillMaxWidth().weight(1f),
             textStyle = androidx.compose.ui.text.TextStyle(color = colors.textPrimary, fontFamily = FontFamily.Monospace, fontSize = 12.sp),
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = colors.accentGreen,
-                unfocusedBorderColor = colors.border,
-                cursorColor = colors.accentGreen
-            )
+            colors = karenFieldColors(colors)
         )
         Spacer(Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -604,6 +654,75 @@ private fun CodeCanvasView(project: Project) {
 }
 
 @Composable
+private fun PlanNodeDot(done: Boolean, active: Boolean) {
+    val colors = LocalKarenColors.current
+    // Gentle pulse on the current step only — everything else stays static.
+    val pulse = rememberInfiniteTransition(label = "plan_node")
+    val scale by pulse.animateFloat(
+        initialValue = 1f,
+        targetValue = 1.35f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(900, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "node_pulse"
+    )
+    val alpha by pulse.animateFloat(
+        initialValue = 0.35f,
+        targetValue = 0.08f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(900, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "node_halo"
+    )
+    Box(
+        modifier = Modifier.size(32.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        if (active) {
+            Box(
+                modifier = Modifier
+                    .size(26.dp)
+                    .scale(scale)
+                    .clip(CircleShape)
+                    .background(colors.accentGreen.copy(alpha = alpha))
+            )
+        }
+        Crossfade(targetState = done, label = "node_state") { isDone ->
+            if (isDone) {
+                Box(
+                    modifier = Modifier
+                        .size(16.dp)
+                        .clip(CircleShape)
+                        .background(colors.accentGreen),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Default.Check,
+                        contentDescription = "Done",
+                        tint = Color.White,
+                        modifier = Modifier.size(10.dp)
+                    )
+                }
+            } else {
+                Box(
+                    modifier = Modifier
+                        .size(16.dp)
+                        .clip(CircleShape)
+                        .background(if (active) colors.accentGreen.copy(alpha = 0.25f) else Color.Transparent)
+                        .border(
+                            1.5.dp,
+                            if (active) colors.accentGreen else colors.textMuted,
+                            CircleShape
+                        )
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun PlanCanvasView(project: Project) {
     val colors = LocalKarenColors.current
     var newTask by remember { mutableStateOf("") }
@@ -620,20 +739,53 @@ private fun PlanCanvasView(project: Project) {
         }
         items(project.steps.size) { i ->
             val s = project.steps[i]
-            Row(
-                modifier = Modifier.fillMaxWidth()
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(colors.surfaceHover.copy(alpha = 0.6f))
-                    .border(1.dp, colors.border, RoundedCornerShape(10.dp))
-                    .padding(10.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Checkbox(
-                    checked = s.done,
-                    onCheckedChange = { project.steps[i] = s.copy(done = it) },
-                    colors = CheckboxDefaults.colors(checkedColor = colors.accentGreen)
+            val isActive = !s.done && project.steps.take(i).all { it.done }
+            // Staggered entrance — each node fades/slides in after the previous.
+            AnimatedVisibility(
+                visible = true,
+                enter = fadeIn(
+                    animationSpec = tween(350, delayMillis = i * 110, easing = FastOutSlowInEasing)
+                ) + slideInVertically(
+                    animationSpec = tween(350, delayMillis = i * 110, easing = FastOutSlowInEasing),
+                    initialOffsetY = { it / 3 }
                 )
-                Text("${i + 1}. ${s.text}", color = if (s.done) colors.textMuted else colors.textPrimary, fontSize = 12.5.sp, modifier = Modifier.weight(1f))
+            ) {
+                Column {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        PlanNodeDot(done = s.done, active = isActive)
+                        Spacer(Modifier.width(10.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth()
+                                .weight(1f)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(colors.surfaceHover.copy(alpha = 0.6f))
+                                .border(1.dp, if (isActive) colors.accentGreen.copy(alpha = 0.5f) else colors.border, RoundedCornerShape(10.dp))
+                                .padding(10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Checkbox(
+                                checked = s.done,
+                                onCheckedChange = { project.steps[i] = s.copy(done = it) },
+                                colors = CheckboxDefaults.colors(checkedColor = colors.accentGreen)
+                            )
+                            Text("${i + 1}. ${s.text}", color = if (s.done) colors.textMuted else colors.textPrimary, fontSize = 12.5.sp, modifier = Modifier.weight(1f))
+                        }
+                    }
+                    // Link to the next node — green once this step is done.
+                    if (i < project.steps.size - 1) {
+                        Box(
+                            modifier = Modifier
+                                .padding(start = 15.dp)
+                                .width(2.dp)
+                                .height(10.dp)
+                                .clip(RoundedCornerShape(1.dp))
+                                .background(
+                                    if (s.done) colors.accentGreen.copy(alpha = 0.6f)
+                                    else colors.border
+                                )
+                        )
+                    }
+                }
             }
         }
         if (project.tasks.isNotEmpty()) {
@@ -669,11 +821,7 @@ private fun PlanCanvasView(project: Project) {
                     modifier = Modifier.weight(1f),
                     singleLine = true,
                     textStyle = androidx.compose.ui.text.TextStyle(color = colors.textPrimary),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = colors.accentGreen,
-                        unfocusedBorderColor = colors.border,
-                        cursorColor = colors.accentGreen
-                    )
+                    colors = karenFieldColors(colors)
                 )
                 TextButton(onClick = {
                     if (newTask.isNotBlank()) {
@@ -732,11 +880,7 @@ private fun TerminalCanvasView(project: Project) {
                 modifier = Modifier.weight(1f),
                 singleLine = true,
                 textStyle = androidx.compose.ui.text.TextStyle(color = termText, fontFamily = FontFamily.Monospace),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = colors.accentGreen,
-                    unfocusedBorderColor = if (colors.isDark) Color(0xFF2C2C2E) else Color(0xFFD4D4D8),
-                    cursorColor = colors.accentGreen
-                )
+                colors = karenFieldColors(colors)
             )
             Spacer(Modifier.width(6.dp))
             Button(

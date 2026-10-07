@@ -88,27 +88,79 @@ fun ModelManagerScreen(
     val ctx = androidx.compose.ui.platform.LocalContext.current
     val models = remember {
         mutableStateListOf<GgufModel>().apply {
-            UserPrefs.models(ctx).forEach { n -> add(GgufModel(n, "-", "-", "-", "GGUF")) }
+            // Heal prefs: cloud names must never live in installed weights.
+            val stored = UserPrefs.models(ctx)
+            val cleaned = stored.filter { !isCloudProviderName(it) }
+            if (cleaned.size != stored.size) UserPrefs.saveModels(ctx, cleaned)
+            cleaned.forEach { n -> add(GgufModel(n, "-", "-", "-", "GGUF")) }
         }
     }
 
     var activeModel by remember { mutableStateOf<GgufModel?>(null) }
+    var showUrlDialog by remember { mutableStateOf(false) }
+    var showApiDialog by remember { mutableStateOf(false) }
+    var apiError by remember { mutableStateOf<String?>(null) }
+    // Restored from persisted keys so connections survive screen revisits.
+    val connectedApis = remember {
+        mutableStateListOf<String>().apply {
+            cloudProviders
+                .filter { UserPrefs.apiKey(ctx, it.id).isNotBlank() }
+                .forEach { add(it.name) }
+        }
+    }
 
     /** Re-reads installed weights from prefs (after downloads/imports). */
     fun reloadModels() {
         models.clear()
-        UserPrefs.models(ctx).forEach { n -> models.add(GgufModel(n, "-", "-", "-", "GGUF")) }
+        UserPrefs.models(ctx).filter { !isCloudProviderName(it) }
+            .forEach { n -> models.add(GgufModel(n, "-", "-", "-", "GGUF")) }
         if (activeModel != null && models.none { it.name == activeModel?.name }) activeModel = null
     }
-    var showUrlDialog by remember { mutableStateOf(false) }
-    var showApiDialog by remember { mutableStateOf(false) }
-    var apiError by remember { mutableStateOf<String?>(null) }
-    val connectedApis = remember { mutableStateListOf<String>() }
+
+    /** Manual refresh: weights, connections, and one downloader poll. */
+    fun refreshAll() {
+        reloadModels()
+        connectedApis.clear()
+        cloudProviders
+            .filter { UserPrefs.apiKey(ctx, it.id).isNotBlank() }
+            .forEach { connectedApis.add(it.name) }
+        when (val ev = ModelDownloader.refresh(ctx)) {
+            is DownloadEvent.Completed -> {
+                reloadModels()
+                android.widget.Toast.makeText(ctx, "${ev.name} installed", android.widget.Toast.LENGTH_SHORT).show()
+            }
+            is DownloadEvent.Failed -> {
+                android.widget.Toast.makeText(ctx, "Download failed: ${ev.reason}", android.widget.Toast.LENGTH_LONG).show()
+            }
+            else -> {
+                val downloading = ModelDownloader.activeName
+                android.widget.Toast.makeText(
+                    ctx,
+                    if (downloading != null) "Refreshing… $downloading ${ModelDownloader.status}" else "Lists refreshed",
+                    android.widget.Toast.LENGTH_SHORT
+                ).show()
+            }
+        }
+    }
     // API-key entry flow: step 0 = provider list, step 1 = key entry.
     var apiStep by remember { mutableStateOf(0) }
     var selectedProvider by remember { mutableStateOf<CloudProvider?>(null) }
     var apiKeyInput by remember { mutableStateOf("") }
     var keyVisible by remember { mutableStateOf(false) }
+    var pendingDelete by remember { mutableStateOf<GgufModel?>(null) }
+
+    /** Removes a model: deletes its weight file(s) and unregisters it. */
+    fun deleteModel(m: GgufModel) {
+        try {
+            ModelDownloader.modelsDir(ctx).listFiles()?.forEach { f ->
+                if (f.name == m.name || f.nameWithoutExtension == m.name) f.delete()
+            }
+        } catch (_: Exception) {
+        }
+        UserPrefs.saveModels(ctx, UserPrefs.models(ctx).filter { it != m.name })
+        if (activeModel?.name == m.name) activeModel = null
+        reloadModels()
+    }
 
     // Poll the downloader so progress/completion lands in this screen.
     LaunchedEffect(Unit) {
@@ -232,6 +284,7 @@ fun ModelManagerScreen(
             selectedModel = "Local Models (GGUF)",
             onMenuClick = onOpenDrawer,
             moreActions = listOf(
+                Triple("Refresh lists", Icons.Default.Refresh) { refreshAll() },
                 Triple("Load model", Icons.Default.Upload) { android.widget.Toast.makeText(ctx, "Load model", android.widget.Toast.LENGTH_SHORT).show() },
                 Triple("Download model", Icons.Default.Download) { android.widget.Toast.makeText(ctx, "Download model", android.widget.Toast.LENGTH_SHORT).show() },
                 Triple("Delete model", Icons.Default.Delete) { android.widget.Toast.makeText(ctx, "Delete model", android.widget.Toast.LENGTH_SHORT).show() }
@@ -495,8 +548,25 @@ fun ModelManagerScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(m.name, color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold)
-                        Text(if (isActive) "Active" else "Tap to Hot-Load", color = if (isActive) colors.accentGreen else colors.textMuted, fontSize = 11.sp, fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal)
+                        Text(
+                            m.name,
+                            color = colors.textPrimary,
+                            fontSize = 13.5.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Text(
+                            if (isActive) "Active" else "Tap to Hot-Load",
+                            color = if (isActive) colors.accentGreen else colors.textMuted,
+                            fontSize = 11.sp,
+                            fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal
+                        )
+                        IconButton(
+                            onClick = { pendingDelete = m },
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(Icons.Default.DeleteOutline, contentDescription = "Delete ${m.name}", tint = colors.textMuted, modifier = Modifier.size(16.dp))
+                        }
                     }
                     Spacer(Modifier.height(4.dp))
                     Text("Weight ${m.size} · RAM Floor ${m.ramRequired} · ${m.throughput} · ${m.quant}", color = colors.textMuted, fontSize = 11.5.sp, fontFamily = FontFamily.Monospace)
@@ -588,6 +658,29 @@ fun ModelManagerScreen(
             }
         }
 
+        // Delete confirmation — explicit per §96 ownership rules.
+        val doomed = pendingDelete
+        if (doomed != null) {
+            AlertDialog(
+                onDismissRequest = { pendingDelete = null },
+                title = { Text("Delete model?") },
+                text = {
+                    Text(
+                        "“${doomed.name}” will be removed from this device, including its weight file. This cannot be undone.",
+                        fontSize = 13.sp
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        deleteModel(doomed)
+                        pendingDelete = null
+                        android.widget.Toast.makeText(ctx, "${doomed.name} deleted", android.widget.Toast.LENGTH_SHORT).show()
+                    }) { Text("Delete", color = colors.accentRed) }
+                },
+                dismissButton = { TextButton(onClick = { pendingDelete = null }) { Text("Cancel") } }
+            )
+        }
+
         // External URL download dialog
         if (showUrlDialog) {
             var url by remember { mutableStateOf("") }
@@ -602,7 +695,8 @@ fun ModelManagerScreen(
                             value = url,
                             onValueChange = { url = it },
                             placeholder = { Text("https://example.com/model.gguf") },
-                            singleLine = true
+                            singleLine = true,
+                            colors = karenFieldColors(colors)
                         )
                     }
                 },
@@ -698,6 +792,7 @@ fun ModelManagerScreen(
                                 label = { Text("API key") },
                                 placeholder = { Text("sk-…") },
                                 singleLine = true,
+                                colors = karenFieldColors(colors),
                                 visualTransformation = if (keyVisible) VisualTransformation.None else PasswordVisualTransformation(),
                                 trailingIcon = {
                                     IconButton(onClick = { keyVisible = !keyVisible }) {
@@ -748,7 +843,6 @@ fun ModelManagerScreen(
                                     UserPrefs.saveApiKey(ctx, provider.id, key)
                                     if (provider.name !in connectedApis) {
                                         connectedApis.add(provider.name)
-                                        UserPrefs.saveModels(ctx, models.map { it.name } + provider.name)
                                     }
                                     showApiDialog = false
                                     apiStep = 0

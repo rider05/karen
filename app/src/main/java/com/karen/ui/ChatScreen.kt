@@ -49,7 +49,7 @@ sealed class ChatItem {
 data class Attachment(val name: String, val sizeBytes: Long, val mime: String? = null)
 
 /** Typing-effect speed per effort level. */
-private fun effortDelayMs(effort: String): Long = when (effort) {
+fun effortDelayMs(effort: String): Long = when (effort) {
     "Low" -> 8L
     "High" -> 24L
     "Max" -> 36L
@@ -58,7 +58,7 @@ private fun effortDelayMs(effort: String): Long = when (effort) {
 }
 
 /** Reply budget per effort level for cloud calls. */
-private fun maxTokensFor(effort: String): Int = when (effort) {
+fun maxTokensFor(effort: String): Int = when (effort) {
     "Low" -> 256
     "High" -> 1024
     "Max" -> 2048
@@ -110,7 +110,7 @@ fun ChatScreen(
     // ---------- File upload / attachments ----------
     val context = LocalContext.current
     // Default to the first downloaded weight; selection lists installed-only.
-    var selectedModel by remember { mutableStateOf(UserPrefs.models(context).firstOrNull() ?: "Karen 4B") }
+    var selectedModel by remember { mutableStateOf(UserPrefs.models(context).firstOrNull { !isCloudProviderName(it) } ?: "Karen 4B") }
     var attachments by remember { mutableStateOf(listOf<Attachment>()) }
     var pendingCameraUri by remember { mutableStateOf<Uri?>(null) }
 

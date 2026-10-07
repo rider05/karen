@@ -21,7 +21,14 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.net.Uri
+import android.provider.OpenableColumns
+import android.widget.Toast
 import com.karen.rememberDeviceTelemetry
+import java.io.File
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 
@@ -120,12 +127,99 @@ fun ModelManagerScreen(
         }
     }
 
+    // Real local import: copy + validate on IO with progress on the card below.
+    var importingName by remember { mutableStateOf<String?>(null) }
+    var importProgress by remember { mutableStateOf(0f) }
+    var importStatus by remember { mutableStateOf("") }
+    var importCancelled by remember { mutableStateOf(false) }
+    val managerScope = rememberCoroutineScope()
+
+    fun fileNameOf(uri: Uri): String =
+        ctx.contentResolver.query(uri, null, null, null, null)?.use { c ->
+            val i = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            if (i >= 0 && c.moveToFirst()) c.getString(i) else null
+        } ?: uri.lastPathSegment?.substringAfterLast('/')?.ifBlank { null } ?: "imported.gguf"
+
+    fun fileSizeOf(uri: Uri): Long =
+        ctx.contentResolver.query(uri, null, null, null, null)?.use { c ->
+            val i = c.getColumnIndex(OpenableColumns.SIZE)
+            if (i >= 0 && c.moveToFirst()) c.getLong(i) else -1L
+        } ?: -1L
+
+    /** Copies the picked file into app storage after a GGUF header check. Null = ok. */
+    fun copyImport(uri: Uri, dest: File, total: Long): String? {
+        try {
+            ctx.contentResolver.openInputStream(uri)?.use { input ->
+                val magic = ByteArray(4)
+                var read = 0
+                while (read < 4) {
+                    val n = input.read(magic, read, 4 - read)
+                    if (n < 0) break
+                    read += n
+                }
+                if (read < 4 || String(magic, Charsets.US_ASCII) != "GGUF") {
+                    return "not a GGUF file (bad header)"
+                }
+            } ?: return "cannot open file"
+            var copied = 0L
+            ctx.contentResolver.openInputStream(uri)?.use { input ->
+                dest.outputStream().use { out ->
+                    val buf = ByteArray(256 * 1024)
+                    while (!importCancelled) {
+                        val n = input.read(buf)
+                        if (n < 0) break
+                        out.write(buf, 0, n)
+                        copied += n
+                        if (total > 0) importProgress = (copied.toDouble() / total).toFloat().coerceIn(0f, 1f)
+                        importStatus = "Copying %.1f MB".format(copied / 1048576.0)
+                    }
+                }
+            } ?: return "cannot open file"
+            if (importCancelled) return "CANCELLED"
+            if (dest.length() <= 0) return "empty file"
+            return null
+        } catch (e: Exception) {
+            return e.message ?: "copy failed"
+        }
+    }
+
     val importModelLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) {
-            val name = uri.lastPathSegment?.substringAfterLast('/') ?: "imported.gguf"
-            models.add(GgufModel(name, "Local file", "—", "—", "GGUF"))
-            UserPrefs.saveModels(ctx, models.map { it.name })
-            android.widget.Toast.makeText(ctx, "Imported $name", android.widget.Toast.LENGTH_SHORT).show()
+        if (uri == null) return@rememberLauncherForActivityResult
+        managerScope.launch {
+            val name = fileNameOf(uri)
+            if (!name.endsWith(".gguf", ignoreCase = true)) {
+                Toast.makeText(ctx, "Only .gguf files can be imported", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            if (name in UserPrefs.models(ctx)) {
+                Toast.makeText(ctx, "$name is already imported", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            val dest = File(ModelDownloader.modelsDir(ctx), name)
+            if (dest.exists()) {
+                Toast.makeText(ctx, "$name is already imported", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            importingName = name
+            importProgress = 0f
+            importStatus = "Starting…"
+            importCancelled = false
+            val err = withContext(Dispatchers.IO) { copyImport(uri, dest, fileSizeOf(uri)) }
+            importingName = null
+            when {
+                err == null -> {
+                    reloadModels()
+                    Toast.makeText(ctx, "Imported $name — select it in the model picker", Toast.LENGTH_SHORT).show()
+                }
+                err == "CANCELLED" -> {
+                    dest.delete()
+                    Toast.makeText(ctx, "Import cancelled", Toast.LENGTH_SHORT).show()
+                }
+                else -> {
+                    dest.delete()
+                    Toast.makeText(ctx, "Import failed: $err", Toast.LENGTH_LONG).show()
+                }
+            }
         }
     }
 
@@ -321,9 +415,10 @@ fun ModelManagerScreen(
                     Text("Active Download", color = colors.textMuted, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                     Spacer(Modifier.height(6.dp))
                     val activeName = ModelDownloader.activeName
-                    if (activeName == null) {
+                    val importName = importingName
+                    if (activeName == null && importName == null) {
                         Text("No data found", color = colors.textMuted, fontSize = 12.sp)
-                    } else {
+                    } else if (activeName != null) {
                         Text(activeName, color = colors.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
                         Spacer(Modifier.height(6.dp))
                         LinearProgressIndicator(
@@ -345,6 +440,31 @@ fun ModelManagerScreen(
                                 fontFamily = FontFamily.Monospace
                             )
                             OutlinedButton(onClick = { ModelDownloader.cancel(ctx) }) {
+                                Text("Cancel", fontSize = 12.sp)
+                            }
+                        }
+                    } else {
+                        Text(importName ?: "", color = colors.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                        Spacer(Modifier.height(6.dp))
+                        LinearProgressIndicator(
+                            progress = { importProgress },
+                            modifier = Modifier.fillMaxWidth(),
+                            color = colors.accentGreen,
+                            trackColor = colors.surfaceHover
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "Import · $importStatus",
+                                color = colors.textMuted,
+                                fontSize = 11.5.sp,
+                                fontFamily = FontFamily.Monospace
+                            )
+                            OutlinedButton(onClick = { importCancelled = true }) {
                                 Text("Cancel", fontSize = 12.sp)
                             }
                         }

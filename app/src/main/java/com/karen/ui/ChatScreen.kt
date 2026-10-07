@@ -48,6 +48,24 @@ sealed class ChatItem {
 /** An attachment picked from the device, pending to be added to the chat. */
 data class Attachment(val name: String, val sizeBytes: Long, val mime: String? = null)
 
+/** Typing-effect speed per effort level. */
+private fun effortDelayMs(effort: String): Long = when (effort) {
+    "Low" -> 8L
+    "High" -> 24L
+    "Max" -> 36L
+    "Extreme" -> 50L
+    else -> 12L
+}
+
+/** Reply budget per effort level for cloud calls. */
+private fun maxTokensFor(effort: String): Int = when (effort) {
+    "Low" -> 256
+    "High" -> 1024
+    "Max" -> 2048
+    "Extreme" -> 4096
+    else -> 512
+}
+
 @Composable
 fun ChatScreen(
     onOpenDrawer: () -> Unit = {},
@@ -64,7 +82,6 @@ fun ChatScreen(
     val listState = rememberLazyListState()
 
     var input by remember { mutableStateOf("") }
-    var selectedModel by remember { mutableStateOf("Karen 4B") }
     var showModelSheet by remember { mutableStateOf(false) }
     var showAttachmentSheet by remember { mutableStateOf(false) }
 
@@ -92,6 +109,8 @@ fun ChatScreen(
 
     // ---------- File upload / attachments ----------
     val context = LocalContext.current
+    // Default to the first downloaded weight; selection lists installed-only.
+    var selectedModel by remember { mutableStateOf(UserPrefs.models(context).firstOrNull() ?: "Karen 4B") }
     var attachments by remember { mutableStateOf(listOf<Attachment>()) }
     var pendingCameraUri by remember { mutableStateOf<Uri?>(null) }
 
@@ -152,6 +171,19 @@ fun ChatScreen(
         if (temporaryChat || messages.isEmpty()) return
         ChatHistoryStore.saveConversation(context, conversationId, messages.toList())
         onHistoryChanged()
+    }
+
+    /** Typing-effect playback shared by mock and live-cloud replies. */
+    suspend fun playOut(text: String) {
+        cancelGeneration = false
+        streamStartMs = System.currentTimeMillis()
+        streamingText = ""
+        for (idx in text.indices) {
+            if (cancelGeneration) break
+            streamingText = text.substring(0, idx + 1)
+            kotlinx.coroutines.delay(effortDelayMs(effort))
+        }
+        streamingText = null
     }
 
     // Open a saved conversation from the history list.
@@ -461,42 +493,77 @@ fun ChatScreen(
                     val newId = System.currentTimeMillis().toString()
                     messages.add(ChatItem.User(id = "user_$newId", text = userText.ifBlank { sentAttachments.joinToString(", ") { it.name } }, attachments = sentAttachments))
 
-                    // Simulate Karen on-device response (token streaming)
+                    // Live cloud model when one is selected (key stored in Model Manager),
+                    // otherwise the local mock response.
+                    val cloud = findCloudProviderByName(selectedModel)
+                    val cloudKey = cloud?.let { UserPrefs.apiKey(context, it.id) }.orEmpty()
+
                     coroutineScope.launch {
                         listState.animateScrollToItem(messages.size - 1)
-                        kotlinx.coroutines.delay(400)
-                        val fileNote = if (sentAttachments.isNotEmpty()) {
-                            val names = sentAttachments.joinToString(", ") { it.name }
-                            " I received ${sentAttachments.size} file(s): $names. Files are stored locally in the vault — 0 bytes sent externally."
-                        } else ""
-                        val fullText = "No data found — connect a local model in Model Manager.$fileNote"
-                        cancelGeneration = false
-                        streamStartMs = System.currentTimeMillis()
-                        streamingText = ""
-                        for (idx in fullText.indices) {
-                            if (cancelGeneration) break
-                            streamingText = fullText.substring(0, idx + 1)
-                            kotlinx.coroutines.delay(
-                                when (effort) {
-                                    "Low" -> 8L
-                                    "High" -> 24L
-                                    "Max" -> 36L
-                                    "Extreme" -> 50L
-                                    else -> 12L
+                        if (cloud != null && cloudKey.isNotBlank()) {
+                            cancelGeneration = false
+                            streamStartMs = System.currentTimeMillis()
+                            streamingText = "Contacting ${cloud.name}…"
+                            try {
+                                val history = messages.mapNotNull { item ->
+                                    when (item) {
+                                        is ChatItem.User -> "user" to item.text
+                                        is ChatItem.Assistant -> "assistant" to item.text
+                                    }
+                                }.takeLast(20)
+                                val reply = cloud.complete(cloudKey, history, maxTokensFor(effort))
+                                if (!cancelGeneration) {
+                                    playOut(reply)
+                                    if (!cancelGeneration) {
+                                        messages.add(
+                                            ChatItem.Assistant(
+                                                id = "asst_$newId",
+                                                text = reply
+                                            )
+                                        )
+                                        persist()
+                                    }
                                 }
-                            )
-                        }
-                        if (!cancelGeneration) {
-                            messages.add(
-                                ChatItem.Assistant(
-                                    id = "asst_$newId",
-                                    text = fullText
+                            } catch (e: CloudApiException) {
+                                messages.add(
+                                    ChatItem.Assistant(
+                                        id = "asst_${newId}_err",
+                                        text = "⚠ ${cloud.name} error (HTTP ${e.status}): ${e.message}"
+                                    )
                                 )
-                            )
-                            persist()
+                                persist()
+                            } catch (e: Exception) {
+                                messages.add(
+                                    ChatItem.Assistant(
+                                        id = "asst_${newId}_err",
+                                        text = "⚠ Could not reach ${cloud.name} — check internet and your API key. (${e.message})"
+                                    )
+                                )
+                                persist()
+                            }
+                            streamingText = null
+                            listState.animateScrollToItem(messages.size - 1)
+                        } else {
+                            // Simulate Karen on-device response (token streaming)
+                            kotlinx.coroutines.delay(400)
+                            val fileNote = if (sentAttachments.isNotEmpty()) {
+                                val names = sentAttachments.joinToString(", ") { it.name }
+                                " I received ${sentAttachments.size} file(s): $names. Files are stored locally in the vault — 0 bytes sent externally."
+                            } else ""
+                            val fullText = "No data found — connect a local model in Model Manager.$fileNote"
+                            playOut(fullText)
+                            if (!cancelGeneration) {
+                                messages.add(
+                                    ChatItem.Assistant(
+                                        id = "asst_$newId",
+                                        text = fullText
+                                    )
+                                )
+                                persist()
+                            }
+                            streamingText = null
+                            listState.animateScrollToItem(messages.size - 1)
                         }
-                        streamingText = null
-                        listState.animateScrollToItem(messages.size - 1)
                     }
                 }
             },

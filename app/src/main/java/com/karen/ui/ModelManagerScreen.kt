@@ -33,24 +33,7 @@ data class GgufModel(
     val quant: String
 )
 
-/** Third-party cloud providers connectable from the Model Manager. */
-data class CloudProvider(
-    val id: String,
-    val name: String,
-    val keyUrl: String,
-    val note: String
-)
-
-private val cloudProviders = listOf(
-    CloudProvider("openai", "OpenAI GPT-4o", "platform.openai.com/api-keys", "GPT-4o + o-series via API"),
-    CloudProvider("anthropic", "Anthropic Claude", "console.anthropic.com", "Claude Sonnet + Opus via API"),
-    CloudProvider("gemini", "Google Gemini", "aistudio.google.com/apikey", "Gemini Flash + Pro via API"),
-    CloudProvider("mistral", "Mistral Large", "console.mistral.ai", "Mistral Large + Codestral"),
-    CloudProvider("grok", "xAI Grok", "console.x.ai", "Grok 3 + mini via API"),
-    CloudProvider("openrouter", "OpenRouter", "openrouter.ai/keys", "One key → 200+ models gateway"),
-    CloudProvider("deepseek", "DeepSeek", "platform.deepseek.com", "DeepSeek V3 + R1 via API"),
-    CloudProvider("groq", "Groq", "console.groq.com", "Ultra-low-latency LPU inference")
-)
+/** Cloud provider catalogue lives in CloudChatApi.kt (shared with the chat). */
 
 @Composable
 private fun ModelSourceRow(
@@ -103,6 +86,13 @@ fun ModelManagerScreen(
     }
 
     var activeModel by remember { mutableStateOf<GgufModel?>(null) }
+
+    /** Re-reads installed weights from prefs (after downloads/imports). */
+    fun reloadModels() {
+        models.clear()
+        UserPrefs.models(ctx).forEach { n -> models.add(GgufModel(n, "-", "-", "-", "GGUF")) }
+        if (activeModel != null && models.none { it.name == activeModel?.name }) activeModel = null
+    }
     var showUrlDialog by remember { mutableStateOf(false) }
     var showApiDialog by remember { mutableStateOf(false) }
     var apiError by remember { mutableStateOf<String?>(null) }
@@ -112,6 +102,23 @@ fun ModelManagerScreen(
     var selectedProvider by remember { mutableStateOf<CloudProvider?>(null) }
     var apiKeyInput by remember { mutableStateOf("") }
     var keyVisible by remember { mutableStateOf(false) }
+
+    // Poll the downloader so progress/completion lands in this screen.
+    LaunchedEffect(Unit) {
+        while (true) {
+            when (val ev = ModelDownloader.refresh(ctx)) {
+                is DownloadEvent.Completed -> {
+                    reloadModels()
+                    android.widget.Toast.makeText(ctx, "${ev.name} installed", android.widget.Toast.LENGTH_SHORT).show()
+                }
+                is DownloadEvent.Failed -> {
+                    android.widget.Toast.makeText(ctx, "Download failed: ${ev.reason}", android.widget.Toast.LENGTH_LONG).show()
+                }
+                else -> {}
+            }
+            kotlinx.coroutines.delay(1500)
+        }
+    }
 
     val importModelLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
@@ -301,7 +308,7 @@ fun ModelManagerScreen(
                 }
             }
 
-            // Download-in-progress card
+            // Download-in-progress card (live DownloadManager state)
             item {
                 Column(
                     modifier = Modifier
@@ -313,7 +320,35 @@ fun ModelManagerScreen(
                 ) {
                     Text("Active Download", color = colors.textMuted, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                     Spacer(Modifier.height(6.dp))
-                    Text("No data found", color = colors.textMuted, fontSize = 12.sp)
+                    val activeName = ModelDownloader.activeName
+                    if (activeName == null) {
+                        Text("No data found", color = colors.textMuted, fontSize = 12.sp)
+                    } else {
+                        Text(activeName, color = colors.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                        Spacer(Modifier.height(6.dp))
+                        LinearProgressIndicator(
+                            progress = { ModelDownloader.progress },
+                            modifier = Modifier.fillMaxWidth(),
+                            color = colors.accentGreen,
+                            trackColor = colors.surfaceHover
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                ModelDownloader.status,
+                                color = colors.textMuted,
+                                fontSize = 11.5.sp,
+                                fontFamily = FontFamily.Monospace
+                            )
+                            OutlinedButton(onClick = { ModelDownloader.cancel(ctx) }) {
+                                Text("Cancel", fontSize = 12.sp)
+                            }
+                        }
+                    }
                 }
             }
 
@@ -347,6 +382,90 @@ fun ModelManagerScreen(
                     Text("Weight ${m.size} · RAM Floor ${m.ramRequired} · ${m.throughput} · ${m.quant}", color = colors.textMuted, fontSize = 11.5.sp, fontFamily = FontFamily.Monospace)
                 }
             }
+
+            // Available to download — tap to fetch real GGUF weights.
+            item {
+                Spacer(Modifier.height(6.dp))
+                Text("Available to Download", color = colors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(6.dp))
+                if (models.isEmpty()) {
+                    Text(
+                        "Nothing installed yet — pick a model below and it appears in selection once downloaded.",
+                        color = colors.textMuted,
+                        fontSize = 12.sp
+                    )
+                    Spacer(Modifier.height(6.dp))
+                }
+            }
+
+            items(modelCatalog) { entry ->
+                val alreadyInstalled = models.any { it.name == entry.name }
+                val isActive = ModelDownloader.activeName == entry.name
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(colors.surface)
+                        .border(1.dp, colors.border, RoundedCornerShape(12.dp))
+                        .padding(14.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(entry.name, color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                "${entry.sizeLabel} · ${entry.quant} · RAM ${entry.ram}",
+                                color = colors.textMuted,
+                                fontSize = 11.5.sp,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                        when {
+                            alreadyInstalled -> {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.CheckCircle, contentDescription = null, tint = colors.accentGreen, modifier = Modifier.size(16.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("Installed", color = colors.accentGreen, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                                }
+                            }
+                            isActive -> {
+                                OutlinedButton(onClick = { ModelDownloader.cancel(ctx) }) {
+                                    Text("Cancel", fontSize = 12.sp)
+                                }
+                            }
+                            else -> {
+                                Button(
+                                    onClick = {
+                                        if (ModelDownloader.activeName != null) {
+                                            android.widget.Toast.makeText(ctx, "One download at a time", android.widget.Toast.LENGTH_SHORT).show()
+                                        } else if (ModelDownloader.startEntry(ctx, entry)) {
+                                            android.widget.Toast.makeText(ctx, "Downloading ${entry.name}", android.widget.Toast.LENGTH_SHORT).show()
+                                        } else {
+                                            android.widget.Toast.makeText(ctx, "Could not start download", android.widget.Toast.LENGTH_SHORT).show()
+                                        }
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = colors.accentGreen)
+                                ) { Text("Download", fontSize = 12.5.sp) }
+                            }
+                        }
+                    }
+                    if (isActive) {
+                        Spacer(Modifier.height(8.dp))
+                        LinearProgressIndicator(
+                            progress = { ModelDownloader.progress },
+                            modifier = Modifier.fillMaxWidth(),
+                            color = colors.accentGreen,
+                            trackColor = colors.surfaceHover
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            ModelDownloader.status,
+                            color = colors.textMuted,
+                            fontSize = 11.5.sp,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                }
+            }
         }
 
         // External URL download dialog
@@ -370,9 +489,15 @@ fun ModelManagerScreen(
                 confirmButton = {
                     TextButton(onClick = {
                         if (url.isNotBlank()) {
-                            models.add(GgufModel(url.substringAfterLast('/').ifBlank { "remote.gguf" }, "URL download", "—", "—", "GGUF"))
-                            UserPrefs.saveModels(ctx, models.map { it.name })
-                            android.widget.Toast.makeText(ctx, "Download queued", android.widget.Toast.LENGTH_SHORT).show()
+                            val fileName = url.substringAfterLast('/').substringBefore('?').ifBlank { "remote.gguf" }
+                            val displayName = fileName.removeSuffix(".gguf").ifBlank { fileName }
+                            if (ModelDownloader.activeName != null) {
+                                android.widget.Toast.makeText(ctx, "One download at a time", android.widget.Toast.LENGTH_SHORT).show()
+                            } else if (ModelDownloader.start(ctx, displayName, fileName, url.trim())) {
+                                android.widget.Toast.makeText(ctx, "Downloading $displayName", android.widget.Toast.LENGTH_SHORT).show()
+                            } else {
+                                android.widget.Toast.makeText(ctx, "Could not start download", android.widget.Toast.LENGTH_SHORT).show()
+                            }
                         }
                         showUrlDialog = false
                     }) { Text("Download") }
@@ -438,6 +563,13 @@ fun ModelManagerScreen(
                                 fontSize = 12.sp,
                                 fontFamily = FontFamily.Monospace,
                                 color = colors.accentBlue
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                "Calls: ${provider.defaultModel} (live)",
+                                fontSize = 12.sp,
+                                fontFamily = FontFamily.Monospace,
+                                color = colors.accentGreen
                             )
                             Spacer(Modifier.height(10.dp))
                             OutlinedTextField(

@@ -1023,19 +1023,48 @@ fun ModelSelectorSheet(
                 fontWeight = FontWeight.Bold
             )
             Text(
-                text = "Fully on-device inference with zero cloud egress",
+                text = "On-device weights and live cloud APIs",
                 color = colors.textMuted,
                 fontSize = 12.sp,
                 modifier = Modifier.padding(top = 2.dp, bottom = 16.dp)
             )
 
-            val models = listOf(
-                Triple("Karen 4B", "Local NPU · 3.8GB · Q4_K_M · Fast & Sovereign", "Active"),
-                Triple("Karen Reasoning (o1)", "7B Q5 · Deep Chain of Thought & Verification", "Ready"),
-                Triple("Karen Sovereign Pro", "Hybrid fallback for large context windows", "Available")
-            )
+            val sheetCtx = androidx.compose.ui.platform.LocalContext.current
+            // Poll the downloader while the sheet is open so tap-to-download
+            // finalizes (registers) even if Model Manager was never visited.
+            LaunchedEffect(Unit) {
+                while (true) {
+                    when (val ev = ModelDownloader.refresh(sheetCtx)) {
+                        is DownloadEvent.Completed -> android.widget.Toast.makeText(
+                            sheetCtx, "${ev.name} installed — tap it to load", android.widget.Toast.LENGTH_SHORT
+                        ).show()
+                        is DownloadEvent.Failed -> android.widget.Toast.makeText(
+                            sheetCtx, "Download failed: ${ev.reason}", android.widget.Toast.LENGTH_LONG
+                        ).show()
+                        else -> {}
+                    }
+                    kotlinx.coroutines.delay(1500)
+                }
+            }
 
-            models.forEach { (name, desc, badge) ->
+            // My Models — only weights actually downloaded on this device.
+            Text(
+                text = "My Models · downloaded",
+                color = colors.textMuted,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(bottom = 4.dp)
+            )
+            val installed = UserPrefs.models(sheetCtx)
+            if (installed.isEmpty()) {
+                Text(
+                    text = "No local models on this device yet — download one below or add a cloud API key.",
+                    color = colors.textMuted,
+                    fontSize = 12.5.sp,
+                    modifier = Modifier.padding(vertical = 6.dp)
+                )
+            }
+            installed.forEach { name ->
                 val isSelected = selectedModel == name
                 Row(
                     modifier = Modifier
@@ -1068,11 +1097,14 @@ fun ModelSelectorSheet(
                             Box(
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(10.dp))
-                                    .background(if (isSelected) colors.accentGreen.copy(alpha = 0.2f) else colors.border.copy(alpha = 0.4f))
+                                    .background(
+                                        if (isSelected) colors.accentGreen.copy(alpha = 0.2f)
+                                        else colors.border.copy(alpha = 0.4f)
+                                    )
                                     .padding(horizontal = 6.dp, vertical = 2.dp)
                             ) {
                                 Text(
-                                    text = badge,
+                                    text = if (isSelected) "Active" else "GGUF",
                                     color = if (isSelected) colors.accentGreen else colors.textMuted,
                                     fontSize = 10.5.sp,
                                     fontWeight = FontWeight.Bold
@@ -1081,7 +1113,7 @@ fun ModelSelectorSheet(
                         }
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            text = desc,
+                            text = "On-device · tap to load",
                             color = colors.textMuted,
                             fontSize = 11.5.sp
                         )
@@ -1101,6 +1133,178 @@ fun ModelSelectorSheet(
                 }
             }
 
+            Spacer(Modifier.height(10.dp))
+
+            // Live third-party APIs — only providers with a stored key appear here.
+            val keyedProviders = remember {
+                cloudProviders.filter { UserPrefs.apiKey(sheetCtx, it.id).isNotBlank() }
+            }
+            if (keyedProviders.isNotEmpty()) {
+                Text(
+                    text = "Cloud APIs · live via your keys",
+                    color = colors.textMuted,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(bottom = 4.dp)
+                )
+                keyedProviders.forEach { provider ->
+                    val isSelected = selectedModel == provider.name
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 6.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(if (isSelected) colors.surfaceHover else Color.Transparent)
+                            .border(
+                                1.dp,
+                                if (isSelected) colors.accentBlue else colors.border,
+                                RoundedCornerShape(12.dp)
+                            )
+                            .clickable {
+                                onSelectModel(provider.name)
+                                onDismiss()
+                            }
+                            .padding(14.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = provider.name,
+                                    color = colors.textPrimary,
+                                    fontSize = 14.5.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(colors.accentBlue.copy(alpha = 0.2f))
+                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                ) {
+                                    Text(
+                                        text = "Live",
+                                        color = colors.accentBlue,
+                                        fontSize = 10.5.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                text = provider.defaultModel,
+                                color = colors.textMuted,
+                                fontSize = 11.5.sp,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+
+                        RadioButton(
+                            selected = isSelected,
+                            onClick = {
+                                onSelectModel(provider.name)
+                                onDismiss()
+                            },
+                            colors = RadioButtonDefaults.colors(
+                                selectedColor = colors.accentBlue,
+                                unselectedColor = colors.textMuted
+                            )
+                        )
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+            }
+
+            // Available to download — tap a model to fetch its GGUF weights.
+            Text(
+                text = "Available to download",
+                color = colors.textMuted,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(bottom = 4.dp)
+            )
+            modelCatalog.forEach { entry ->
+                val alreadyInstalled = entry.name in installed
+                val isActive = ModelDownloader.activeName == entry.name
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 6.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(colors.surface)
+                        .border(1.dp, colors.border, RoundedCornerShape(12.dp))
+                        .padding(14.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                entry.name,
+                                color = colors.textPrimary,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                "${entry.sizeLabel} · ${entry.quant} · RAM ${entry.ram}",
+                                color = colors.textMuted,
+                                fontSize = 11.5.sp,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                        when {
+                            alreadyInstalled -> {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.CheckCircle, contentDescription = null, tint = colors.accentGreen, modifier = Modifier.size(16.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("Installed", color = colors.accentGreen, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                                }
+                            }
+                            isActive -> {
+                                IconButton(
+                                    onClick = { ModelDownloader.cancel(sheetCtx) },
+                                    modifier = Modifier.size(32.dp)
+                                ) {
+                                    Icon(Icons.Default.Close, contentDescription = "Cancel download", tint = colors.accentRed, modifier = Modifier.size(16.dp))
+                                }
+                            }
+                            else -> {
+                                OutlinedButton(
+                                    onClick = {
+                                        if (ModelDownloader.activeName != null) {
+                                            android.widget.Toast.makeText(sheetCtx, "One download at a time", android.widget.Toast.LENGTH_SHORT).show()
+                                        } else if (ModelDownloader.startEntry(sheetCtx, entry)) {
+                                            android.widget.Toast.makeText(sheetCtx, "Downloading ${entry.name}", android.widget.Toast.LENGTH_SHORT).show()
+                                        } else {
+                                            android.widget.Toast.makeText(sheetCtx, "Could not start download", android.widget.Toast.LENGTH_SHORT).show()
+                                        }
+                                    },
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                                ) {
+                                    Icon(Icons.Default.Download, contentDescription = null, tint = colors.accentGreen, modifier = Modifier.size(15.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("Get", color = colors.accentGreen, fontSize = 12.5.sp)
+                                }
+                            }
+                        }
+                    }
+                    if (isActive) {
+                        Spacer(Modifier.height(8.dp))
+                        LinearProgressIndicator(
+                            progress = { ModelDownloader.progress },
+                            modifier = Modifier.fillMaxWidth(),
+                            color = colors.accentGreen,
+                            trackColor = colors.surfaceHover
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            ModelDownloader.status,
+                            color = colors.textMuted,
+                            fontSize = 11.sp,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                }
+            }
             Spacer(Modifier.height(10.dp))
 
             // Shortcut into the full Model Manager (import / export / GGUF weights)

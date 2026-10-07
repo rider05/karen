@@ -47,3 +47,5 @@ KarenHomeBackHandler(onNavigateToHome = onNavigateToHome) {
   `fillMaxSize` overlay inside the header `Column`; that blanks content).
 - API keys / secrets: `UserPrefs` `SharedPreferences` only, per-provider id,
   masked display (`••••abcd`), explicit Save/Remove. Never log keys.
+  Live calls live in `ui/CloudChatApi.kt` (HttpURLConnection + org.json, no new
+  deps); chat routes to a keyed provider selected in the model sheet.

@@ -601,6 +601,17 @@ fun WorkspaceScreen(
     // Project chat input (ChatScreen-style, per project)
     var chatInput by remember { mutableStateOf("") }
     var chatBusy by remember { mutableStateOf(false) }
+    val chatThreadState = androidx.compose.foundation.lazy.rememberLazyListState()
+
+    // Keep the thinking indicator in view while a reply generates.
+    LaunchedEffect(chatBusy) {
+        if (!chatBusy) return@LaunchedEffect
+        kotlinx.coroutines.delay(120)
+        val total = chatThreadState.layoutInfo.totalItemsCount
+        if (total > 0) {
+            try { chatThreadState.animateScrollToItem(total - 1) } catch (_: Exception) {}
+        }
+    }
 
     fun sendProjectMessage(project: Project, text: String) {
         val t = text.trim()
@@ -962,6 +973,7 @@ fun WorkspaceScreen(
 
         // Chat thread (ChatScreen-style, per project)
         LazyColumn(
+            state = chatThreadState,
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()
@@ -1006,6 +1018,27 @@ fun WorkspaceScreen(
                         SelectionContainer {
                             Text(m.text, color = colors.textPrimary, fontSize = 14.sp, lineHeight = 20.sp)
                         }
+                    }
+                }
+            }
+            // Live thinking animation while the project reply generates.
+            if (chatBusy) {
+                item {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(22.dp)
+                                    .clip(CircleShape)
+                                    .background(colors.accentGreen),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(Icons.Default.Psychology, contentDescription = "Karen", tint = Color.White, modifier = Modifier.size(14.dp))
+                            }
+                            Spacer(Modifier.width(7.dp))
+                            Text("Karen", color = colors.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                        ThinkingIndicator(label = "Thinking")
                     }
                 }
             }

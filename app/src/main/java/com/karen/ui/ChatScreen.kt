@@ -483,12 +483,22 @@ fun ChatScreen(
                                 }
 
                                 // Assistant Body Typography
-                                Text(
-                                    text = item.text,
-                                    color = colors.textPrimary,
-                                    fontSize = 15.sp,
-                                    lineHeight = 22.sp
-                                )
+                                // While the reply hasn't started streaming, show the
+                                // live thinking animation (phase label + elapsed).
+                                val isLiveThinking = isGenerating && item.id == streamingId && !streamingContent
+                                if (isLiveThinking) {
+                                    ThinkingIndicator(
+                                        label = item.text.ifBlank { "Thinking" },
+                                        elapsed = "%.1fs".format((System.currentTimeMillis() - streamStartMs) / 1000.0)
+                                    )
+                                } else {
+                                    Text(
+                                        text = item.text,
+                                        color = colors.textPrimary,
+                                        fontSize = 15.sp,
+                                        lineHeight = 22.sp
+                                    )
+                                }
 
                                 // Code Block Container
                                 if (item.codeJson != null) {

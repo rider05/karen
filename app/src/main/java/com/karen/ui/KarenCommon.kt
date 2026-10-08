@@ -456,6 +456,62 @@ fun ThoughtAccordion(
 }
 
 /**
+ * Live thinking progress: three bouncing dots + phase label + elapsed time.
+ * Shown inside the streaming assistant bubble until real tokens arrive.
+ */
+@Composable
+fun ThinkingIndicator(
+    label: String = "Thinking",
+    elapsed: String? = null,
+    modifier: Modifier = Modifier
+) {
+    val colors = LocalKarenColors.current
+    val transition = rememberInfiniteTransition(label = "thinking_dots")
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = modifier.padding(vertical = 4.dp)
+    ) {
+        repeat(3) { i ->
+            val dotScale by transition.animateFloat(
+                initialValue = 0.55f,
+                targetValue = 1f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(550, delayMillis = i * 160, easing = FastOutSlowInEasing),
+                    repeatMode = RepeatMode.Reverse
+                ),
+                label = "think_dot_$i"
+            )
+            Box(
+                modifier = Modifier
+                    .size(8.dp)
+                    .scale(dotScale)
+                    .clip(CircleShape)
+                    .background(colors.accentGreen)
+            )
+            if (i < 2) Spacer(Modifier.width(5.dp))
+        }
+        Spacer(Modifier.width(10.dp))
+        Text(
+            text = label,
+            color = colors.textSecondary,
+            fontSize = 13.5.sp,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1
+        )
+        if (elapsed != null) {
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = elapsed,
+                color = colors.textMuted,
+                fontSize = 11.5.sp,
+                fontFamily = FontFamily.Monospace,
+                maxLines = 1
+            )
+        }
+    }
+}
+
+/**
  * Tool Call Status Chip
  */
 @Composable

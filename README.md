@@ -1,85 +1,57 @@
-🤖 Karen — Offline AI Assistant
-📱 Download Karen
-Latest Android APK
-🚀 ⬇️ DOWNLOAD KAREN APK
-Latest Release • Android • APK
+🤖 Karen
+📥 Download
+🚀 Latest APK
+⬇️ Download Karen APK
 
-Download the APK from the apks/ folder and install it on your Android device.
+The APK is hosted directly in this repository:
+
+apks/karen-debug.apk
 
 ✨ Features
-🧠 Offline AI Assistant
+🤖 Offline AI Assistant
 
 🔒 Privacy-focused
 
-📱 Android optimized
+📱 Android application
 
 ⚡ Fast and lightweight
 
-🛠️ Tool-based assistant system
+🧠 Local AI capabilities
 
-🎨 Modern user interface
+🎨 Clean and modern interface
 
-🌐 Works without constant internet access
+🌐 Designed to work offline
 
-📸 Screenshots
-Replace the screenshot filenames above with the actual files inside assets/screenshots/.
+📲 Installation
+Download karen-debug.apk using the button above.
 
-📥 Installation
-Method 1 — Download from GitHub
-Open the APK folder.
+Open the downloaded APK on your Android device.
 
-Download the latest .apk file.
+If Android asks, allow installation from the requested source.
 
-Open the downloaded APK on your Android phone.
+Tap Install.
 
-Follow Android's installation prompt.
-
-Launch Karen.
-
-Method 2 — GitHub Release
-If APKs are published through GitHub Releases, download the latest APK from the Releases section.
-
-🔐 Privacy
-Karen is designed as an offline Android AI assistant, with privacy and local processing as key goals.
-
-Your data should remain on your device whenever the application's architecture allows it.
-
-🧩 Project Structure
-karen/ ├── apks/                  # Android APK builds ├── app/                   # Android application source ├── assets/ │   └── screenshots/       # Application screenshots ├── docs/                  # Project documentation ├── gradle/                # Gradle configuration ├── webapp/                # Web interface / prototypes ├── build.gradle.kts ├── settings.gradle.kts └── README.md
+Open Karen and enjoy! 🚀
 
 🛠️ Build From Source
 Clone the repository:
 
 git clone https://github.com/rider05/karen.git cd karen
 
-Build the Android project:
+Build the APK:
 
 ./gradlew assembleDebug
 
-The generated APK will normally be available under:
+The APK will be generated under:
 
 app/build/outputs/apk/
 
-🌟 Support the Project
-If you like Karen:
+📁 APK Location
+karen/ └── apks/    └── karen-debug.apk
 
-⭐ Star the repository
-🐛 Report bugs
-💡 Suggest features
-🔧 Contribute improvements
+⭐ Support
+If you like Karen, consider giving the project a ⭐ on GitHub!
 
-📄 Documentation
-Project Plan
-
-Design System
-
-Dataset Specification
-
-Tool Schema
-
-📜 License
-See the repository license for the terms governing use and distribution.
-
-Made with ❤️ for a private, local AI experience.
+Made with ❤️ for a private AI experience
 
 🤖 Karen

@@ -169,23 +169,33 @@ private suspend fun compileAndTest(dir: File): String = withContext(Dispatchers.
     }
 }
 
+private val SCAFFOLD_HEADER = Regex("(?m)^[ \t]*///[ \t]*FILE[ \t]*:(.+)$", RegexOption.IGNORE_CASE)
+private val SCAFFOLD_END = Regex("(?m)^[ \t]*///[ \t]*END[ \t]*$", RegexOption.IGNORE_CASE)
+
 fun parseScaffold(text: String): List<Pair<String, String>> {
     val results = mutableListOf<Pair<String, String>>()
-    val marker = "///FILE: "
-    var i = 0
-    while (i < text.length) {
-        val start = text.indexOf(marker, i)
-        if (start < 0) break
-        val nl = text.indexOf('\n', start)
-        if (nl < 0) break
-        val relPath = text.substring(start + marker.length, nl).trim().replace('\\', '/')
-        val end = text.indexOf("///END", nl + 1)
-        if (end < 0) break
-        val content = text.substring(nl + 1, end)
-        if (relPath.isNotBlank()) results.add(relPath to content)
-        i = end + "///END".length
+    val matches = SCAFFOLD_HEADER.findAll(text).toList()
+    for ((idx, m) in matches.withIndex()) {
+        val relPath = m.groupValues[1].trim().replace('\\', '/')
+        if (relPath.isBlank()) continue
+        val blockStart = m.range.last + 1
+        val blockEnd = matches.getOrNull(idx + 1)?.range?.first ?: text.length
+        var content = text.substring(blockStart, blockEnd)
+        // Cut at an explicit ///END; without one (cut-off reply) the rest
+        // of the text still belongs to this file — never drop it.
+        SCAFFOLD_END.find(content)?.let { content = content.substring(0, it.range.first) }
+        content = stripWrappingFence(content).trim('\n')
+        results.add(relPath to content)
     }
     return results
+}
+
+private fun stripWrappingFence(content: String): String {
+    val lines = content.lines()
+    if (lines.size >= 2 && lines.first().trimStart().startsWith("```") && lines.last().trim() == "```") {
+        return lines.drop(1).dropLast(1).joinToString("\n")
+    }
+    return content
 }
 
 private val SCAFFOLD_DIR_RENAME = mapOf("lib/main/java" to "src/main/java")
@@ -342,12 +352,12 @@ private const val MAX_SCAFFOLD_CHUNKS = 4
 
 /** True when the reply was cut off mid-build: more blocks opened than closed. */
 private fun isTruncatedScaffold(reply: String): Boolean {
-    val opens = "///FILE:".toRegex().findAll(reply).count()
-    val ends = "///END".toRegex().findAll(reply).count()
+    val opens = SCAFFOLD_HEADER.findAll(reply).count()
+    val ends = SCAFFOLD_END.findAll(reply).count()
     if (opens > ends) return true
-    val lastEnd = reply.lastIndexOf("///END")
-    val tail = if (lastEnd < 0) reply else reply.substring(lastEnd + "///END".length)
-    return tail.contains("///FILE:")
+    val lastEnd = SCAFFOLD_END.findAll(reply).lastOrNull()?.range?.last ?: -1
+    val tail = if (lastEnd < 0) reply else reply.substring(lastEnd + 1)
+    return SCAFFOLD_HEADER.containsMatchIn(tail)
 }
 
 /**
@@ -369,7 +379,8 @@ private suspend fun scaffoldWithModel(
     effort: String,
     threads: Int,
     selectedModelName: String,
-    windowTokens: Int
+    windowTokens: Int,
+    modelOverride: String? = null
 ): String {
     val perFileCap = (windowTokens / 4).coerceIn(2000, 12000)
     val system = "You are a code projectator for Karen Workspace. Reply using this exact format:\n" +
@@ -390,7 +401,8 @@ private suspend fun scaffoldWithModel(
                 history,
                 maxTokensFor(effort),
                 thinkingBudget = if (cloud.reasoning) thinkingBudgetFor(effort) else null,
-                historyLimit = historyTurnsFor(windowTokens)
+                historyLimit = historyTurnsFor(windowTokens),
+                model = modelOverride
             )
         }
         if (weightFile != null && KarenLlama.ready) {
@@ -570,11 +582,34 @@ fun WorkspaceScreen(
     var selected by remember { mutableStateOf<Project?>(null) }
     var showNewProject by remember { mutableStateOf(false) }
     var newName by remember { mutableStateOf("") }
+    // Per-card overflow menu + rename/delete state (keyed by project dir).
+    var cardMenuDir by remember { mutableStateOf<String?>(null) }
+    var renamingDir by remember { mutableStateOf<String?>(null) }
+    var renameInput by remember { mutableStateOf("") }
+    var deletingDir by remember { mutableStateOf<String?>(null) }
 
     // System back: dismiss dialog first, then step out of the open project,
     // then route to Home — same in-app behaviour as the chat screen.
     // Cloud model for project chat — same selection as Chat (locals + keyed APIs).
     var selectedModel by remember { mutableStateOf(UserPrefs.models(ctx).firstOrNull { !isCloudProviderName(it) } ?: modelCatalog.first().name) }
+    // Auto routing: best installed/connected model per project message.
+    var autoRoute by remember { mutableStateOf(UserPrefs.autoRoute(ctx)) }
+    var lastRouted by remember { mutableStateOf<String?>(null) }
+
+    fun routeFor(prompt: String): String {
+        if (!autoRoute) return selectedModel
+        val locals = UserPrefs.models(ctx).filter { !isCloudProviderName(it) }
+        val keyed = cloudProviders.filter { UserPrefs.apiKey(ctx, it.id).isNotBlank() }
+        val decision = routeModel(prompt, locals, keyed, UserPrefs.autoCloud(ctx))
+        if (decision != null) {
+            if (decision.modelName != lastRouted) {
+                lastRouted = decision.modelName
+                android.widget.Toast.makeText(ctx, "Auto: ${decision.modelName} (${decision.reason})", android.widget.Toast.LENGTH_SHORT).show()
+            }
+            return decision.modelName
+        }
+        return selectedModel
+    }
     var effort by remember { mutableStateOf(UserPrefs.defaultEffort(ctx)) }
     var showModelSheet by remember { mutableStateOf(false) }
 
@@ -582,6 +617,9 @@ fun WorkspaceScreen(
         when {
             showModelSheet -> { showModelSheet = false; true }
             showNewProject -> { showNewProject = false; true }
+            renamingDir != null -> { renamingDir = null; true }
+            deletingDir != null -> { deletingDir = null; true }
+            cardMenuDir != null -> { cardMenuDir = null; true }
             selected != null -> { selected = null; true }
             else -> false
         }
@@ -618,6 +656,8 @@ fun WorkspaceScreen(
         if (t.isBlank() || chatBusy) return
         chatBusy = true
         project.chat.add(ProjectChat("user", t))
+        // Auto routing swaps in the best model for this prompt.
+        val sendModel = routeFor(t)
         scope.launch {
             // 1. Plan steps derived from the ask (the model restructures on send).
             val steps = buildStepsFor(t)
@@ -625,14 +665,16 @@ fun WorkspaceScreen(
             steps.forEach { project.steps.add(ProjectStep(it)) }
             project.tasks.clear()
             steps.drop(1).forEach { project.tasks.add(ProjectTask(it)) }
-            // 2. Seed main.txt only for a brand-new empty project so the Code
-            //    tab has something to show. Existing projects keep their tree
-            //    — the model edits files in place (see step 6).
+            // 2. Seed main.txt only for a brand-new empty project with a
+            //    discussion prompt, so the Code tab has something to show.
+            //    Build requests skip the seed — the scaffold below writes
+            //    real project files instead of a stray main.txt.
             val dir = projectRootDir(project)
+            val wantsBuild = projectNeedsScaffold(t)
             val isEmptyProject = withContext(Dispatchers.IO) {
                 dir.listFiles()?.none { it.name != ".karen" } ?: true
             }
-            if (isEmptyProject) {
+            if (isEmptyProject && !wantsBuild) {
                 val mainFile = File(dir, "main.txt")
                 val prev = try {
                     if (mainFile.exists()) mainFile.readText() else project.codeNew
@@ -657,21 +699,22 @@ fun WorkspaceScreen(
             }
             // 3. If the user asked to build/change code, the model writes a full
             //    multi-file scaffold into the project. Files land on real paths.
-            if (projectNeedsScaffold(t)) {
-                val canCloud = findCloudProviderByName(selectedModel)?.let { p ->
+            if (wantsBuild) {
+                val canCloud = findCloudProviderByName(sendModel)?.let { p ->
                     UserPrefs.apiKey(ctx, p.id).isNotBlank()
                 } ?: false
-                val canLocal = ModelDownloader.weightFileFor(ctx, selectedModel) != null && KarenLlama.ready
+                val canLocal = ModelDownloader.weightFileFor(ctx, sendModel) != null && KarenLlama.ready
                 if (canCloud || canLocal) {
                     val threads = maxOf(2, minOf(6, Runtime.getRuntime().availableProcessors()))
-                    val cloudScaffold = findCloudProviderByName(selectedModel)
+                    val cloudScaffold = findCloudProviderByName(sendModel)
                     val cwCloudKey = cloudScaffold?.let { UserPrefs.apiKey(ctx, it.id) }.orEmpty()
                     val scaffoldMsg = scaffoldWithModel(
                         project, t, cloudScaffold, cwCloudKey,
-                        weightFile = ModelDownloader.weightFileFor(ctx, selectedModel),
+                        weightFile = ModelDownloader.weightFileFor(ctx, sendModel),
                         effort = effort, threads = threads,
-                        selectedModelName = selectedModel,
-                        windowTokens = UserPrefs.contextTokens(ctx)
+                        selectedModelName = sendModel,
+                        windowTokens = UserPrefs.contextTokens(ctx),
+                        modelOverride = cloudScaffold?.let { UserPrefs.apiModel(ctx, it.id) }.orEmpty().ifBlank { null }
                     )
                     project.chat.add(ProjectChat("assistant", scaffoldMsg))
                     project.filesVersion = System.currentTimeMillis()
@@ -702,11 +745,12 @@ fun WorkspaceScreen(
                 "You are Karen's workspace builder for project \"${project.name}\". " +
                     "Maintain the existing file structure. When changing code, output each changed file as " +
                     "///FILE: relative/path\n<complete file content>\n///END (up to 8 files, no fences, no prose inside blocks), " +
-                    "then a 1-2 line summary. For discussion-only replies, answer normally with no ///FILE blocks."
+                    "then a 1-2 line summary. For discussion-only replies, answer normally with no ///FILE blocks." +
+                    if (isReasoningModel(sendModel)) reasoningEffortHint(effort) else ""
             // 6. Assistant reply — live cloud call, on-device GGUF, else canned.
-            val cloud = findCloudProviderByName(selectedModel)
+            val cloud = findCloudProviderByName(sendModel)
             val cloudKey = cloud?.let { UserPrefs.apiKey(ctx, it.id) }.orEmpty()
-            val weightFile = if (cloud == null) ModelDownloader.weightFileFor(ctx, selectedModel) else null
+            val weightFile = if (cloud == null) ModelDownloader.weightFileFor(ctx, sendModel) else null
             if (cloud != null && cloudKey.isNotBlank()) {
                 try {
                     val history = mutableListOf<Pair<String, String>>()
@@ -726,7 +770,8 @@ fun WorkspaceScreen(
                         enriched,
                         maxTokensFor(effort),
                         thinkingBudget = if (cloud.reasoning) thinkingBudgetFor(effort) else null,
-                        historyLimit = cloudLimit
+                        historyLimit = cloudLimit,
+                        model = UserPrefs.apiModel(ctx, cloud.id).ifBlank { null }
                     )
                     project.chat.add(ProjectChat("assistant", reply))
                     applyModelFiles(reply)
@@ -755,10 +800,10 @@ fun WorkspaceScreen(
                     try {
                         val threads = maxOf(2, minOf(6, Runtime.getRuntime().availableProcessors()))
                         val loaded = withContext(Dispatchers.IO) {
-                            KarenLlama.ensureLoaded(weightFile, selectedModel, window, threads)
+                            KarenLlama.ensureLoaded(weightFile, sendModel, window, threads)
                         }
                         if (!loaded) {
-                            project.chat.add(ProjectChat("assistant", "Could not load $selectedModel into RAM."))
+                            project.chat.add(ProjectChat("assistant", "Could not load $sendModel into RAM."))
                         } else {
                             val pairs = mutableListOf<Pair<String, String>>()
                             pairs.add("user" to "Project files:\n$modelCtx")
@@ -812,12 +857,12 @@ fun WorkspaceScreen(
             .background(colors.background)
     ) {
         ChatGPTTopAppBar(
-            selectedModel = selectedModel,
+            selectedModel = if (autoRoute) "Auto → " + (lastRouted ?: selectedModel) else selectedModel,
             onMenuClick = onOpenDrawer,
             onModelClick = { showModelSheet = true },
             onBackClick = onNavigateToHome,
-            effort = if (findCloudProviderByName(selectedModel)?.reasoning == true) effort else null,
-            efforts = listOf("Low", "Medium", "High", "Max", "Extreme", "Theme"),
+            effort = if (isReasoningModel(if (autoRoute) (lastRouted ?: selectedModel) else selectedModel)) effort else null,
+            efforts = listOf("Low", "Medium", "High", "Max", "Extreme", "XHigh"),
             onSelectEffort = { effort = it },
             moreActions = listOf(
                 Triple("Scaffold project from prompt", Icons.Default.AutoFixHigh) {
@@ -833,7 +878,8 @@ fun WorkspaceScreen(
                             weightFile = ModelDownloader.weightFileFor(ctx, selectedModel),
                             effort = effort, threads = threads,
                             selectedModelName = selectedModel,
-                            windowTokens = UserPrefs.contextTokens(ctx)
+                            windowTokens = UserPrefs.contextTokens(ctx),
+                            modelOverride = cloud?.let { UserPrefs.apiModel(ctx, it.id) }.orEmpty().ifBlank { null }
                         )
                         selected!!.chat.add(ProjectChat("assistant", scaffold))
                         selected!!.filesVersion = System.currentTimeMillis()
@@ -889,6 +935,69 @@ fun WorkspaceScreen(
                                 Text(p.dir, color = colors.textMuted, fontSize = 10.5.sp, fontFamily = FontFamily.Monospace, maxLines = 1)
                             }
                             Text(String.format("%02d:%02d:%02d", totalSec / 3600, (totalSec % 3600) / 60, totalSec % 60), color = colors.textMuted, fontSize = 11.5.sp, fontFamily = FontFamily.Monospace)
+                            Box {
+                                IconButton(
+                                    onClick = { cardMenuDir = p.dir },
+                                    modifier = Modifier.size(32.dp)
+                                ) {
+                                    Icon(Icons.Default.MoreVert, contentDescription = "Project options", tint = colors.textMuted, modifier = Modifier.size(17.dp))
+                                }
+                                DropdownMenu(
+                                    expanded = cardMenuDir == p.dir,
+                                    onDismissRequest = { cardMenuDir = null },
+                                    modifier = Modifier.background(colors.surface)
+                                ) {
+                                    DropdownMenuItem(
+                                        text = { Text("Rename", color = colors.textPrimary, fontSize = 13.sp) },
+                                        leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null, tint = colors.textSecondary, modifier = Modifier.size(16.dp)) },
+                                        onClick = {
+                                            cardMenuDir = null
+                                            renameInput = p.name
+                                            renamingDir = p.dir
+                                        }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Duplicate", color = colors.textPrimary, fontSize = 13.sp) },
+                                        leadingIcon = { Icon(Icons.Default.ContentCopy, contentDescription = null, tint = colors.textSecondary, modifier = Modifier.size(16.dp)) },
+                                        onClick = {
+                                            cardMenuDir = null
+                                            scope.launch {
+                                                val src = withContext(Dispatchers.IO) { File(p.dir) }
+                                                val base = "${p.name} copy"
+                                                var target = base
+                                                var n = 2
+                                                while (projects.any { it.name == target }) {
+                                                    target = "$base $n"
+                                                    n++
+                                                }
+                                                val dst = File(src.parentFile, target)
+                                                val ok = withContext(Dispatchers.IO) {
+                                                    try {
+                                                        src.copyRecursively(dst, overwrite = false)
+                                                        File(dst, ".karen").deleteRecursively()
+                                                        true
+                                                    } catch (_: Exception) { false }
+                                                }
+                                                if (ok) {
+                                                    projects.add(Project(target, dst.absolutePath))
+                                                    UserPrefs.saveProjects(ctx, projects.map { it.name to it.dir })
+                                                    android.widget.Toast.makeText(ctx, "Duplicated as $target", android.widget.Toast.LENGTH_SHORT).show()
+                                                } else {
+                                                    android.widget.Toast.makeText(ctx, "Duplicate failed", android.widget.Toast.LENGTH_SHORT).show()
+                                                }
+                                            }
+                                        }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Delete", color = colors.accentRed, fontSize = 13.sp) },
+                                        leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null, tint = colors.accentRed, modifier = Modifier.size(16.dp)) },
+                                        onClick = {
+                                            cardMenuDir = null
+                                            deletingDir = p.dir
+                                        }
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -926,6 +1035,85 @@ fun WorkspaceScreen(
                         }) { Text("Create") }
                     },
                     dismissButton = { TextButton(onClick = { showNewProject = false }) { Text("Cancel") } }
+                )
+            }
+
+            // Rename project: renames the on-disk folder, keeps its files.
+            val renaming = renamingDir?.let { dir -> projects.firstOrNull { it.dir == dir } }
+            if (renaming != null) {
+                AlertDialog(
+                    onDismissRequest = { renamingDir = null },
+                    containerColor = colors.surface,
+                    titleContentColor = colors.textPrimary,
+                    textContentColor = colors.textSecondary,
+                    title = { Text("Rename project") },
+                    text = {
+                        OutlinedTextField(
+                            value = renameInput,
+                            onValueChange = { renameInput = it },
+                            label = { Text("Project name", color = colors.textMuted) },
+                            singleLine = true,
+                            textStyle = androidx.compose.ui.text.TextStyle(color = colors.textPrimary),
+                            colors = karenFieldColors(colors)
+                        )
+                    },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            val clean = renameInput.trim().replace('/', '_').replace('\\', '_')
+                            if (clean.isBlank() || clean.contains("..")) return@TextButton
+                            scope.launch {
+                                val ok = withContext(Dispatchers.IO) {
+                                    try {
+                                        val src = File(renaming.dir)
+                                        if (clean == renaming.name) return@withContext true
+                                        if (projects.any { it.name == clean && it.dir != renaming.dir }) return@withContext false
+                                        val dst = File(src.parentFile, clean)
+                                        if (dst.exists()) return@withContext false
+                                        if (!src.renameTo(dst)) return@withContext false
+                                        withContext(Dispatchers.Main) {
+                                            val idx = projects.indexOfFirst { it.dir == renaming.dir }
+                                            if (idx >= 0) projects[idx] = renaming.copy(name = clean, dir = dst.absolutePath)
+                                            UserPrefs.saveProjects(ctx, projects.map { it.name to it.dir })
+                                        }
+                                        true
+                                    } catch (_: Exception) { false }
+                                }
+                                if (!ok) {
+                                    android.widget.Toast.makeText(ctx, "Rename failed — name taken?", android.widget.Toast.LENGTH_SHORT).show()
+                                }
+                                renamingDir = null
+                            }
+                        }) { Text("Rename", color = colors.accentGreen) }
+                    },
+                    dismissButton = { TextButton(onClick = { renamingDir = null }) { Text("Cancel", color = colors.textMuted) } }
+                )
+            }
+
+            // Delete project: removes the folder and its files for good.
+            val deleting = deletingDir?.let { dir -> projects.firstOrNull { it.dir == dir } }
+            if (deleting != null) {
+                AlertDialog(
+                    onDismissRequest = { deletingDir = null },
+                    containerColor = colors.surface,
+                    titleContentColor = colors.textPrimary,
+                    textContentColor = colors.textSecondary,
+                    title = { Text("Delete project?") },
+                    text = { Text("“${deleting.name}” and all its files will be removed from this device. This cannot be undone.") },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            scope.launch {
+                                withContext(Dispatchers.IO) {
+                                    try { File(deleting.dir).deleteRecursively() } catch (_: Exception) {}
+                                }
+                                projects.removeAll { it.dir == deleting.dir }
+                                if (selected?.dir == deleting.dir) selected = null
+                                UserPrefs.saveProjects(ctx, projects.map { it.name to it.dir })
+                                deletingDir = null
+                                android.widget.Toast.makeText(ctx, "Deleted ${deleting.name}", android.widget.Toast.LENGTH_SHORT).show()
+                            }
+                        }) { Text("Delete", color = colors.accentRed) }
+                    },
+                    dismissButton = { TextButton(onClick = { deletingDir = null }) { Text("Cancel", color = colors.textMuted) } }
                 )
             }
             return@Column
@@ -1015,8 +1203,24 @@ fun WorkspaceScreen(
                             Text("Karen", color = colors.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                         }
                         Spacer(Modifier.height(4.dp))
-                        SelectionContainer {
-                            Text(m.text, color = colors.textPrimary, fontSize = 14.sp, lineHeight = 20.sp)
+                        val thinkSplit = remember(m.text) { splitThinkBlock(m.text) }
+                        if (thinkSplit.first != null) {
+                            ThoughtAccordion(
+                                thoughtDuration = "Reasoning trace",
+                                content = thinkSplit.first!!,
+                                initialExpanded = false
+                            )
+                            Spacer(Modifier.height(6.dp))
+                        }
+                        if (thinkSplit.second.isNotBlank()) {
+                            SelectionContainer {
+                                MarkdownText(
+                                    text = thinkSplit.second,
+                                    color = colors.textPrimary,
+                                    fontSize = 14.sp,
+                                    lineHeight = 20.sp
+                                )
+                            }
                         }
                     }
                 }
@@ -1134,9 +1338,20 @@ fun WorkspaceScreen(
     if (showModelSheet) {
         ModelSelectorSheet(
             selectedModel = selectedModel,
-            onSelectModel = { selectedModel = it },
+            onSelectModel = {
+                selectedModel = it
+                if (autoRoute) {
+                    autoRoute = false
+                    UserPrefs.setAutoRoute(ctx, false)
+                }
+            },
             onDismiss = { showModelSheet = false },
-            onOpenModelManager = onNavigateToModelManager
+            onOpenModelManager = onNavigateToModelManager,
+            autoRoute = autoRoute,
+            onSelectAuto = {
+                autoRoute = true
+                UserPrefs.setAutoRoute(ctx, true)
+            }
         )
     }
 }

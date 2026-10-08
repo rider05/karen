@@ -5,6 +5,8 @@ import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -12,6 +14,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.ClickableText
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -19,6 +22,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -35,6 +39,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.sp
 import com.karen.formatSize
 
@@ -101,6 +106,7 @@ fun effortColor(name: String, colors: KarenColors): Color {
         "Max" -> Color(0xFFF97316)
         "Extreme" -> colors.accentRed
         "Theme" -> if (colors.isDark) Color(0xFFC084FC) else Color(0xFF7E22CE)
+        "XHigh" -> if (colors.isDark) Color(0xFFC084FC) else Color(0xFF7E22CE)
         else -> colors.textMuted
     }
 }
@@ -507,6 +513,333 @@ fun ThinkingIndicator(
                 fontFamily = FontFamily.Monospace,
                 maxLines = 1
             )
+        }
+    }
+}
+
+/** Split a `<think>` reasoning trace out of model text. Returns (thought, visible). */
+fun splitThinkBlock(text: String): Pair<String?, String> {
+    val open = text.indexOf("<think>")
+    if (open < 0) return null to text
+    val close = text.indexOf("</think>", open)
+    return if (close < 0) {
+        text.substring(open + 7) to text.substring(0, open)
+    } else {
+        text.substring(open + 7, close) to (text.substring(0, open) + text.substring(close + 8))
+    }
+}
+
+private sealed interface MdBlock {
+    data class Paragraph(val text: String) : MdBlock
+    data class Header(val level: Int, val text: String) : MdBlock
+    data class Code(val lang: String, val code: String) : MdBlock
+    data class Bullet(val text: String) : MdBlock
+    data class Numbered(val num: String, val text: String) : MdBlock
+    data class Quote(val text: String) : MdBlock
+    data object Rule : MdBlock
+    data class Table(val headers: List<String>, val rows: List<List<String>>) : MdBlock
+}
+
+private fun isTableSep(line: String): Boolean {
+    val t = line.trim().trim('|').trim()
+    if ('|' !in line && !t.contains('-')) return false
+    return t.split('|').filter { it.isNotBlank() }.isNotEmpty() &&
+        t.split('|').filter { it.isNotBlank() }.all { cell ->
+            cell.trim().matches(Regex(":?-{2,}:?"))
+        }
+}
+
+private fun splitTableRow(line: String): List<String> =
+    line.trim().trim('|').split('|').map { it.trim() }
+
+private fun parseMarkdownBlocks(text: String): List<MdBlock> {
+    val out = mutableListOf<MdBlock>()
+    val lines = text.lines()
+    var i = 0
+    val para = StringBuilder()
+    fun flush() {
+        if (para.isNotBlank()) {
+            out.add(MdBlock.Paragraph(para.toString().trim()))
+            para.clear()
+        }
+    }
+    val headerRe = Regex("^(#{1,4})\\s+(.*)$")
+    val bulletRe = Regex("^([-*•])\\s+(.*)$")
+    val numberedRe = Regex("^(\\d+)[.)]\\s+(.*)$")
+    while (i < lines.size) {
+        val line = lines[i]
+        val t = line.trim()
+        if (t.startsWith("```")) {
+            flush()
+            val lang = t.removePrefix("```").trim().take(24).ifBlank { "code" }
+            val code = StringBuilder()
+            i++
+            while (i < lines.size && !lines[i].trimStart().startsWith("```")) {
+                code.appendLine(lines[i])
+                i++
+            }
+            i++
+            out.add(MdBlock.Code(lang, code.toString().trimEnd('\n')))
+            continue
+        }
+        if (t.isBlank()) {
+            flush()
+            i++
+            continue
+        }
+        if ('|' in t && i + 1 < lines.size && isTableSep(lines[i + 1])) {
+            flush()
+            val headers = splitTableRow(t)
+            i += 2
+            val rows = mutableListOf<List<String>>()
+            while (i < lines.size && lines[i].isNotBlank() && '|' in lines[i]) {
+                rows.add(splitTableRow(lines[i]))
+                i++
+            }
+            out.add(MdBlock.Table(headers, rows))
+            continue
+        }
+        val headerM = headerRe.matchEntire(t)
+        if (headerM != null) {
+            flush()
+            out.add(MdBlock.Header(headerM.groupValues[1].length, headerM.groupValues[2].ifBlank { " " }))
+            i++
+            continue
+        }
+        if (t == "---" || t == "***" || t == "___") {
+            flush()
+            out.add(MdBlock.Rule)
+            i++
+            continue
+        }
+        if (t.startsWith(">")) {
+            flush()
+            val quote = StringBuilder()
+            while (i < lines.size && lines[i].trim().startsWith(">")) {
+                if (quote.isNotEmpty()) quote.appendLine()
+                quote.append(lines[i].trim().removePrefix(">").trimStart())
+                i++
+            }
+            out.add(MdBlock.Quote(quote.toString()))
+            continue
+        }
+        val bulletM = bulletRe.matchEntire(t)
+        if (bulletM != null) {
+            flush()
+            out.add(MdBlock.Bullet(bulletM.groupValues[2].ifBlank { " " }))
+            i++
+            continue
+        }
+        val numberedM = numberedRe.matchEntire(t)
+        if (numberedM != null) {
+            flush()
+            out.add(MdBlock.Numbered(numberedM.groupValues[1], numberedM.groupValues[2].ifBlank { " " }))
+            i++
+            continue
+        }
+        para.appendLine(line)
+        i++
+    }
+    flush()
+    return out
+}
+
+private val INLINE_MD = Regex("\\[([^\\]]+)\\]\\(([^)\\s]+)\\)|\\*\\*(.+?)\\*\\*|~~(.+?)~~|`([^`\\n]+?)`|(?<!\\w)\\*([^*\n]+?)\\*(?!\\w)")
+
+private fun inlineAnnotated(
+    raw: String,
+    codeBg: Color,
+    linkColor: Color
+): AnnotatedString {
+    val builder = AnnotatedString.Builder()
+    var pos = 0
+    for (m in INLINE_MD.findAll(raw)) {
+        if (m.range.first > pos) {
+            builder.append(raw.substring(pos, m.range.first))
+        }
+        val linkText = m.groupValues[1]
+        val linkUrl = m.groupValues[2]
+        val bold = m.groupValues[3]
+        val strike = m.groupValues[4]
+        val code = m.groupValues[5]
+        val italic = m.groupValues[6]
+        when {
+            linkText.isNotEmpty() -> {
+                builder.pushStringAnnotation("url", linkUrl)
+                builder.pushStyle(androidx.compose.ui.text.SpanStyle(color = linkColor, textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline))
+                builder.append(linkText)
+                builder.pop()
+                builder.pop()
+            }
+            bold.isNotEmpty() -> {
+                builder.pushStyle(androidx.compose.ui.text.SpanStyle(fontWeight = FontWeight.Bold))
+                builder.append(bold)
+                builder.pop()
+            }
+            strike.isNotEmpty() -> {
+                builder.pushStyle(androidx.compose.ui.text.SpanStyle(textDecoration = androidx.compose.ui.text.style.TextDecoration.LineThrough))
+                builder.append(strike)
+                builder.pop()
+            }
+            code.isNotEmpty() -> {
+                builder.pushStyle(androidx.compose.ui.text.SpanStyle(fontFamily = FontFamily.Monospace, background = codeBg))
+                builder.append(code)
+                builder.pop()
+            }
+            italic.isNotEmpty() -> {
+                builder.pushStyle(androidx.compose.ui.text.SpanStyle(fontStyle = androidx.compose.ui.text.font.FontStyle.Italic))
+                builder.append(italic)
+                builder.pop()
+            }
+            else -> builder.append(m.value)
+        }
+        pos = m.range.last + 1
+    }
+    if (pos < raw.length) builder.append(raw.substring(pos))
+    return builder.toAnnotatedString()
+}
+
+/**
+ * ChatGPT-style message rendering: headers, lists, quotes, tables, inline
+ * bold/italic/code/links, and fenced code blocks with a copy button.
+ */
+@Composable
+fun MarkdownText(
+    text: String,
+    color: Color = LocalKarenColors.current.textPrimary,
+    fontSize: TextUnit = 15.sp,
+    lineHeight: TextUnit = 22.sp,
+    modifier: Modifier = Modifier
+) {
+    val colors = LocalKarenColors.current
+    val uriHandler = LocalUriHandler.current
+    val codeBg = if (colors.isDark) Color(0xFF262626) else Color(0xFFE8E8EA)
+    val blocks = remember(text) { parseMarkdownBlocks(text) }
+    val inline: (String) -> AnnotatedString = { s ->
+        inlineAnnotated(s, codeBg, colors.accentBlue)
+    }
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        blocks.forEach { block ->
+            when (block) {
+                is MdBlock.Code -> CodeBlockView(language = block.lang, code = block.code)
+                is MdBlock.Header -> {
+                    val size = when (block.level) {
+                        1 -> (fontSize.value + 6).sp
+                        2 -> (fontSize.value + 4).sp
+                        3 -> (fontSize.value + 2).sp
+                        else -> fontSize
+                    }
+                    Text(
+                        text = inline(block.text),
+                        color = color,
+                        fontSize = size,
+                        fontWeight = FontWeight.Bold,
+                        lineHeight = (size.value + 6).sp
+                    )
+                }
+                is MdBlock.Quote -> {
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        Box(
+                            modifier = Modifier
+                                .width(3.dp)
+                                .heightIn(min = 24.dp)
+                                .clip(RoundedCornerShape(2.dp))
+                                .background(colors.accentBlue.copy(alpha = 0.6f))
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = inline(block.text),
+                            color = colors.textSecondary,
+                            fontSize = fontSize,
+                            lineHeight = lineHeight,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+                is MdBlock.Bullet -> {
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        Text("• ", color = colors.textSecondary, fontSize = fontSize)
+                        ClickableText(
+                            text = inline(block.text),
+                            style = TextStyle(color = color, fontSize = fontSize, lineHeight = lineHeight),
+                            onClick = { offset ->
+                                inline(block.text).getStringAnnotations("url", offset, offset)
+                                    .firstOrNull()?.let { runCatching { uriHandler.openUri(it.item) } }
+                            },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+                is MdBlock.Numbered -> {
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        Text("${block.num}. ", color = colors.textSecondary, fontSize = fontSize, fontFamily = FontFamily.Monospace)
+                        ClickableText(
+                            text = inline(block.text),
+                            style = TextStyle(color = color, fontSize = fontSize, lineHeight = lineHeight),
+                            onClick = { offset ->
+                                inline(block.text).getStringAnnotations("url", offset, offset)
+                                    .firstOrNull()?.let { runCatching { uriHandler.openUri(it.item) } }
+                            },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+                is MdBlock.Rule -> HorizontalDivider(color = colors.border, thickness = 0.5.dp)
+                is MdBlock.Table -> {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .border(1.dp, colors.border, RoundedCornerShape(8.dp))
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(colors.surfaceHover)
+                                .padding(horizontal = 8.dp, vertical = 6.dp)
+                        ) {
+                            block.headers.forEachIndexed { idx, h ->
+                                Text(
+                                    text = inline(h),
+                                    color = color,
+                                    fontSize = (fontSize.value - 1.5f).coerceAtLeast(10f).sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                if (idx < block.headers.lastIndex) Spacer(Modifier.width(8.dp))
+                            }
+                        }
+                        HorizontalDivider(color = colors.border, thickness = 0.5.dp)
+                        block.rows.forEach { row ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 8.dp, vertical = 5.dp)
+                            ) {
+                                for (idx in block.headers.indices) {
+                                    Text(
+                                        text = inline(row.getOrNull(idx) ?: ""),
+                                        color = colors.textSecondary,
+                                        fontSize = (fontSize.value - 1.5f).coerceAtLeast(10f).sp,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    if (idx < block.headers.lastIndex) Spacer(Modifier.width(8.dp))
+                                }
+                            }
+                        }
+                    }
+                }
+                is MdBlock.Paragraph -> {
+                    ClickableText(
+                        text = inline(block.text),
+                        style = TextStyle(color = color, fontSize = fontSize, lineHeight = lineHeight),
+                        onClick = { offset ->
+                            inline(block.text).getStringAnnotations("url", offset, offset)
+                                .firstOrNull()?.let { runCatching { uriHandler.openUri(it.item) } }
+                        }
+                    )
+                }
+            }
         }
     }
 }
@@ -1204,7 +1537,9 @@ fun ModelSelectorSheet(
     selectedModel: String,
     onSelectModel: (String) -> Unit,
     onDismiss: () -> Unit,
-    onOpenModelManager: () -> Unit = {}
+    onOpenModelManager: () -> Unit = {},
+    autoRoute: Boolean = false,
+    onSelectAuto: () -> Unit = {}
 ) {
     val colors = LocalKarenColors.current
 
@@ -1216,6 +1551,7 @@ fun ModelSelectorSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 20.dp, vertical = 8.dp)
         ) {
             Text(
@@ -1247,6 +1583,68 @@ fun ModelSelectorSheet(
                     }
                     kotlinx.coroutines.delay(1500)
                 }
+            }
+
+            // Auto routing — best installed/connected model per message.
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 10.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(if (autoRoute) colors.surfaceHover else Color.Transparent)
+                    .border(1.dp, if (autoRoute) colors.accentGreen else colors.border, RoundedCornerShape(12.dp))
+                    .clickable {
+                        onSelectAuto()
+                        onDismiss()
+                    }
+                    .padding(14.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "Auto · best model per task",
+                            color = colors.textPrimary,
+                            fontSize = 14.5.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(
+                                    if (autoRoute) colors.accentGreen.copy(alpha = 0.2f)
+                                    else colors.border.copy(alpha = 0.4f)
+                                )
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                        ) {
+                            Text(
+                                text = if (autoRoute) "On" else "Off",
+                                color = if (autoRoute) colors.accentGreen else colors.textMuted,
+                                fontSize = 10.5.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = "Code → strongest, reasoning → thinker, quick chats → fastest",
+                        color = colors.textMuted,
+                        fontSize = 11.5.sp
+                    )
+                }
+                RadioButton(
+                    selected = autoRoute,
+                    onClick = {
+                        onSelectAuto()
+                        onDismiss()
+                    },
+                    colors = RadioButtonDefaults.colors(
+                        selectedColor = colors.accentGreen,
+                        unselectedColor = colors.textMuted
+                    )
+                )
             }
 
             // My Models — only weights actually downloaded on this device.
@@ -1306,8 +1704,8 @@ fun ModelSelectorSheet(
                                     .padding(horizontal = 6.dp, vertical = 2.dp)
                             ) {
                                 Text(
-                                    text = if (isSelected) "Active" else "GGUF",
-                                    color = if (isSelected) colors.accentGreen else colors.textMuted,
+                                    text = if (isSelected) "Active" else if (isReasoningModel(name)) "Thinks" else "GGUF",
+                                    color = if (isSelected || isReasoningModel(name)) colors.accentGreen else colors.textMuted,
                                     fontSize = 10.5.sp,
                                     fontWeight = FontWeight.Bold
                                 )
@@ -1419,6 +1817,8 @@ fun ModelSelectorSheet(
             }
 
             // Available to download — tap a model to fetch its GGUF weights.
+            // Collapsed to 3 cards by default, matching Model Manager.
+            var sheetCatalogExpanded by remember { mutableStateOf(false) }
             Text(
                 text = "Available to download",
                 color = colors.textMuted,
@@ -1426,7 +1826,7 @@ fun ModelSelectorSheet(
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.padding(bottom = 4.dp)
             )
-            modelCatalog.forEach { entry ->
+            (if (sheetCatalogExpanded) modelCatalog else modelCatalog.take(3)).forEach { entry ->
                 val alreadyInstalled = entry.name in installed
                 val isActive = ModelDownloader.activeName == entry.name
                 Column(
@@ -1505,6 +1905,26 @@ fun ModelSelectorSheet(
                             fontFamily = FontFamily.Monospace
                         )
                     }
+                }
+            }
+            if (modelCatalog.size > 3) {
+                TextButton(
+                    onClick = { sheetCatalogExpanded = !sheetCatalogExpanded },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(
+                        if (sheetCatalogExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                        contentDescription = null,
+                        tint = colors.accentGreen,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        if (sheetCatalogExpanded) "Show less" else "Show all ${modelCatalog.size} models",
+                        color = colors.accentGreen,
+                        fontSize = 12.5.sp,
+                        fontWeight = FontWeight.Medium
+                    )
                 }
             }
             Spacer(Modifier.height(10.dp))

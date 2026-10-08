@@ -30,7 +30,11 @@ object UserPrefs {
     fun type(ctx: Context): String = prefs(ctx).getString(KEY_TYPE, "-") ?: "-"
 
     private const val KEY_DEFAULT_EFFORT = "default_effort"
-    fun defaultEffort(ctx: Context): String = prefs(ctx).getString(KEY_DEFAULT_EFFORT, "Medium") ?: "Medium"
+    fun defaultEffort(ctx: Context): String = when (val e = prefs(ctx).getString(KEY_DEFAULT_EFFORT, "Medium") ?: "Medium") {
+        // Legacy level renamed to XHigh.
+        "Theme" -> "XHigh"
+        else -> e
+    }
     fun setDefaultEffort(ctx: Context, value: String) {
         prefs(ctx).edit().putString(KEY_DEFAULT_EFFORT, value).apply()
     }
@@ -79,6 +83,28 @@ object UserPrefs {
 
     fun clearApiKey(ctx: Context, providerId: String) {
         prefs(ctx).edit().remove(KEY_API_PREFIX + providerId).apply()
+    }
+
+    // Per-provider model override for stored cloud keys (blank = provider default).
+    private const val KEY_API_MODEL_PREFIX = "api_model_"
+    fun apiModel(ctx: Context, providerId: String): String =
+        prefs(ctx).getString(KEY_API_MODEL_PREFIX + providerId, "") ?: ""
+    fun setApiModel(ctx: Context, providerId: String, model: String) {
+        prefs(ctx).edit().putString(KEY_API_MODEL_PREFIX + providerId, model.trim()).apply()
+    }
+
+    // Auto model routing: pick the best installed/connected model per task.
+    private const val KEY_AUTO_ROUTE = "auto_route"
+    fun autoRoute(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_AUTO_ROUTE, true)
+    fun setAutoRoute(ctx: Context, enabled: Boolean) {
+        prefs(ctx).edit().putBoolean(KEY_AUTO_ROUTE, enabled).apply()
+    }
+
+    // Allow keyed cloud APIs as routing candidates (off = on-device only).
+    private const val KEY_AUTO_CLOUD = "auto_route_cloud"
+    fun autoCloud(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_AUTO_CLOUD, false)
+    fun setAutoCloud(ctx: Context, enabled: Boolean) {
+        prefs(ctx).edit().putBoolean(KEY_AUTO_CLOUD, enabled).apply()
     }
 
     fun projects(ctx: Context): List<Pair<String, String>> {

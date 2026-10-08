@@ -152,6 +152,25 @@ fun ChatScreen(
     val context = LocalContext.current
     // Default to the first downloaded weight; selection lists installed-only.
     var selectedModel by remember { mutableStateOf(UserPrefs.models(context).firstOrNull { !isCloudProviderName(it) } ?: modelCatalog.first().name) }
+    // Auto routing: pick the best installed/connected model per message.
+    var autoRoute by remember { mutableStateOf(UserPrefs.autoRoute(context)) }
+    var lastRouted by remember { mutableStateOf<String?>(null) }
+
+    /** Manual model, or the routed pick when Auto is on. */
+    fun effectiveModel(prompt: String): String {
+        if (!autoRoute) return selectedModel
+        val locals = UserPrefs.models(context).filter { !isCloudProviderName(it) }
+        val keyed = cloudProviders.filter { UserPrefs.apiKey(context, it.id).isNotBlank() }
+        val decision = routeModel(prompt, locals, keyed, UserPrefs.autoCloud(context))
+        if (decision != null) {
+            if (decision.modelName != lastRouted) {
+                lastRouted = decision.modelName
+                android.widget.Toast.makeText(context, "Auto: ${decision.modelName} (${decision.reason})", android.widget.Toast.LENGTH_SHORT).show()
+            }
+            return decision.modelName
+        }
+        return selectedModel
+    }
     var attachments by remember { mutableStateOf(listOf<Attachment>()) }
     var pendingCameraUri by remember { mutableStateOf<Uri?>(null) }
 
@@ -329,12 +348,12 @@ fun ChatScreen(
             // ChatGPT Top App Bar
             // Effort pill only for thinking models; otherwise it stays hidden.
             ChatGPTTopAppBar(
-                selectedModel = selectedModel,
+                selectedModel = if (autoRoute) "Auto → " + (lastRouted ?: selectedModel) else selectedModel,
                 onMenuClick = onOpenDrawer,
                 onModelClick = { showModelSheet = true },
                 onBackClick = onNavigateToHome,
-                effort = if (findCloudProviderByName(selectedModel)?.reasoning == true) effort else null,
-                efforts = listOf("Low", "Medium", "High", "Max", "Extreme", "Theme"),
+                effort = if (isReasoningModel(if (autoRoute) (lastRouted ?: selectedModel) else selectedModel)) effort else null,
+                efforts = listOf("Low", "Medium", "High", "Max", "Extreme", "XHigh"),
                 onSelectEffort = { effort = it },
                 onNewChatClick = {
                     resettingNewChat = true
@@ -457,14 +476,34 @@ fun ChatScreen(
                                     )
                                 }
 
-                                // Collapsible Reasoning / Thought Box (o1/o3 style)
-                                if (item.thought != null) {
-                                    ThoughtAccordion(
-                                        thoughtDuration = "Thought for 3 seconds",
-                                        content = item.thought,
-                                        initialExpanded = false
+                                // Assistant Body: reasoning trace folds into the accordion,
+                                // the rest renders as Markdown with ChatGPT-style code blocks.
+                                val isLiveThinking = isGenerating && item.id == streamingId && !streamingContent
+                                if (isLiveThinking) {
+                                    ThinkingIndicator(
+                                        label = item.text.ifBlank { "Thinking" },
+                                        elapsed = "%.1fs".format((System.currentTimeMillis() - streamStartMs) / 1000.0)
                                     )
-                                    Spacer(Modifier.height(8.dp))
+                                } else {
+                                    val thinkSplit = remember(item.text) { splitThinkBlock(item.text) }
+                                    val thoughtText = item.thought ?: thinkSplit.first
+                                    val bodyText = if (item.thought != null) item.text else thinkSplit.second
+                                    if (thoughtText != null) {
+                                        ThoughtAccordion(
+                                            thoughtDuration = "Reasoning trace",
+                                            content = thoughtText,
+                                            initialExpanded = false
+                                        )
+                                        Spacer(Modifier.height(8.dp))
+                                    }
+                                    if (bodyText.isNotBlank()) {
+                                        MarkdownText(
+                                            text = bodyText,
+                                            color = colors.textPrimary,
+                                            fontSize = 15.sp,
+                                            lineHeight = 22.sp
+                                        )
+                                    }
                                 }
 
                                 // Tool Call Chip
@@ -480,24 +519,6 @@ fun ChatScreen(
                                         subtitle = "Distributed Systems Lab Exam\nThu, Oct 24 · 02:00 PM – 05:00 PM · Hardware Lab 4B"
                                     )
                                     Spacer(Modifier.height(10.dp))
-                                }
-
-                                // Assistant Body Typography
-                                // While the reply hasn't started streaming, show the
-                                // live thinking animation (phase label + elapsed).
-                                val isLiveThinking = isGenerating && item.id == streamingId && !streamingContent
-                                if (isLiveThinking) {
-                                    ThinkingIndicator(
-                                        label = item.text.ifBlank { "Thinking" },
-                                        elapsed = "%.1fs".format((System.currentTimeMillis() - streamStartMs) / 1000.0)
-                                    )
-                                } else {
-                                    Text(
-                                        text = item.text,
-                                        color = colors.textPrimary,
-                                        fontSize = 15.sp,
-                                        lineHeight = 22.sp
-                                    )
                                 }
 
                                 // Code Block Container
@@ -643,9 +664,11 @@ fun ChatScreen(
 
                     // Live cloud model when one is selected (key stored in Model Manager),
                     // real on-device inference for downloaded weights, else the mock.
-                    val cloud = findCloudProviderByName(selectedModel)
+                    // Auto routing swaps in the best model for this prompt.
+                    val sendModel = effectiveModel(userText)
+                    val cloud = findCloudProviderByName(sendModel)
                     val cloudKey = cloud?.let { UserPrefs.apiKey(context, it.id) }.orEmpty()
-                    val weightFile = if (cloud == null) ModelDownloader.weightFileFor(context, selectedModel) else null
+                    val weightFile = if (cloud == null) ModelDownloader.weightFileFor(context, sendModel) else null
 
                     coroutineScope.launch {
                         cancelGeneration = false
@@ -702,13 +725,34 @@ fun ChatScreen(
                                 val history = if (web != null) {
                                     (base + ("user" to "Use these fresh web results if relevant:\n$web")).takeLast(limit)
                                 } else base
-                                val reply = cloud.complete(
-                                    cloudKey,
-                                    history,
-                                    maxTokensFor(effort),
-                                    thinkingBudget = if (cloud.reasoning) thinkingBudgetFor(effort) else null,
-                                    historyLimit = limit
-                                )
+                                // Recursively continue cut-off replies: when the model hits
+                                // its output cap it stops mid-answer, so keep asking for
+                                // the rest instead of making the user type "continue".
+                                val fullReply = StringBuilder()
+                                var roundHistory = history
+                                var rounds = 0
+                                var cut = true
+                                while (cut && rounds < 4 && !cancelGeneration) {
+                                    if (rounds > 0) {
+                                        setStreamingText(aid, "Continuing… (part ${rounds + 1})")
+                                    }
+                                    val res = cloud.completeResult(
+                                        cloudKey,
+                                        roundHistory,
+                                        maxTokensFor(effort),
+                                        thinkingBudget = if (cloud.reasoning) thinkingBudgetFor(effort) else null,
+                                        historyLimit = limit,
+                                        model = UserPrefs.apiModel(context, cloud.id).ifBlank { null }
+                                    )
+                                    if (cancelGeneration) break
+                                    fullReply.append(res.text)
+                                    cut = res.truncated && res.text.isNotBlank()
+                                    rounds++
+                                    if (cut && rounds < 4) {
+                                        roundHistory = (roundHistory + ("assistant" to res.text) + ("user" to "Continue exactly where you stopped. Output only the continuation — no recap, no repetition.")).takeLast(limit)
+                                    }
+                                }
+                                val reply = fullReply.toString()
                                 if (cancelGeneration) {
                                     cancelSettle(aid)
                                 } else {
@@ -731,16 +775,16 @@ fun ChatScreen(
                                         "is at/above your ${UserPrefs.thermalLimitC(context).toInt()}°C limit. Let the phone cool down."
                                 )
                             } else {
-                                setStreamingText(aid, if (KarenLlama.isLoaded(selectedModel)) "Thinking on-device…" else "Loading $selectedModel…")
+                                setStreamingText(aid, if (KarenLlama.isLoaded(sendModel)) "Thinking on-device…" else "Loading $sendModel…")
                                 try {
                                     val threads = maxOf(2, minOf(6, Runtime.getRuntime().availableProcessors()))
                                     val window = UserPrefs.contextTokens(context)
                                     val loaded = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                                        KarenLlama.ensureLoaded(weightFile, selectedModel, window, threads)
+                                        KarenLlama.ensureLoaded(weightFile, sendModel, window, threads)
                                     }
                                     if (!loaded) {
                                         if (cancelGeneration) cancelSettle(aid)
-                                        else errorSettle(aid, "Could not load $selectedModel into RAM.")
+                                        else errorSettle(aid, "Could not load $sendModel into RAM.")
                                     } else if (cancelGeneration) {
                                         cancelSettle(aid)
                                     } else {
@@ -758,7 +802,8 @@ fun ChatScreen(
                                         } else basePairs.takeLast(localLimit)
                                         val reply = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                                             KarenLlama.complete(
-                                                "You are Karen, a concise on-device assistant.",
+                                                "You are Karen, a concise on-device assistant." +
+                                                    if (isReasoningModel(sendModel)) reasoningEffortHint(effort) else "",
                                                 trimmedPairs.map { it.first }.toTypedArray(),
                                                 trimmedPairs.map { it.second }.toTypedArray(),
                                                 maxTokensFor(effort)
@@ -814,9 +859,20 @@ fun ChatScreen(
         if (showModelSheet) {
             ModelSelectorSheet(
                 selectedModel = selectedModel,
-                onSelectModel = { selectedModel = it },
+                onSelectModel = {
+                    selectedModel = it
+                    if (autoRoute) {
+                        autoRoute = false
+                        UserPrefs.setAutoRoute(context, false)
+                    }
+                },
                 onDismiss = { showModelSheet = false },
-                onOpenModelManager = onNavigateToModelManager
+                onOpenModelManager = onNavigateToModelManager,
+                autoRoute = autoRoute,
+                onSelectAuto = {
+                    autoRoute = true
+                    UserPrefs.setAutoRoute(context, true)
+                }
             )
         }
 
@@ -873,38 +929,61 @@ fun ChatScreen(
             )
         }
 
-        // New-chat transition animation overlay
-        androidx.compose.animation.AnimatedVisibility(visible = resettingNewChat) {
-            val pulse by androidx.compose.animation.core.rememberInfiniteTransition(label = "new_chat_pulse")
-                .animateFloat(
-                    initialValue = 0.92f,
-                    targetValue = 1.08f,
-                    animationSpec = androidx.compose.animation.core.infiniteRepeatable(
-                        animation = androidx.compose.animation.core.tween(720, easing = androidx.compose.animation.core.FastOutSlowInEasing),
-                        repeatMode = androidx.compose.animation.core.RepeatMode.Reverse
-                    ),
-                    label = "new_chat_pulse_anim"
-                )
+        // New-chat transition animation overlay — ripple rings + dots.
+        androidx.compose.animation.AnimatedVisibility(
+            visible = resettingNewChat,
+            enter = androidx.compose.animation.fadeIn(
+                animationSpec = androidx.compose.animation.core.tween(250)
+            ),
+            exit = androidx.compose.animation.fadeOut(
+                animationSpec = androidx.compose.animation.core.tween(250)
+            )
+        ) {
+            val ripple = androidx.compose.animation.core.rememberInfiniteTransition(label = "new_chat_ripple")
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(colors.background),
+                    .background(Color.Black.copy(alpha = 0.32f)),
                 contentAlignment = Alignment.Center
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Box(
-                        modifier = Modifier
-                            .size(72.dp)
-                            .clip(androidx.compose.foundation.shape.CircleShape)
-                            .background(colors.accentGreen),
-                        contentAlignment = Alignment.Center
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier.size(128.dp)
                     ) {
-                        Icon(Icons.Default.AutoAwesome, contentDescription = "New chat", tint = Color.White, modifier = Modifier.size(34.dp).graphicsLayer(scaleX = pulse, scaleY = pulse))
+                        repeat(3) { i ->
+                            val progress by ripple.animateFloat(
+                                initialValue = 0f,
+                                targetValue = 1f,
+                                animationSpec = androidx.compose.animation.core.infiniteRepeatable(
+                                    animation = androidx.compose.animation.core.tween(1800, delayMillis = i * 600),
+                                    repeatMode = androidx.compose.animation.core.RepeatMode.Restart
+                                ),
+                                label = "new_chat_ring_$i"
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .size(72.dp)
+                                    .graphicsLayer(
+                                        scaleX = 0.75f + 0.9f * progress,
+                                        scaleY = 0.75f + 0.9f * progress,
+                                        alpha = (1f - progress) * 0.55f
+                                    )
+                                    .border(2.dp, colors.accentGreen, androidx.compose.foundation.shape.CircleShape)
+                            )
+                        }
+                        Box(
+                            modifier = Modifier
+                                .size(72.dp)
+                                .clip(androidx.compose.foundation.shape.CircleShape)
+                                .background(colors.accentGreen),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(Icons.Default.AutoAwesome, contentDescription = "New chat", tint = Color.White, modifier = Modifier.size(34.dp))
+                        }
                     }
-                    Spacer(Modifier.height(16.dp))
-                    Text("Starting a fresh chat…", color = colors.textPrimary, fontSize = 15.sp, fontWeight = FontWeight.Medium)
-                    Spacer(Modifier.height(14.dp))
-                    CircularProgressIndicator(color = colors.accentGreen, strokeWidth = 2.dp, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.height(18.dp))
+                    ThinkingIndicator(label = "Starting a fresh chat")
                 }
             }
         }

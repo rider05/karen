@@ -21,33 +21,45 @@ data class CatalogModel(
     val sizeLabel: String,
     val quant: String,
     val ram: String,
-    val url: String
+    val url: String,
+    /** Approximate params in billions — the router weighs quality by size. */
+    val paramsB: Float = 0f,
+    /** True for thinking/reasoning models (R1, QwQ, Qwen3-hybrid class). */
+    val reasoning: Boolean = false,
+    /** True when the model is a solid code generator for its size. */
+    val code: Boolean = false
 )
 
 val modelCatalog = listOf(
     CatalogModel(
         "Qwen2.5 0.5B Fast", "Qwen2.5-0.5B-Instruct-Q4_K_M.gguf", "≈0.4 GB", "Q4_K_M", "1.5 GB",
-        "https://huggingface.co/bartowski/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/Qwen2.5-0.5B-Instruct-Q4_K_M.gguf"
+        "https://huggingface.co/bartowski/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/Qwen2.5-0.5B-Instruct-Q4_K_M.gguf",
+        paramsB = 0.5f
     ),
     CatalogModel(
         "Qwen 3.5 2B", "Qwen3.5-2B-IQ4_XS.gguf", "≈1.1 GB", "IQ4_XS", "2.0 GB",
-        "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-IQ4_XS.gguf"
+        "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-IQ4_XS.gguf",
+        paramsB = 2f, code = true
     ),
     CatalogModel(
         "Qwen2.5 1.5B", "Qwen2.5-1.5B-Instruct-Q4_K_M.gguf", "≈1.0 GB", "Q4_K_M", "2.0 GB",
-        "https://huggingface.co/bartowski/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf"
+        "https://huggingface.co/bartowski/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf",
+        paramsB = 1.5f, code = true
     ),
     CatalogModel(
         "Qwen2.5 3B", "Qwen2.5-3B-Instruct-Q4_K_M.gguf", "≈1.9 GB", "Q4_K_M", "2.5 GB",
-        "https://huggingface.co/bartowski/Qwen2.5-3B-Instruct-GGUF/resolve/main/Qwen2.5-3B-Instruct-Q4_K_M.gguf"
+        "https://huggingface.co/bartowski/Qwen2.5-3B-Instruct-Q4_K_M.gguf",
+        paramsB = 3f, code = true
     ),
     CatalogModel(
         "Qwen2.5 7B", "Qwen2.5-7B-Instruct-Q4_K_M.gguf", "≈4.7 GB", "Q4_K_M", "5.5 GB",
-        "https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf"
+        "https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf",
+        paramsB = 7f, code = true
     ),
     CatalogModel(
         "DeepSeek R1 1.5B · Reasoning", "DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf", "≈1.1 GB", "Q4_K_M", "2.5 GB",
-        "https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-1.5B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf"
+        "https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-1.5B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf",
+        paramsB = 1.5f, reasoning = true, code = true
     )
 )
 

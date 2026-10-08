@@ -205,10 +205,59 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                         color = colors.textMuted,
                         fontSize = 11.5.sp
                     )
+                    // Auto model routing (per-task best model).
+                    var autoRoutePref by remember { mutableStateOf(UserPrefs.autoRoute(context)) }
+                    var autoCloudPref by remember { mutableStateOf(UserPrefs.autoCloud(context)) }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Auto Model Routing", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
+                            Text("Code → strongest · reasoning → thinker · quick chats → fastest", color = colors.textMuted, fontSize = 11.5.sp)
+                        }
+                        Switch(
+                            checked = autoRoutePref,
+                            onCheckedChange = {
+                                autoRoutePref = it
+                                UserPrefs.setAutoRoute(context, it)
+                            },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color.White,
+                                checkedTrackColor = colors.accentGreen,
+                                uncheckedThumbColor = colors.textMuted,
+                                uncheckedTrackColor = colors.surfaceHover
+                            )
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Include Cloud APIs", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
+                            Text("Let Auto use keyed cloud models for hard tasks (data leaves device)", color = colors.textMuted, fontSize = 11.5.sp)
+                        }
+                        Switch(
+                            checked = autoCloudPref,
+                            onCheckedChange = {
+                                autoCloudPref = it
+                                UserPrefs.setAutoCloud(context, it)
+                            },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color.White,
+                                checkedTrackColor = colors.accentGreen,
+                                uncheckedThumbColor = colors.textMuted,
+                                uncheckedTrackColor = colors.surfaceHover
+                            )
+                        )
+                    }
                     // Default chat effort (per-level colors, theme-aware)
                     Text("Default Chat Effort", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        listOf("Low", "Medium", "High", "Max", "Extreme", "Theme").forEach { e ->
+                        listOf("Low", "Medium", "High", "Max", "Extreme", "XHigh").forEach { e ->
                             val selected = defaultEffort == e
                             val tint = effortColor(e, colors)
                             Box(

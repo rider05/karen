@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.ClickableText
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -86,6 +87,7 @@ fun ModelManagerScreen(
     val device = rememberDeviceTelemetry()
 
     val ctx = androidx.compose.ui.platform.LocalContext.current
+    val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
     val models = remember {
         mutableStateListOf<GgufModel>().apply {
             // Heal prefs: cloud names must never live in installed weights.
@@ -146,7 +148,10 @@ fun ModelManagerScreen(
     var apiStep by remember { mutableStateOf(0) }
     var selectedProvider by remember { mutableStateOf<CloudProvider?>(null) }
     var apiKeyInput by remember { mutableStateOf("") }
+    var apiModelInput by remember { mutableStateOf("") }
     var keyVisible by remember { mutableStateOf(false) }
+    // Download catalog collapse: 3 cards by default.
+    var catalogExpanded by remember { mutableStateOf(false) }
     var pendingDelete by remember { mutableStateOf<GgufModel?>(null) }
 
     /** Removes a model: deletes its weight file(s) and unregisters it. */
@@ -588,7 +593,10 @@ fun ModelManagerScreen(
                 }
             }
 
-            items(modelCatalog) { entry ->
+            items(
+                if (catalogExpanded) modelCatalog else modelCatalog.take(3),
+                key = { it.name }
+            ) { entry ->
                 val alreadyInstalled = models.any { it.name == entry.name }
                 val isActive = ModelDownloader.activeName == entry.name
                 Column(
@@ -603,7 +611,7 @@ fun ModelManagerScreen(
                         Column(Modifier.weight(1f)) {
                             Text(entry.name, color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold)
                             Text(
-                                "${entry.sizeLabel} · ${entry.quant} · RAM ${entry.ram}",
+                                "${entry.sizeLabel} · ${entry.quant} · RAM ${entry.ram}${if (entry.reasoning) " · Reasons" else ""}",
                                 color = colors.textMuted,
                                 fontSize = 11.5.sp,
                                 fontFamily = FontFamily.Monospace
@@ -652,6 +660,30 @@ fun ModelManagerScreen(
                             color = colors.textMuted,
                             fontSize = 11.5.sp,
                             fontFamily = FontFamily.Monospace
+                        )
+                    }
+                }
+            }
+
+            // Collapse: 3 cards by default, expandable to the full catalog.
+            if (modelCatalog.size > 3) {
+                item {
+                    TextButton(
+                        onClick = { catalogExpanded = !catalogExpanded },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(
+                            if (catalogExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                            contentDescription = null,
+                            tint = colors.accentGreen,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            if (catalogExpanded) "Show less" else "Show all ${modelCatalog.size} models",
+                            color = colors.accentGreen,
+                            fontSize = 12.5.sp,
+                            fontWeight = FontWeight.Medium
                         )
                     }
                 }
@@ -726,6 +758,9 @@ fun ModelManagerScreen(
             val provider = selectedProvider
             AlertDialog(
                 onDismissRequest = { showApiDialog = false; apiStep = 0 },
+                containerColor = colors.surface,
+                titleContentColor = colors.textPrimary,
+                textContentColor = colors.textSecondary,
                 title = { Text(if (apiStep == 0) "Connect Cloud API" else (provider?.name ?: "API key")) },
                 text = {
                     Column {
@@ -740,6 +775,7 @@ fun ModelManagerScreen(
                                         .clickable {
                                             selectedProvider = p
                                             apiKeyInput = UserPrefs.apiKey(ctx, p.id)
+                                            apiModelInput = UserPrefs.apiModel(ctx, p.id).ifBlank { p.defaultModel }
                                             keyVisible = false
                                             apiStep = 1
                                         }
@@ -756,7 +792,7 @@ fun ModelManagerScreen(
                                     Column(Modifier.weight(1f)) {
                                         Text(p.name, color = colors.textPrimary, fontSize = 13.5.sp)
                                         Text(
-                                            if (keySet) "key stored on device" else p.note,
+                                            if (keySet) "key stored · ${UserPrefs.apiModel(ctx, p.id).ifBlank { p.defaultModel }}" else p.note,
                                             color = if (keySet) colors.accentGreen else colors.textMuted,
                                             fontSize = 11.sp,
                                             fontFamily = if (keySet) FontFamily.Monospace else null
@@ -772,18 +808,55 @@ fun ModelManagerScreen(
                                 fontSize = 13.sp
                             )
                             Spacer(Modifier.height(10.dp))
-                            Text(
-                                "Get a key: ${provider.keyUrl}",
-                                fontSize = 12.sp,
-                                fontFamily = FontFamily.Monospace,
-                                color = colors.accentBlue
+                            val keyPage = remember(provider.keyUrl) {
+                                val url = if (provider.keyUrl.startsWith("http")) provider.keyUrl
+                                else "https://${provider.keyUrl}"
+                                androidx.compose.ui.text.AnnotatedString.Builder("Get a key: ${provider.keyUrl}").apply {
+                                    val start = "Get a key: ".length
+                                    addStyle(
+                                        androidx.compose.ui.text.SpanStyle(
+                                            color = colors.accentBlue,
+                                            textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline,
+                                            fontFamily = FontFamily.Monospace
+                                        ),
+                                        start,
+                                        length
+                                    )
+                                    addStringAnnotation("url", url, start, length)
+                                }.toAnnotatedString()
+                            }
+                            ClickableText(
+                                text = keyPage,
+                                style = androidx.compose.ui.text.TextStyle(
+                                    color = colors.textSecondary,
+                                    fontSize = 12.sp,
+                                    fontFamily = FontFamily.Monospace
+                                ),
+                                onClick = { offset ->
+                                    keyPage.getStringAnnotations("url", offset, offset)
+                                        .firstOrNull()?.let { runCatching { uriHandler.openUri(it.item) } }
+                                }
                             )
                             Spacer(Modifier.height(4.dp))
                             Text(
-                                "Calls: ${provider.defaultModel} (live)",
+                                "Calls: ${apiModelInput.ifBlank { provider.defaultModel }} (live)",
                                 fontSize = 12.sp,
                                 fontFamily = FontFamily.Monospace,
                                 color = colors.accentGreen
+                            )
+                            Spacer(Modifier.height(10.dp))
+                            OutlinedTextField(
+                                value = apiModelInput,
+                                onValueChange = { apiModelInput = it },
+                                label = { Text("Model") },
+                                placeholder = { Text(provider.defaultModel) },
+                                singleLine = true,
+                                textStyle = androidx.compose.ui.text.TextStyle(
+                                    color = colors.textPrimary,
+                                    fontFamily = FontFamily.Monospace
+                                ),
+                                colors = karenFieldColors(colors),
+                                modifier = Modifier.fillMaxWidth()
                             )
                             Spacer(Modifier.height(10.dp))
                             OutlinedTextField(
@@ -830,8 +903,10 @@ fun ModelManagerScreen(
                             if (stored.isNotBlank() || provider.name in connectedApis) {
                                 TextButton(onClick = {
                                     UserPrefs.clearApiKey(ctx, provider.id)
+                                    UserPrefs.setApiModel(ctx, provider.id, "")
                                     connectedApis.remove(provider.name)
                                     apiKeyInput = ""
+                                    apiModelInput = ""
                                     showApiDialog = false
                                     apiStep = 0
                                     android.widget.Toast.makeText(ctx, "${provider.name} key removed", android.widget.Toast.LENGTH_SHORT).show()
@@ -841,6 +916,7 @@ fun ModelManagerScreen(
                                 val key = apiKeyInput.trim()
                                 if (key.isNotBlank()) {
                                     UserPrefs.saveApiKey(ctx, provider.id, key)
+                                    UserPrefs.setApiModel(ctx, provider.id, apiModelInput.trim())
                                     if (provider.name !in connectedApis) {
                                         connectedApis.add(provider.name)
                                     }

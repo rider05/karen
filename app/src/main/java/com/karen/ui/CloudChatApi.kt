@@ -62,6 +62,13 @@ fun isCloudProviderName(name: String): Boolean =
 /** Carries the HTTP status so the chat can show actionable key/quota errors. */
 class CloudApiException(val status: Int, message: String) : Exception(message)
 
+/** Result of a cloud call: text plus whether the model was cut off by its output cap. */
+data class CloudResult(val text: String, val truncated: Boolean)
+
+/** Effective model id: per-key override from Model Manager, else the default. */
+fun CloudProvider.modelOrDefault(override: String?): String =
+    if (override.isNullOrBlank()) defaultModel else override.trim()
+
 suspend fun CloudProvider.complete(
     apiKey: String,
     history: List<Pair<String, String>>,
@@ -69,13 +76,25 @@ suspend fun CloudProvider.complete(
     /** Thinking-token budget for reasoning models; null disables thinking. */
     thinkingBudget: Int? = null,
     /** How many trailing turns fit the configured content window. */
-    historyLimit: Int = 20
-): String = withContext(Dispatchers.IO) {
+    historyLimit: Int = 20,
+    /** Model id override (per stored key); null/blank uses [defaultModel]. */
+    model: String? = null
+): String = completeResult(apiKey, history, maxTokens, thinkingBudget, historyLimit, model).text
+
+suspend fun CloudProvider.completeResult(
+    apiKey: String,
+    history: List<Pair<String, String>>,
+    maxTokens: Int,
+    thinkingBudget: Int? = null,
+    historyLimit: Int = 20,
+    model: String? = null
+): CloudResult = withContext(Dispatchers.IO) {
     val trimmed = history.takeLast(historyLimit.coerceIn(4, 80))
+    val effectiveModel = modelOrDefault(model)
     when (protocol) {
         CloudProtocol.OPENAI -> {
             fun body(tokenField: String) = JSONObject()
-                .put("model", defaultModel)
+                .put("model", effectiveModel)
                 .put(tokenField, maxTokens)
                 .put(
                     "messages",
@@ -98,11 +117,13 @@ suspend fun CloudProvider.complete(
                 headers["X-Title"] = "Karen"
             }
             try {
-                extractOpenAiText(post(URL("$apiBase/chat/completions"), headers, body("max_tokens")))
+                val first = post(URL("$apiBase/chat/completions"), headers, body("max_tokens"))
+                CloudResult(extractOpenAiText(first), isLengthCutoff(first))
             } catch (e: CloudApiException) {
                 // Newer models (o-series, GPT-5 class) reject max_tokens — retry once.
                 if (e.status == 400 && e.message.orEmpty().contains("max_completion_tokens")) {
-                    extractOpenAiText(post(URL("$apiBase/chat/completions"), headers, body("max_completion_tokens")))
+                    val retry = post(URL("$apiBase/chat/completions"), headers, body("max_completion_tokens"))
+                    CloudResult(extractOpenAiText(retry), isLengthCutoff(retry))
                 } else throw e
             }
         }
@@ -110,7 +131,7 @@ suspend fun CloudProvider.complete(
             // Thinking budget must stay below max_tokens: headroom for the answer.
             val total = if (thinkingBudget != null) maxOf(maxTokens, thinkingBudget + 1024) else maxTokens
             val body = JSONObject()
-                .put("model", defaultModel)
+                .put("model", effectiveModel)
                 .put("max_tokens", total)
                 .put(
                     "messages",
@@ -142,14 +163,15 @@ suspend fun CloudProvider.complete(
                 .map { blocks.getJSONObject(it) }
                 .firstOrNull { it.optString("type") == "text" }
                 ?.optString("text", "")
-            if (!text.isNullOrBlank()) text
+            val truncated = json.optString("stop_reason", "") == "max_tokens"
+            if (!text.isNullOrBlank()) CloudResult(text, truncated)
             else {
                 // Thinking-only reply: surface the thinking rather than nothing.
                 val thinking = (0 until blocks.length())
                     .map { blocks.getJSONObject(it) }
                     .firstOrNull { it.optString("type") == "thinking" }
                     ?.optString("thinking", "")
-                if (!thinking.isNullOrBlank()) thinking
+                if (!thinking.isNullOrBlank()) CloudResult(thinking, truncated)
                 else throw CloudApiException(200, "model returned no text")
             }
         }
@@ -163,7 +185,7 @@ suspend fun CloudProvider.complete(
                 })
             )
             val json = post(
-                URL("$apiBase/models/$defaultModel:generateContent"),
+                URL("$apiBase/models/$effectiveModel:generateContent"),
                 mapOf(
                     "x-goog-api-key" to apiKey,
                     "Content-Type" to "application/json"
@@ -177,9 +199,24 @@ suspend fun CloudProvider.complete(
                 ?.optJSONObject(0)
                 ?.optString("text", "")
             if (text.isNullOrBlank()) throw CloudApiException(200, "model returned no text")
-            text
+            val truncated = json.optJSONArray("candidates")
+                ?.optJSONObject(0)
+                ?.optString("finishReason", "") == "MAX_TOKENS"
+            CloudResult(text, truncated)
         }
     }
+}
+
+/**
+ * True when an OpenAI-style reply stopped because it hit the output cap
+ * (`finish_reason == "length"`) rather than ending naturally.
+ */
+private fun isLengthCutoff(json: JSONObject): Boolean = try {
+    json.getJSONArray("choices")
+        .optJSONObject(0)
+        ?.optString("finish_reason", "") == "length"
+} catch (_: Exception) {
+    false
 }
 
 /**

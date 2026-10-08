@@ -23,26 +23,32 @@ object KarenLlama {
 
     private var handle = 0L
     private var loadedName = ""
+    private var loadedCtx = 0
 
     fun isLoaded(name: String): Boolean = handle != 0L && loadedName == name
 
     @Synchronized
     fun ensureLoaded(file: File, displayName: String, nCtx: Int = 2048, nThreads: Int = 4): Boolean {
         if (!ready) return false
-        if (handle != 0L && loadedName == displayName) return true
+        // Same model but a different context window (e.g. user raised it to
+        // 16k in Settings): reload so the new n_ctx actually applies.
+        if (handle != 0L && loadedName == displayName && loadedCtx == nCtx) return true
         free()
         return try {
             handle = nativeInit(file.absolutePath, nCtx, nThreads)
             if (handle == 0L) {
                 loadedName = ""
+                loadedCtx = 0
                 false
             } else {
                 loadedName = displayName
+                loadedCtx = nCtx
                 true
             }
         } catch (_: Exception) {
             handle = 0L
             loadedName = ""
+            loadedCtx = 0
             false
         }
     }
@@ -71,6 +77,7 @@ object KarenLlama {
             }
             handle = 0L
             loadedName = ""
+            loadedCtx = 0
         }
     }
 

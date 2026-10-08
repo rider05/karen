@@ -179,6 +179,32 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                         }
                         Text("Compute backend", color = colors.textMuted, fontSize = 11.5.sp, modifier = Modifier.align(Alignment.CenterVertically).padding(start = 4.dp))
                     }
+                    // Content window shared by Chat + Workspace (up to 16k).
+                    var contentWindow by remember { mutableStateOf(UserPrefs.contextTokens(context)) }
+                    Text("Content Window", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        UserPrefs.contextWindowOptions.forEach { tokens ->
+                            val selected = contentWindow == tokens
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(if (selected) colors.accentGreen.copy(alpha = 0.18f) else colors.surfaceHover)
+                                    .border(1.dp, if (selected) colors.accentGreen else colors.border, RoundedCornerShape(8.dp))
+                                    .clickable {
+                                        contentWindow = tokens
+                                        UserPrefs.setContextTokens(context, tokens)
+                                    }
+                                    .padding(horizontal = 14.dp, vertical = 6.dp)
+                            ) {
+                                Text(windowLabel(tokens), color = if (selected) colors.accentGreen else colors.textPrimary, fontSize = 11.5.sp, fontFamily = FontFamily.Monospace)
+                            }
+                        }
+                    }
+                    Text(
+                        "History + project context kept per reply. On-device models reload with the new size on next run.",
+                        color = colors.textMuted,
+                        fontSize = 11.5.sp
+                    )
                     // Default chat effort (per-level colors, theme-aware)
                     Text("Default Chat Effort", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {

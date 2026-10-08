@@ -14,6 +14,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.automirrored.filled.*
@@ -754,14 +755,29 @@ fun MessageActionBar(
 /**
  * User message card — right-aligned, Level 2 surface, 16dp radius with the
  * lower-right corner notched to 4dp so the flow reads left-to-right.
+ *
+ * Sent text is selectable (long-press to copy) with explicit copy/edit
+ * actions. Edit opens an inline editor; Save calls [onEdit].
  */
 @Composable
 fun UserMessageBubble(
     text: String,
     attachments: List<Attachment> = emptyList(),
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onEdit: ((String) -> Unit)? = null
 ) {
     val colors = LocalKarenColors.current
+    val clipboardManager = LocalClipboardManager.current
+    var isEditing by remember { mutableStateOf(false) }
+    var draft by remember { mutableStateOf(text) }
+    var justCopied by remember { mutableStateOf(false) }
+    val bubbleShape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = 16.dp, bottomEnd = 4.dp)
+
+    // System back cancels an open inline editor before the screen handles it.
+    if (isEditing) {
+        androidx.activity.compose.BackHandler { isEditing = false }
+    }
+
     Row(
         modifier = modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.End
@@ -799,21 +815,112 @@ fun UserMessageBubble(
                     }
                 }
             }
-            if (text.isNotBlank()) {
-                Box(
-                    modifier = Modifier
-                        .widthIn(max = 310.dp)
-                        .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = 16.dp, bottomEnd = 4.dp))
-                        .background(colors.userBubble)
-                        .border(1.dp, colors.cardBorder, RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = 16.dp, bottomEnd = 4.dp))
-                        .padding(horizontal = 16.dp, vertical = 12.dp)
-                ) {
-                    Text(
-                        text = text,
-                        color = colors.userBubbleText,
-                        fontSize = 14.5.sp,
-                        lineHeight = 21.sp
-                    )
+            if (text.isNotBlank() || isEditing) {
+                if (!isEditing) {
+                    Box(
+                        modifier = Modifier
+                            .widthIn(max = 310.dp)
+                            .clip(bubbleShape)
+                            .background(colors.userBubble)
+                            .border(1.dp, colors.cardBorder, bubbleShape)
+                            .padding(horizontal = 16.dp, vertical = 12.dp)
+                    ) {
+                        SelectionContainer {
+                            Text(
+                                text = text,
+                                color = colors.userBubbleText,
+                                fontSize = 14.5.sp,
+                                lineHeight = 21.sp
+                            )
+                        }
+                    }
+                    // Copy / edit actions, pinned end under the bubble.
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(2.dp),
+                        modifier = Modifier.padding(top = 2.dp)
+                    ) {
+                        IconButton(
+                            onClick = {
+                                clipboardManager.setText(AnnotatedString(text))
+                                justCopied = true
+                            },
+                            modifier = Modifier.size(30.dp)
+                        ) {
+                            Icon(
+                                if (justCopied) Icons.Default.Check else Icons.Default.ContentCopy,
+                                contentDescription = "Copy message",
+                                tint = if (justCopied) colors.accentGreen else colors.textMuted,
+                                modifier = Modifier.size(14.dp)
+                            )
+                        }
+                        if (onEdit != null) {
+                            IconButton(
+                                onClick = {
+                                    draft = text
+                                    justCopied = false
+                                    isEditing = true
+                                },
+                                modifier = Modifier.size(30.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.Edit,
+                                    contentDescription = "Edit message",
+                                    tint = colors.textMuted,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    Column(
+                        horizontalAlignment = Alignment.End,
+                        modifier = Modifier
+                            .widthIn(max = 310.dp)
+                            .clip(bubbleShape)
+                            .background(colors.userBubble)
+                            .border(1.dp, colors.cardBorder, bubbleShape)
+                            .padding(horizontal = 12.dp, vertical = 10.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = draft,
+                            onValueChange = { draft = it },
+                            colors = karenFieldColors(colors),
+                            textStyle = TextStyle(
+                                color = colors.userBubbleText,
+                                fontSize = 14.5.sp,
+                                lineHeight = 21.sp
+                            ),
+                            maxLines = 8,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            TextButton(onClick = { isEditing = false }) {
+                                Text("Cancel", color = colors.textMuted, fontSize = 12.5.sp)
+                            }
+                            Button(
+                                onClick = {
+                                    val cleaned = draft.trim()
+                                    if (cleaned.isNotEmpty() && cleaned != text) {
+                                        onEdit?.invoke(cleaned)
+                                    }
+                                    isEditing = false
+                                },
+                                enabled = draft.trim().isNotEmpty(),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = colors.accentGreen,
+                                    contentColor = Color.White,
+                                    disabledContainerColor = colors.border,
+                                    disabledContentColor = colors.textMuted
+                                ),
+                                shape = RoundedCornerShape(8.dp),
+                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
+                            ) {
+                                Text("Save", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
+                            }
+                        }
+                    }
                 }
             }
         }

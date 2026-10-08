@@ -67,9 +67,11 @@ suspend fun CloudProvider.complete(
     history: List<Pair<String, String>>,
     maxTokens: Int,
     /** Thinking-token budget for reasoning models; null disables thinking. */
-    thinkingBudget: Int? = null
+    thinkingBudget: Int? = null,
+    /** How many trailing turns fit the configured content window. */
+    historyLimit: Int = 20
 ): String = withContext(Dispatchers.IO) {
-    val trimmed = history.takeLast(20)
+    val trimmed = history.takeLast(historyLimit.coerceIn(4, 80))
     when (protocol) {
         CloudProtocol.OPENAI -> {
             fun body(tokenField: String) = JSONObject()

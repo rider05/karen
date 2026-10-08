@@ -15,6 +15,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -31,7 +33,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.io.File
+import android.util.Base64
+import com.karen.rememberDeviceTelemetry
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -47,8 +53,16 @@ data class Project(
     val steps: MutableList<ProjectStep> = mutableStateListOf(),
     var codeOld: String = "",
     var codeNew: String = "",
-    val terminalLog: MutableList<String> = mutableStateListOf()
+    val terminalLog: MutableList<String> = mutableStateListOf(),
+    var filesVersion: Long = 0L
 )
+
+/** True when the message asks for something to be built (not just discussed). */
+private fun projectNeedsScaffold(text: String): Boolean {
+    val t = " $text ".lowercase()
+    return listOf(" build ", " create ", " generate ", " implement ", " scaffold ", " add file ", " new file ", " write code ", " make an app ", " make a ")
+        .any { t.contains(it) }
+}
 
 /** Derive LLM-style plan steps from a user prompt (no hardcoded project data). */
 private fun buildStepsFor(prompt: String): List<String> {
@@ -88,30 +102,64 @@ private suspend fun runShell(cmd: String, workDir: File): String = withContext(D
     }
 }
 
+/** Quote a shell argument safely for `sh -c`. */
+private fun shQuote(s: String): String = "'" + s.replace("'", "'\\''") + "'"
+
+/** Strip embedded credentials from git output so tokens never land in logs. */
+private fun sanitizeGitOutput(out: String): String =
+    out.replace(Regex("://[^/\\s]*@"), "://***@")
+
+/** Mask credentials for on-screen display of a remote URL. */
+private fun maskRemote(url: String): String =
+    if (url.isBlank()) "" else url.replace(Regex("://[^/\\s]*@"), "://***@")
+
+private suspend fun gitCommitAll(root: File, message: String): String {
+    val msg = message.trim().ifBlank { "Karen workspace update" }.take(200)
+    val out = runShell(
+        "git rev-parse --is-inside-work-tree >/dev/null 2>&1 || git init; " +
+            "git add -A && git -c user.name=Karen -c user.email=karen@local commit -m ${shQuote(msg)}",
+        root
+    )
+    return sanitizeGitOutput(out)
+}
+
+private suspend fun gitPushCurrent(root: File, remote: String): String {
+    if (remote.isBlank()) return "No remote set — tap Remote first."
+    // Point origin at the stored URL without echoing credentials to the log.
+    runShell("git remote get-url origin >/dev/null 2>&1 || git remote add origin ${shQuote(remote)}", root)
+    runShell("git remote set-url origin ${shQuote(remote)}", root)
+    val branch = runShell("git branch --show-current", root).lines().firstOrNull()?.trim().orEmpty()
+    val ref = branch.ifBlank { "HEAD" }
+    return sanitizeGitOutput(runShell("git push -u origin $ref", root))
+}
+
 /** Real compile & test: list files, syntax-check .sh files, report actual output/errors. */
 private suspend fun compileAndTest(dir: File): String = withContext(Dispatchers.IO) {
     try {
         if (!dir.exists()) return@withContext "Error: project directory not found."
-        val files = dir.listFiles()?.sortedBy { it.name } ?: emptyList()
+        val entries = listProjectEntries(dir, 200)
+        val files = entries.filter { it.isFile }
         if (files.isEmpty()) return@withContext "No data found — project directory is empty."
         val sb = StringBuilder()
         sb.appendLine("Files (${files.size}):")
-        files.forEach { f -> sb.appendLine("- ${f.name} (${f.length()} bytes)") }
-        val shFiles = files.filter { it.extension == "sh" && it.isFile }
+        files.take(60).forEach { f ->
+            sb.appendLine("- ${relPathOf(dir, f)} (${f.length()} bytes)")
+        }
+        val shFiles = files.filter { it.extension == "sh" }
         if (shFiles.isEmpty()) {
             sb.append("No runnable checks found (.sh scripts).")
         } else {
-            shFiles.forEach { f ->
+            shFiles.take(10).forEach { f ->
                 try {
                     val p = ProcessBuilder("sh", "-n", f.absolutePath)
                         .redirectErrorStream(true)
                         .start()
                     val out = p.inputStream.bufferedReader().readText().trim()
                     val code = p.waitFor()
-                    if (code == 0) sb.appendLine("PASS ${f.name}: syntax OK")
-                    else sb.appendLine("FAIL ${f.name}: ${out.ifBlank { "syntax error" }} (exit $code)")
+                    if (code == 0) sb.appendLine("PASS ${relPathOf(dir, f)}: syntax OK")
+                    else sb.appendLine("FAIL ${relPathOf(dir, f)}: ${out.ifBlank { "syntax error" }} (exit $code)")
                 } catch (e: Exception) {
-                    sb.appendLine("FAIL ${f.name}: ${e.message}")
+                    sb.appendLine("FAIL ${relPathOf(dir, f)}: ${e.message}")
                 }
             }
         }
@@ -120,6 +168,292 @@ private suspend fun compileAndTest(dir: File): String = withContext(Dispatchers.
         "Error: ${e.message}"
     }
 }
+
+fun parseScaffold(text: String): List<Pair<String, String>> {
+    val results = mutableListOf<Pair<String, String>>()
+    val marker = "///FILE: "
+    var i = 0
+    while (i < text.length) {
+        val start = text.indexOf(marker, i)
+        if (start < 0) break
+        val nl = text.indexOf('\n', start)
+        if (nl < 0) break
+        val relPath = text.substring(start + marker.length, nl).trim().replace('\\', '/')
+        val end = text.indexOf("///END", nl + 1)
+        if (end < 0) break
+        val content = text.substring(nl + 1, end)
+        if (relPath.isNotBlank()) results.add(relPath to content)
+        i = end + "///END".length
+    }
+    return results
+}
+
+private val SCAFFOLD_DIR_RENAME = mapOf("lib/main/java" to "src/main/java")
+
+private fun safeScaffoldPath(project: Project, relPath: String): File? {
+    var clean = relPath.trim().replace('\\', '/').removePrefix("./")
+    for ((from, to) in SCAFFOLD_DIR_RENAME) {
+        if (clean.startsWith(from)) clean = to + clean.removePrefix(from)
+    }
+    if (clean.isBlank() || clean.contains("..")) return null
+    if (clean.startsWith('/') || clean.contains(':')) return null
+    return File(project.dir, clean)
+}
+
+private fun writeScaffoldFiles(project: Project, files: List<Pair<String, String>>): String {
+    var written = 0
+    var skipped = 0
+    for ((rel, content) in files.take(12)) {
+        val target = safeScaffoldPath(project, rel) ?: continue
+        try {
+            target.parentFile?.mkdirs()
+            target.writeText(content)
+            written++
+        } catch (_: Exception) {
+            skipped++
+        }
+    }
+    return if (written == 0 && skipped > 0) "Could not write files." else "$written file(s) written${if (skipped > 0) ", $skipped failed" else ""}"
+}
+
+// ---------- Project file-structure helpers (Workspace is project-first) ----------
+
+/** Root dir for a project, created on demand. */
+private fun projectRootDir(project: Project): File = File(project.dir).apply { mkdirs() }
+
+/** Relative path of [f] inside [root], with '/' separators and no leading './'. */
+private fun relPathOf(root: File, f: File): String = try {
+    root.toURI().relativize(f.toURI()).path.trimEnd('/').removePrefix("./")
+} catch (_: Exception) {
+    f.name
+}
+
+private val BINARY_EXTS = setOf(
+    "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico",
+    "mp3", "wav", "ogg", "m4a", "mp4", "mkv", "webm",
+    "zip", "gz", "tar", "apk", "aab", "so", "dex",
+    "gguf", "bin", "onnx", "tflite", "sqlite", "db"
+)
+
+private fun isBinaryName(name: String): Boolean {
+    val ext = name.substringAfterLast('.', "").lowercase()
+    return ext in BINARY_EXTS
+}
+
+/**
+ * All entries (dirs + files) under [root], excluding the hidden `.karen`
+ * state dir. Sorted with dirs first, then by relative path.
+ */
+private fun listProjectEntries(root: File, maxEntries: Int = 400): List<File> {
+    if (!root.exists()) return emptyList()
+    val out = mutableListOf<File>()
+    val stack = ArrayDeque<File>()
+    root.listFiles()?.sortedWith(compareBy({ !it.isDirectory }, { it.name.lowercase() }))?.forEach {
+        if (it.name != ".karen") stack.addLast(it)
+    }
+    while (stack.isNotEmpty() && out.size < maxEntries) {
+        val f = stack.removeFirst()
+        out.add(f)
+        if (f.isDirectory) {
+            f.listFiles()?.sortedWith(compareBy({ !it.isDirectory }, { it.name.lowercase() }))?.forEach {
+                if (out.size + stack.size < maxEntries) stack.addLast(it)
+            }
+        }
+    }
+    return out.sortedWith(compareBy({ relPathOf(root, it) }))
+}
+
+/** Depth of [f] inside [root] (root children = 0). */
+private fun depthOf(root: File, f: File): Int {
+    val rel = relPathOf(root, f)
+    if (rel.isBlank()) return 0
+    return rel.count { it == '/' }
+}
+
+/** Short tree listing for prompts and the terminal, e.g. `- src/main/App.kt (1.2 KB)`. */
+private fun projectTreeSummary(root: File, maxEntries: Int = 80): String {
+    val entries = listProjectEntries(root, maxEntries)
+    if (entries.isEmpty()) return "(empty project)"
+    return entries.take(maxEntries).joinToString("\n") { f ->
+        val rel = relPathOf(root, f)
+        val indent = "  ".repeat(depthOf(root, f))
+        if (f.isDirectory) "$indent- $rel/"
+        else "$indent- $rel (${formatFileSize(f.length())})"
+    }
+}
+
+private fun formatFileSize(bytes: Long): String = when {
+    bytes < 1024 -> "$bytes B"
+    bytes < 1024 * 1024 -> "%.1f KB".format(bytes / 1024.0)
+    else -> "%.1f MB".format(bytes / (1024.0 * 1024.0))
+}
+
+/** Read a text file for the editor/model; null when binary, missing, or too large. */
+private fun readTextFileSafe(f: File, maxChars: Int = 15000): String? {
+    if (!f.isFile) return null
+    if (isBinaryName(f.name)) return null
+    if (f.length() > 512 * 1024) return null
+    return try {
+        f.readText().take(maxChars)
+    } catch (_: Exception) {
+        null
+    }
+}
+
+/**
+ * Project context for the model: tree + truncated contents of the most
+ * relevant text files, so follow-up prompts edit in place instead of
+ * restarting from scratch.
+ */
+private fun projectContextForModel(root: File, maxChars: Int = 9000): String {
+    val sb = StringBuilder()
+    sb.appendLine(projectTreeSummary(root))
+    var used = sb.length
+    val files = listProjectEntries(root).filter { it.isFile && !isBinaryName(it.name) }
+        .sortedBy { relPathOf(root, it) }
+        .take(8)
+    for (f in files) {
+        val rel = relPathOf(root, f)
+        val body = readTextFileSafe(f, maxChars = 2500) ?: continue
+        val block = "\n\n--- $rel ---\n$body"
+        if (used + block.length > maxChars) break
+        sb.append(block)
+        used += block.length
+    }
+    return sb.toString()
+}
+
+private fun fileIconFor(name: String, isDir: Boolean): androidx.compose.ui.graphics.vector.ImageVector {
+    if (isDir) return Icons.Default.Folder
+    return when (name.substringAfterLast('.', "").lowercase()) {
+        "kt", "java", "js", "ts", "tsx", "py", "rs", "go", "c", "cpp", "h", "cs", "swift" -> Icons.Default.Code
+        "xml", "json", "toml", "gradle", "yaml", "yml" -> Icons.Default.DataObject
+        "md", "txt", "pdf" -> Icons.Default.Description
+        "png", "jpg", "jpeg", "gif", "webp" -> Icons.Default.Image
+        "mp3", "wav", "ogg", "m4a" -> Icons.Default.AudioFile
+        "mp4", "mkv", "webm" -> Icons.Default.VideoFile
+        "sh" -> Icons.Default.Terminal
+        else -> Icons.Default.InsertDriveFile
+    }
+}
+
+/** Max model follow-ups per build: big projects stream in chunk after chunk. */
+private const val MAX_SCAFFOLD_CHUNKS = 4
+
+/** True when the reply was cut off mid-build: more blocks opened than closed. */
+private fun isTruncatedScaffold(reply: String): Boolean {
+    val opens = "///FILE:".toRegex().findAll(reply).count()
+    val ends = "///END".toRegex().findAll(reply).count()
+    if (opens > ends) return true
+    val lastEnd = reply.lastIndexOf("///END")
+    val tail = if (lastEnd < 0) reply else reply.substring(lastEnd + "///END".length)
+    return tail.contains("///FILE:")
+}
+
+/**
+ * Runs scaffold generation as a second pass over `userText`: the model is asked
+ * for a multi-file project, and the app writes the delimited blocks to disk.
+ * Works for cloud and local GGUF alike.
+ *
+ * Chunk-based: when the build exceeds the content window the reply is cut
+ * mid-project ([isTruncatedScaffold]). Instead of stopping, the model is
+ * asked to continue where it left off — up to [MAX_SCAFFOLD_CHUNKS] chunks —
+ * each chunk written to disk immediately so partial progress survives.
+ */
+private suspend fun scaffoldWithModel(
+    project: Project,
+    userText: String,
+    cloud: CloudProvider?,
+    cloudKey: String,
+    weightFile: File?,
+    effort: String,
+    threads: Int,
+    selectedModelName: String,
+    windowTokens: Int
+): String {
+    val perFileCap = (windowTokens / 4).coerceIn(2000, 12000)
+    val system = "You are a code projectator for Karen Workspace. Reply using this exact format:\n" +
+        "///FILE: relative/path/File.ext\n<file content>\n///END\n" +
+        "///FILE: relative/path/Next.ext\n<file content>\n///END\n" +
+        "Rules: no explanations outside blocks, no code fences, relative paths only (like src/main/java/Main.kt, gradle/libs.versions.toml), up to 8 files per message, each under $perFileCap chars. " +
+        "Every source file must be complete and runnable; do not embed prose or markdown around files. " +
+        "If the whole project does not fit in one message, output as many COMPLETE blocks as fit and stop cleanly after an ///END — you will be asked to continue. Never leave a block unclosed. " +
+        "Maintain the existing project structure on follow-ups: edit files in place, keep paths stable unless the user asks to restructure."
+    // Give the model the current tree so follow-ups continue the same project.
+    val tree = withContext(Dispatchers.IO) { projectTreeSummary(projectRootDir(project)) }
+    val firstAsk = "Existing project structure:\n$tree\n\nRequest: $userText"
+
+    suspend fun callModel(history: List<Pair<String, String>>): String? {
+        if (cloud != null && cloudKey.isNotBlank()) {
+            return cloud.complete(
+                cloudKey,
+                history,
+                maxTokensFor(effort),
+                thinkingBudget = if (cloud.reasoning) thinkingBudgetFor(effort) else null,
+                historyLimit = historyTurnsFor(windowTokens)
+            )
+        }
+        if (weightFile != null && KarenLlama.ready) {
+            val ok = withContext(Dispatchers.IO) {
+                KarenLlama.ensureLoaded(weightFile, selectedModelName, windowTokens, threads)
+            }
+            if (!ok) return null
+            val withSystem = buildList {
+                add("user" to "System: $system")
+                addAll(history)
+            }
+            return withContext(Dispatchers.IO) {
+                KarenLlama.complete(
+                    system,
+                    withSystem.map { it.first }.toTypedArray(),
+                    withSystem.map { it.second }.toTypedArray(),
+                    maxTokensFor(effort)
+                )
+            }
+        }
+        return null
+    }
+
+    var reply = callModel(listOf("user" to firstAsk)) ?: return "No model available to scaffold."
+    val allFiles = linkedMapOf<String, String>()
+    var chunks = 0
+    var stillTruncated = false
+    while (true) {
+        chunks++
+        val parsed = parseScaffold(reply)
+        if (parsed.isNotEmpty()) {
+            withContext(Dispatchers.IO) { writeScaffoldFiles(project, parsed) }
+            for ((p, c) in parsed) allFiles[p] = c
+            project.filesVersion = System.currentTimeMillis()
+        }
+        stillTruncated = isTruncatedScaffold(reply)
+        if (!stillTruncated || chunks >= MAX_SCAFFOLD_CHUNKS) break
+        val doneList = allFiles.keys.sorted().joinToString(", ").ifBlank { "(none completed)" }
+        val next = callModel(
+            listOf(
+                "user" to firstAsk,
+                "assistant" to reply.takeLast(6000),
+                "user" to "Continue exactly where you stopped. Do NOT resend completed files ($doneList). " +
+                    "Output only the REMAINING files as complete ///FILE blocks ending with ///END. " +
+                    "If you were cut inside a file, resend that whole file from its start."
+            )
+        )
+        if (next.isNullOrBlank()) break
+        reply = next
+    }
+    if (allFiles.isEmpty()) {
+        project.chat.add(ProjectChat("assistant", "The model replied, but produced no parseable files."))
+        return "0 files written"
+    }
+    val list = allFiles.toList()
+    val chunkNote = if (chunks > 1) " (built in $chunks chunks)" else ""
+    val truncNote = if (stillTruncated) " — still truncated after $chunks chunks; ask it to continue." else ""
+    project.chat.add(ProjectChat("assistant", "Scaffolded ${list.size} file(s)$chunkNote.\n${filesSummary(list)}$truncNote"))
+    return "${list.size} file(s) written$chunkNote$truncNote"
+}
+
+private fun filesSummary(files: List<Pair<String, String>>): String =
+    files.take(10).joinToString("\n") { "- ${it.first} (${it.second.length} chars)" }
 
 /** Line diff: '-' removed, '+' added, ' ' unchanged. */
 private fun diffLines(old: String, new: String): List<Pair<Char, String>> {
@@ -141,6 +475,80 @@ private fun diffLines(old: String, new: String): List<Pair<Char, String>> {
     return result
 }
 
+/** Project memory: chat, steps and tasks survive restarts in a hidden dir. */
+private fun stateDir(project: Project): File = File(project.dir, ".karen").apply { mkdirs() }
+
+private fun enc(s: String): String =
+    Base64.encodeToString(s.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+
+private fun dec(s: String): String = try {
+    String(Base64.decode(s, Base64.DEFAULT), Charsets.UTF_8)
+} catch (_: Exception) {
+    ""
+}
+
+private fun saveProjectState(project: Project) {
+    try {
+        val dir = stateDir(project)
+        File(dir, "chat.txt").writeText(
+            project.chat.takeLast(200).joinToString("\n") { "${it.role}\t${enc(it.text)}" }
+        )
+        File(dir, "steps.txt").writeText(
+            project.steps.joinToString("\n") { "${if (it.done) 1 else 0}\t${enc(it.text)}" }
+        )
+        File(dir, "tasks.txt").writeText(
+            project.tasks.joinToString("\n") { "${if (it.done) 1 else 0}\t${enc(it.text)}" }
+        )
+    } catch (_: Exception) {
+    }
+}
+
+/** Returns true when a previous session was restored. */
+private fun loadProjectState(project: Project): Boolean {
+    return try {
+        val dir = File(project.dir, ".karen")
+        if (!dir.exists()) return false
+        var restored = false
+        File(dir, "chat.txt").takeIf { it.exists() }?.let { f ->
+            val items = f.readLines().mapNotNull { line ->
+                val p = line.split('\t', limit = 2)
+                if (p.size < 2 || (p[0] != "user" && p[0] != "assistant")) null
+                else ProjectChat(p[0], dec(p[1]))
+            }
+            if (items.isNotEmpty()) {
+                project.chat.clear()
+                project.chat.addAll(items)
+                restored = true
+            }
+        }
+        File(dir, "steps.txt").takeIf { it.exists() }?.let { f ->
+            val items = f.readLines().mapNotNull { line ->
+                val p = line.split('\t', limit = 2)
+                if (p.size < 2) null else ProjectStep(dec(p[1]), p[0] == "1")
+            }
+            if (items.isNotEmpty()) {
+                project.steps.clear()
+                project.steps.addAll(items)
+                restored = true
+            }
+        }
+        File(dir, "tasks.txt").takeIf { it.exists() }?.let { f ->
+            val items = f.readLines().mapNotNull { line ->
+                val p = line.split('\t', limit = 2)
+                if (p.size < 2) null else ProjectTask(dec(p[1]), p[0] == "1")
+            }
+            if (items.isNotEmpty()) {
+                project.tasks.clear()
+                project.tasks.addAll(items)
+                restored = true
+            }
+        }
+        restored
+    } catch (_: Exception) {
+        false
+    }
+}
+
 @Composable
 fun WorkspaceScreen(
     onOpenDrawer: () -> Unit = {},
@@ -152,6 +560,7 @@ fun WorkspaceScreen(
     val tabs = listOf("Code", "Plan", "Terminal", "Diff")
 
     val ctx = androidx.compose.ui.platform.LocalContext.current
+    val device = rememberDeviceTelemetry()
     val scope = rememberCoroutineScope()
     val projects = remember {
         mutableStateListOf<Project>().apply {
@@ -199,38 +608,98 @@ fun WorkspaceScreen(
         chatBusy = true
         project.chat.add(ProjectChat("user", t))
         scope.launch {
-            // 1. Plan steps from the prompt
+            // 1. Plan steps derived from the ask (the model restructures on send).
             val steps = buildStepsFor(t)
             project.steps.clear()
             steps.forEach { project.steps.add(ProjectStep(it)) }
             project.tasks.clear()
             steps.drop(1).forEach { project.tasks.add(ProjectTask(it)) }
-            // 2. Real code update in internal storage
-            val dir = File(project.dir).apply { mkdirs() }
-            val mainFile = File(dir, "main.txt")
-            val prev = try {
-                if (mainFile.exists()) mainFile.readText() else project.codeNew
-            } catch (_: Exception) { project.codeNew }
-            val next = buildCodeFor(t, prev)
-            project.codeOld = prev
-            project.codeNew = next
-            withContext(Dispatchers.IO) {
-                try { mainFile.writeText(next) } catch (_: Exception) {}
+            // 2. Seed main.txt only for a brand-new empty project so the Code
+            //    tab has something to show. Existing projects keep their tree
+            //    — the model edits files in place (see step 6).
+            val dir = projectRootDir(project)
+            val isEmptyProject = withContext(Dispatchers.IO) {
+                dir.listFiles()?.none { it.name != ".karen" } ?: true
             }
-            // 3. Real tool execution in terminal
+            if (isEmptyProject) {
+                val mainFile = File(dir, "main.txt")
+                val prev = try {
+                    if (mainFile.exists()) mainFile.readText() else project.codeNew
+                } catch (_: Exception) { project.codeNew }
+                val next = buildCodeFor(t, prev)
+                project.codeOld = prev
+                project.codeNew = next
+                withContext(Dispatchers.IO) {
+                    try { mainFile.writeText(next) } catch (_: Exception) {}
+                }
+                project.filesVersion = System.currentTimeMillis()
+            }
+            // Helper: apply ///FILE blocks from any model reply so follow-up
+            // prompts continue the same structure instead of starting over.
+            suspend fun applyModelFiles(reply: String): Boolean {
+                val files = parseScaffold(reply)
+                if (files.isEmpty()) return false
+                val summary = withContext(Dispatchers.IO) { writeScaffoldFiles(project, files) }
+                project.filesVersion = System.currentTimeMillis()
+                project.chat.add(ProjectChat("assistant", "Applied to ${project.name}: $summary\n${filesSummary(files)}"))
+                return true
+            }
+            // 3. If the user asked to build/change code, the model writes a full
+            //    multi-file scaffold into the project. Files land on real paths.
+            if (projectNeedsScaffold(t)) {
+                val canCloud = findCloudProviderByName(selectedModel)?.let { p ->
+                    UserPrefs.apiKey(ctx, p.id).isNotBlank()
+                } ?: false
+                val canLocal = ModelDownloader.weightFileFor(ctx, selectedModel) != null && KarenLlama.ready
+                if (canCloud || canLocal) {
+                    val threads = maxOf(2, minOf(6, Runtime.getRuntime().availableProcessors()))
+                    val cloudScaffold = findCloudProviderByName(selectedModel)
+                    val cwCloudKey = cloudScaffold?.let { UserPrefs.apiKey(ctx, it.id) }.orEmpty()
+                    val scaffoldMsg = scaffoldWithModel(
+                        project, t, cloudScaffold, cwCloudKey,
+                        weightFile = ModelDownloader.weightFileFor(ctx, selectedModel),
+                        effort = effort, threads = threads,
+                        selectedModelName = selectedModel,
+                        windowTokens = UserPrefs.contextTokens(ctx)
+                    )
+                    project.chat.add(ProjectChat("assistant", scaffoldMsg))
+                    project.filesVersion = System.currentTimeMillis()
+                }
+            }
+            // 4. Terminal echo of the send + a recursive listing across the project dir.
             project.terminalLog.add("$ $t".take(120))
-            val lsOut = runShell("ls -la", dir)
-            project.terminalLog.add("[tool] ls -la\n$lsOut")
-            // 4. Assistant reply — live cloud call when a keyed API model is selected.
+            val lsOut = runShell("ls -Rp | head -n 80", dir)
+            project.terminalLog.add("[tool] ls -Rp\n$lsOut")
+            // 5. Web context — only with prior consent (asked once in Chat) + enabled.
+            var web: String? = null
+            if (UserPrefs.webSearchEnabled(ctx) && UserPrefs.webSearchAsked(ctx) && WebSearch.needsSearch(t)) {
+                web = try {
+                    WebSearch.search(WebSearch.cleanQuery(t))
+                        .takeIf { it.isNotEmpty() }
+                        ?.let(WebSearch::formatForModel)
+                } catch (_: Exception) {
+                    null
+                }
+            }
+            // Project structure + file contents so the model continues in place.
+            // Scaled by the Settings content window (up to 16k).
+            val window = UserPrefs.contextTokens(ctx)
+            val cloudLimit = historyTurnsFor(window)
+            val localLimit = localTurnsFor(window)
+            val modelCtx = withContext(Dispatchers.IO) { projectContextForModel(dir, contextCharsFor(window)) }
+            val buildInstruction =
+                "You are Karen's workspace builder for project \"${project.name}\". " +
+                    "Maintain the existing file structure. When changing code, output each changed file as " +
+                    "///FILE: relative/path\n<complete file content>\n///END (up to 8 files, no fences, no prose inside blocks), " +
+                    "then a 1-2 line summary. For discussion-only replies, answer normally with no ///FILE blocks."
+            // 6. Assistant reply — live cloud call, on-device GGUF, else canned.
             val cloud = findCloudProviderByName(selectedModel)
             val cloudKey = cloud?.let { UserPrefs.apiKey(ctx, it.id) }.orEmpty()
+            val weightFile = if (cloud == null) ModelDownloader.weightFileFor(ctx, selectedModel) else null
             if (cloud != null && cloudKey.isNotBlank()) {
                 try {
                     val history = mutableListOf<Pair<String, String>>()
-                    val codeCtx = project.codeNew.take(2000)
-                    if (codeCtx.isNotBlank()) {
-                        history.add("user" to "Project file main.txt so far:\n$codeCtx")
-                    }
+                    history.add("user" to "$buildInstruction\n\nProject files:\n$modelCtx")
                     project.chat.mapNotNullTo(history) { m ->
                         when (m.role) {
                             "user" -> "user" to m.text
@@ -238,13 +707,18 @@ fun WorkspaceScreen(
                             else -> null
                         }
                     }
+                    val enriched = if (web != null) {
+                        (history + ("user" to "Use these fresh web results if relevant:\n$web")).takeLast(cloudLimit)
+                    } else history.takeLast(cloudLimit)
                     val reply = cloud.complete(
                         cloudKey,
-                        history.takeLast(20),
+                        enriched,
                         maxTokensFor(effort),
-                        thinkingBudget = if (cloud.reasoning) thinkingBudgetFor(effort) else null
+                        thinkingBudget = if (cloud.reasoning) thinkingBudgetFor(effort) else null,
+                        historyLimit = cloudLimit
                     )
                     project.chat.add(ProjectChat("assistant", reply))
+                    applyModelFiles(reply)
                 } catch (e: CloudApiException) {
                     project.chat.add(
                         ProjectChat("assistant", "⚠ ${cloud.name} error (HTTP ${e.status}): ${e.message}")
@@ -254,14 +728,69 @@ fun WorkspaceScreen(
                         ProjectChat("assistant", "⚠ Could not reach ${cloud.name} — check internet and your API key. (${e.message})")
                     )
                 }
+            } else if (weightFile != null) {
+                // Real on-device inference through the bundled llama.cpp core.
+                if (!KarenLlama.ready) {
+                    project.chat.add(ProjectChat("assistant", "Local runtime failed to load on this device."))
+                } else if (UserPrefs.thermalGuard(ctx) && device.batteryTempC >= UserPrefs.thermalLimitC(ctx)) {
+                    project.chat.add(
+                        ProjectChat(
+                            "assistant",
+                            "Paused by Thermal Guard — battery ${"%.0f".format(device.batteryTempC)}°C " +
+                                "is at/above your ${UserPrefs.thermalLimitC(ctx).toInt()}°C limit. Let the phone cool down."
+                        )
+                    )
+                } else {
+                    try {
+                        val threads = maxOf(2, minOf(6, Runtime.getRuntime().availableProcessors()))
+                        val loaded = withContext(Dispatchers.IO) {
+                            KarenLlama.ensureLoaded(weightFile, selectedModel, window, threads)
+                        }
+                        if (!loaded) {
+                            project.chat.add(ProjectChat("assistant", "Could not load $selectedModel into RAM."))
+                        } else {
+                            val pairs = mutableListOf<Pair<String, String>>()
+                            pairs.add("user" to "Project files:\n$modelCtx")
+                            project.chat.mapNotNullTo(pairs) { m ->
+                                when (m.role) {
+                                    "user" -> "user" to m.text
+                                    "assistant" -> "assistant" to m.text
+                                    else -> null
+                                }
+                            }
+                            val withWeb = if (web != null) {
+                                (pairs + ("user" to "Use these fresh web results if relevant:\n$web")).takeLast(localLimit)
+                            } else pairs.takeLast(localLimit)
+                            val reply = withContext(Dispatchers.IO) {
+                                KarenLlama.complete(
+                                    buildInstruction,
+                                    withWeb.map { it.first }.toTypedArray(),
+                                    withWeb.map { it.second }.toTypedArray(),
+                                    maxTokensFor(effort)
+                                )
+                            }
+                            if (reply.isNotBlank()) {
+                                project.chat.add(ProjectChat("assistant", reply))
+                                applyModelFiles(reply)
+                            } else {
+                                project.chat.add(ProjectChat("assistant", "The model returned an empty reply."))
+                            }
+                        }
+                    } catch (e: Exception) {
+                        project.chat.add(ProjectChat("assistant", "Local model error: ${e.message}"))
+                    }
+                }
+            } else if (web != null) {
+                project.chat.add(ProjectChat("assistant", "Fresh web results:\n$web"))
             } else {
                 project.chat.add(
                     ProjectChat(
                         "assistant",
-                        "Planned ${steps.size} steps, updated main.txt and ran checks. See Plan / Code / Terminal."
+                        "Planned ${steps.size} steps and listed the project tree. See Plan / Code / Terminal."
                     )
                 )
             }
+            saveProjectState(project)
             chatBusy = false
         }
     }
@@ -280,6 +809,27 @@ fun WorkspaceScreen(
             efforts = listOf("Low", "Medium", "High", "Max", "Extreme", "Theme"),
             onSelectEffort = { effort = it },
             moreActions = listOf(
+                Triple("Scaffold project from prompt", Icons.Default.AutoFixHigh) {
+                    scope.launch {
+                        chatBusy = true
+                        val threads = maxOf(2, minOf(6, Runtime.getRuntime().availableProcessors()))
+                        val cloud = findCloudProviderByName(selectedModel)
+                        val cloudKey = cloud?.let { UserPrefs.apiKey(ctx, it.id) }.orEmpty()
+                        val scaffold = scaffoldWithModel(
+                            selected!!,
+                            "Create a small but complete Gradle hello-world project",
+                            cloud, cloudKey,
+                            weightFile = ModelDownloader.weightFileFor(ctx, selectedModel),
+                            effort = effort, threads = threads,
+                            selectedModelName = selectedModel,
+                            windowTokens = UserPrefs.contextTokens(ctx)
+                        )
+                        selected!!.chat.add(ProjectChat("assistant", scaffold))
+                        selected!!.filesVersion = System.currentTimeMillis()
+                        saveProjectState(selected!!)
+                        chatBusy = false
+                    }
+                },
                 Triple("New project", Icons.Default.Add) { showNewProject = true },
                 Triple("Export canvas", Icons.Default.Share) { android.widget.Toast.makeText(ctx, "Export canvas", android.widget.Toast.LENGTH_SHORT).show() },
                 Triple("Clear workspace", Icons.Default.Delete) {
@@ -371,6 +921,15 @@ fun WorkspaceScreen(
         }
 
         val project = selected!!
+        // Restore a previous session on open; archive on leave.
+        LaunchedEffect(project) {
+            if (project.chat.isEmpty() && project.steps.isEmpty() && project.tasks.isEmpty()) {
+                withContext(Dispatchers.IO) { loadProjectState(project) }
+            }
+        }
+        DisposableEffect(project) {
+            onDispose { saveProjectState(project) }
+        }
         val totalSec = project.sessionMs / 1000
 
         // Active project header + session timer (inside the project/repo)
@@ -423,7 +982,9 @@ fun WorkspaceScreen(
                                 .background(colors.userBubble)
                                 .padding(horizontal = 12.dp, vertical = 8.dp)
                         ) {
-                            Text(m.text, color = colors.userBubbleText, fontSize = 14.sp)
+                            SelectionContainer {
+                                Text(m.text, color = colors.userBubbleText, fontSize = 14.sp)
+                            }
                         }
                     }
                 } else {
@@ -442,7 +1003,9 @@ fun WorkspaceScreen(
                             Text("Karen", color = colors.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                         }
                         Spacer(Modifier.height(4.dp))
-                        Text(m.text, color = colors.textPrimary, fontSize = 14.sp, lineHeight = 20.sp)
+                        SelectionContainer {
+                            Text(m.text, color = colors.textPrimary, fontSize = 14.sp, lineHeight = 20.sp)
+                        }
                     }
                 }
             }
@@ -549,112 +1112,524 @@ fun WorkspaceScreen(
 private fun CodeCanvasView(project: Project) {
     val colors = LocalKarenColors.current
     val scope = rememberCoroutineScope()
-    var files by remember(project) { mutableStateOf(emptyList<File>()) }
-    var selectedFile by remember(project) { mutableStateOf<File?>(null) }
+    val root = remember(project) { File(project.dir) }
+    var entries by remember(project) { mutableStateOf(emptyList<File>()) }
+    var expanded by remember(project) { mutableStateOf(setOf("")) }
+    var currentRel by remember(project) { mutableStateOf<String?>(null) }
     var content by remember(project) { mutableStateOf("") }
+    var savedText by remember(project) { mutableStateOf("") }
+    var loadedFor by remember(project) { mutableStateOf<String?>(null) }
+    var dirty by remember { mutableStateOf(false) }
+    var binaryNote by remember(project) { mutableStateOf<String?>(null) }
     var status by remember(project) { mutableStateOf<String?>(null) }
     var statusOk by remember(project) { mutableStateOf(true) }
+    var refreshTick by remember(project) { mutableStateOf(0L) }
+    var showNewFile by remember { mutableStateOf(false) }
+    var showNewFolder by remember { mutableStateOf(false) }
+    var showRename by remember { mutableStateOf(false) }
+    var confirmDeleteRel by remember { mutableStateOf<String?>(null) }
+    var nameInput by remember { mutableStateOf("") }
 
-    LaunchedEffect(project) {
-        withContext(Dispatchers.IO) {
-            val dir = File(project.dir).apply { mkdirs() }
-            val list = dir.listFiles()?.filter { it.isFile }?.sortedBy { it.name } ?: emptyList()
-            val main = File(dir, "main.txt")
-            val initial = try {
-                if (project.codeNew.isNotBlank()) project.codeNew
-                else if (main.exists()) main.readText() else ""
-            } catch (_: Exception) { project.codeNew }
+    fun relOf(f: File): String = relPathOf(root, f)
+
+    fun parentRelOf(f: File): String {
+        val p = f.parentFile ?: return ""
+        return if (p.absolutePath == root.absolutePath) "" else relOf(p)
+    }
+
+    fun ancestorsExpanded(f: File): Boolean {
+        var p = f.parentFile ?: return true
+        while (p.absolutePath != root.absolutePath) {
+            if (!expanded.contains(relOf(p))) return false
+            p = p.parentFile ?: return true
+        }
+        return true
+    }
+
+    suspend fun rescan(selectRel: String? = currentRel) {
+        val list = withContext(Dispatchers.IO) {
+            root.mkdirs()
+            listProjectEntries(root)
+        }
+        entries = list
+        val rels = list.map { relOf(it) }.toSet()
+        if (selectRel != null && rels.contains(selectRel)) {
+            currentRel = selectRel
+        } else if (currentRel != null && !rels.contains(currentRel)) {
+            currentRel = null
+            content = ""
+            savedText = ""
+            loadedFor = null
+            dirty = false
+            binaryNote = null
+        }
+        if (currentRel == null) {
+            val mainRel = list.firstOrNull { !it.isDirectory && relOf(it) == "main.txt" }?.let { relOf(it) }
+                ?: list.firstOrNull { !it.isDirectory }?.let { relOf(it) }
+            currentRel = mainRel
+        }
+    }
+
+    suspend fun loadRel(rel: String) {
+        val target = File(root, rel)
+        binaryNote = null
+        if (target.isDirectory) return
+        if (isBinaryName(target.name) || target.length() > 512 * 1024) {
             withContext(Dispatchers.Main) {
-                files = list
-                if (selectedFile == null) {
-                    selectedFile = if (main.exists() || list.none { it.name == "main.txt" }) main else list.firstOrNull()
+                content = ""
+                savedText = ""
+                loadedFor = rel
+                dirty = false
+                binaryNote = if (isBinaryName(target.name)) "Binary file — preview not supported (${formatFileSize(target.length())})"
+                else "File too large to edit on-device (${formatFileSize(target.length())})"
+            }
+            return
+        }
+        val text = withContext(Dispatchers.IO) {
+            try { target.readText() } catch (e: Exception) { "Error: ${e.message}" }
+        }.take(15000)
+        content = text
+        savedText = text
+        loadedFor = rel
+        dirty = false
+    }
+
+    // Initial + model-write refresh. Typing never triggers this — only
+    // filesVersion (model scaffold) and explicit refresh do. Unsaved edits
+    // (dirty) are never clobbered by a model refresh.
+    LaunchedEffect(project, project.filesVersion, refreshTick) {
+        val keep = currentRel
+        rescan(selectRel = keep)
+        val cur = currentRel
+        if (cur != null && !dirty && File(root, cur).isFile) loadRel(cur)
+    }
+
+    // Back dismisses file dialogs first (screen-level handler runs after).
+    if (showNewFile || showNewFolder || showRename || confirmDeleteRel != null) {
+        androidx.activity.compose.BackHandler {
+            showNewFile = false
+            showNewFolder = false
+            showRename = false
+            confirmDeleteRel = null
+        }
+    }
+
+    val visible = entries.filter { ancestorsExpanded(it) }
+    val currentFile = currentRel?.let { File(root, it) }?.takeIf { it.isFile }
+
+    Column(modifier = Modifier.fillMaxSize().padding(10.dp)) {
+        // Toolbar: breadcrumb + file ops
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+            Text(
+                currentRel ?: "No file selected",
+                color = if (currentRel != null) colors.textPrimary else colors.textMuted,
+                fontSize = 11.sp,
+                fontFamily = FontFamily.Monospace,
+                maxLines = 1,
+                modifier = Modifier.weight(1f)
+            )
+            if (dirty) {
+                Box(Modifier.padding(end = 4.dp).size(8.dp).clip(CircleShape).background(colors.accentAmber))
+            }
+            IconButton(onClick = { nameInput = ""; showNewFile = true }, modifier = Modifier.size(30.dp)) {
+                Icon(Icons.Default.NoteAdd, contentDescription = "New file", tint = colors.textSecondary, modifier = Modifier.size(17.dp))
+            }
+            IconButton(onClick = { nameInput = ""; showNewFolder = true }, modifier = Modifier.size(30.dp)) {
+                Icon(Icons.Default.CreateNewFolder, contentDescription = "New folder", tint = colors.textSecondary, modifier = Modifier.size(17.dp))
+            }
+            IconButton(
+                onClick = { nameInput = currentFile?.name ?: ""; showRename = true },
+                enabled = currentFile != null,
+                modifier = Modifier.size(30.dp)
+            ) {
+                Icon(Icons.Default.Edit, contentDescription = "Rename", tint = colors.textSecondary, modifier = Modifier.size(16.dp))
+            }
+            IconButton(
+                onClick = { confirmDeleteRel = currentRel },
+                enabled = currentRel != null,
+                modifier = Modifier.size(30.dp)
+            ) {
+                Icon(Icons.Default.Delete, contentDescription = "Delete", tint = colors.textSecondary, modifier = Modifier.size(16.dp))
+            }
+            IconButton(onClick = { refreshTick = System.currentTimeMillis() }, modifier = Modifier.size(30.dp)) {
+                Icon(Icons.Default.Refresh, contentDescription = "Refresh", tint = colors.textSecondary, modifier = Modifier.size(16.dp))
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        Row(modifier = Modifier.fillMaxWidth().weight(1f)) {
+            // Explorer
+            Column(
+                modifier = Modifier
+                    .weight(0.9f)
+                    .fillMaxHeight()
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(if (colors.isDark) Color(0xFF0F0F11) else Color(0xFFF4F4F5))
+                    .border(1.dp, colors.border, RoundedCornerShape(8.dp))
+                    .padding(vertical = 6.dp)
+            ) {
+                Text(
+                    "FILES · ${entries.count { it.isFile }}",
+                    color = colors.textMuted,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 2.dp)
+                )
+                LazyColumn(modifier = Modifier.fillMaxSize()) {
+                    if (visible.isEmpty()) {
+                        item {
+                            Text(
+                                "Empty — ask the model to scaffold or tap +",
+                                color = colors.textMuted,
+                                fontSize = 11.sp,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
+                            )
+                        }
+                    }
+                    items(visible.size) { idx ->
+                        val f = visible[idx]
+                        val rel = relOf(f)
+                        val depth = depthOf(root, f)
+                        val isDir = f.isDirectory
+                        val isSel = rel == currentRel
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 4.dp)
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(if (isSel) colors.accentGreen.copy(alpha = 0.16f) else Color.Transparent)
+                                .clickable {
+                                    if (isDir) {
+                                        expanded = if (expanded.contains(rel)) expanded - rel else expanded + rel
+                                    } else {
+                                        currentRel = rel
+                                        scope.launch { loadRel(rel) }
+                                    }
+                                }
+                                .padding(start = (6 + depth * 12).dp, end = 6.dp, top = 5.dp, bottom = 5.dp)
+                        ) {
+                            if (isDir) {
+                                Icon(
+                                    if (expanded.contains(rel)) Icons.Default.KeyboardArrowDown else Icons.Default.KeyboardArrowRight,
+                                    contentDescription = null,
+                                    tint = colors.textMuted,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Icon(
+                                    if (expanded.contains(rel)) Icons.Default.FolderOpen else Icons.Default.Folder,
+                                    contentDescription = null,
+                                    tint = colors.accentAmber,
+                                    modifier = Modifier.size(15.dp)
+                                )
+                            } else {
+                                Spacer(Modifier.width(14.dp))
+                                Icon(
+                                    fileIconFor(f.name, false),
+                                    contentDescription = null,
+                                    tint = if (isSel) colors.accentGreen else colors.textMuted,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                            }
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                f.name,
+                                color = if (isSel) colors.textPrimary else colors.textSecondary,
+                                fontSize = 11.5.sp,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = if (isSel) FontWeight.SemiBold else FontWeight.Normal,
+                                maxLines = 1,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
                 }
-                content = initial
+            }
+            Spacer(Modifier.width(8.dp))
+            // Editor
+            Column(modifier = Modifier.weight(1.5f).fillMaxHeight()) {
+                if (currentFile == null) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text("Select a file to read & edit", color = colors.textMuted, fontSize = 12.sp)
+                    }
+                } else if (binaryNote != null) {
+                    Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(Icons.Default.InsertDriveFile, contentDescription = null, tint = colors.textMuted, modifier = Modifier.size(28.dp))
+                            Spacer(Modifier.height(8.dp))
+                            Text(binaryNote!!, color = colors.textMuted, fontSize = 12.sp)
+                            Spacer(Modifier.height(4.dp))
+                            Text(currentFile.name, color = colors.textSecondary, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                        }
+                    }
+                } else {
+                    OutlinedTextField(
+                        value = content,
+                        onValueChange = { content = it; dirty = it != savedText },
+                        modifier = Modifier.fillMaxWidth().weight(1f),
+                        textStyle = androidx.compose.ui.text.TextStyle(color = colors.textPrimary, fontFamily = FontFamily.Monospace, fontSize = 12.sp),
+                        colors = karenFieldColors(colors)
+                    )
+                }
+                Spacer(Modifier.height(6.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Button(
+                        onClick = {
+                            val f = currentFile ?: return@Button
+                            val rel = currentRel ?: return@Button
+                            scope.launch(Dispatchers.IO) {
+                                try {
+                                    val prev = try { if (f.exists()) f.readText() else "" } catch (_: Exception) { "" }
+                                    f.parentFile?.mkdirs()
+                                    f.writeText(content)
+                                    withContext(Dispatchers.Main) {
+                                        project.codeOld = prev
+                                        project.codeNew = content
+                                        loadedFor = rel
+                                        savedText = content
+                                        dirty = false
+                                        status = "Saved $rel (${content.length} chars)"
+                                        statusOk = true
+                                        refreshTick = System.currentTimeMillis()
+                                    }
+                                } catch (e: Exception) {
+                                    withContext(Dispatchers.Main) {
+                                        status = "Error saving: ${e.message}"
+                                        statusOk = false
+                                    }
+                                }
+                            }
+                        },
+                        enabled = currentFile != null && binaryNote == null && content.length <= 15000,
+                        colors = ButtonDefaults.buttonColors(containerColor = colors.accentGreen, contentColor = Color.White),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text("Save", fontSize = 12.sp)
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            scope.launch {
+                                val out = compileAndTest(root)
+                                status = out.take(600)
+                                statusOk = !out.startsWith("Error") && !out.contains("FAIL")
+                            }
+                        },
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text("Compile & Test", fontSize = 11.5.sp)
+                    }
+                }
+                if (status != null) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(status!!, color = if (statusOk) colors.accentGreen else colors.accentRed, fontSize = 10.5.sp, fontFamily = FontFamily.Monospace, maxLines = 4)
+                }
             }
         }
     }
 
-    Column(modifier = Modifier.fillMaxSize().padding(12.dp)) {
-        if (files.isEmpty()) {
-            Text("No data found", color = colors.textMuted, fontSize = 12.sp)
-        } else {
-            Row(modifier = Modifier.fillMaxWidth()) {
-                files.take(4).forEach { f ->
-                    val sel = selectedFile?.absolutePath == f.absolutePath
-                    Box(
-                        modifier = Modifier
-                            .padding(end = 6.dp)
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(if (sel) colors.accentGreen.copy(alpha = 0.18f) else colors.surfaceHover)
-                            .border(1.dp, if (sel) colors.accentGreen else colors.border, RoundedCornerShape(8.dp))
-                            .clickable {
-                                selectedFile = f
-                                scope.launch(Dispatchers.IO) {
-                                    val t = try { f.readText() } catch (e: Exception) { "Error: ${e.message}" }
-                                    withContext(Dispatchers.Main) { content = t }
+    // --- New file dialog (accepts nested paths like src/main/App.kt) ---
+    if (showNewFile) {
+        AlertDialog(
+            onDismissRequest = { showNewFile = false },
+            containerColor = colors.surface,
+            title = { Text("New file", color = colors.textPrimary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold) },
+            text = {
+                OutlinedTextField(
+                    value = nameInput,
+                    onValueChange = { nameInput = it },
+                    label = { Text("Path, e.g. src/main/App.kt") },
+                    placeholder = { Text("src/main/App.kt") },
+                    singleLine = true,
+                    textStyle = androidx.compose.ui.text.TextStyle(color = colors.textPrimary, fontFamily = FontFamily.Monospace),
+                    colors = karenFieldColors(colors)
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val rel = nameInput.trim()
+                    if (rel.isNotBlank()) {
+                        scope.launch(Dispatchers.IO) {
+                            val target = safeScaffoldPath(project, rel)
+                            var err: String? = null
+                            if (target == null) err = "Invalid path."
+                            else try {
+                                target.parentFile?.mkdirs()
+                                if (!target.exists()) target.writeText("")
+                                val newRel = relOf(target)
+                                withContext(Dispatchers.Main) {
+                                    val dirRel = parentRelOf(target)
+                                    if (dirRel.isNotBlank()) {
+                                        var chain = dirRel
+                                        val toAdd = mutableSetOf<String>()
+                                        while (chain.isNotBlank()) {
+                                            toAdd.add(chain)
+                                            val pf = File(root, chain).parentFile
+                                            chain = if (pf == null || pf.absolutePath == root.absolutePath) "" else relOf(pf)
+                                        }
+                                        expanded = expanded + toAdd
+                                    } else {
+                                        expanded = expanded + ""
+                                    }
+                                    showNewFile = false
+                                    nameInput = ""
+                                    status = "Created $newRel"
+                                    statusOk = true
+                                    currentRel = newRel
+                                    loadRel(newRel)
+                                    refreshTick = System.currentTimeMillis()
                                 }
+                            } catch (e: Exception) {
+                                err = e.message
                             }
-                            .padding(horizontal = 8.dp, vertical = 4.dp)
-                    ) {
-                        Text(f.name, color = if (sel) colors.accentGreen else colors.textSecondary, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
-                    }
-                }
-            }
-            Spacer(Modifier.height(8.dp))
-        }
-        OutlinedTextField(
-            value = content,
-            onValueChange = { content = it },
-            modifier = Modifier.fillMaxWidth().weight(1f),
-            textStyle = androidx.compose.ui.text.TextStyle(color = colors.textPrimary, fontFamily = FontFamily.Monospace, fontSize = 12.sp),
-            colors = karenFieldColors(colors)
-        )
-        Spacer(Modifier.height(8.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(
-                onClick = {
-                    val f = selectedFile ?: return@Button
-                    scope.launch(Dispatchers.IO) {
-                        try {
-                            val prev = try { if (f.exists()) f.readText() else "" } catch (_: Exception) { "" }
-                            f.writeText(content)
-                            withContext(Dispatchers.Main) {
-                                project.codeOld = prev
-                                project.codeNew = content
-                                files = f.parentFile?.listFiles()?.filter { it.isFile }?.sortedBy { it.name } ?: emptyList()
-                                status = "Saved ${f.name} (${content.length} chars)"
-                                statusOk = true
-                            }
-                        } catch (e: Exception) {
-                            withContext(Dispatchers.Main) {
-                                status = "Error saving: ${e.message}"
+                            if (err != null) withContext(Dispatchers.Main) {
+                                status = "Error: $err"
                                 statusOk = false
                             }
                         }
                     }
-                },
-                colors = ButtonDefaults.buttonColors(containerColor = colors.accentGreen, contentColor = Color.White),
-                shape = RoundedCornerShape(8.dp)
-            ) {
-                Text("Save", fontSize = 12.sp)
-            }
-            OutlinedButton(
-                onClick = {
-                    scope.launch {
-                        val out = compileAndTest(File(project.dir))
-                        status = out
-                        statusOk = !out.startsWith("Error") && !out.contains("FAIL")
+                }) { Text("Create", color = colors.accentGreen) }
+            },
+            dismissButton = { TextButton(onClick = { showNewFile = false }) { Text("Cancel", color = colors.textMuted) } }
+        )
+    }
+    if (showNewFolder) {
+        AlertDialog(
+            onDismissRequest = { showNewFolder = false },
+            containerColor = colors.surface,
+            title = { Text("New folder", color = colors.textPrimary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold) },
+            text = {
+                OutlinedTextField(
+                    value = nameInput,
+                    onValueChange = { nameInput = it },
+                    label = { Text("Path, e.g. src/assets") },
+                    placeholder = { Text("src/assets") },
+                    singleLine = true,
+                    textStyle = androidx.compose.ui.text.TextStyle(color = colors.textPrimary, fontFamily = FontFamily.Monospace),
+                    colors = karenFieldColors(colors)
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val rel = nameInput.trim()
+                    if (rel.isNotBlank()) {
+                        scope.launch(Dispatchers.IO) {
+                            val target = safeScaffoldPath(project, rel.trimEnd('/') + "/placeholder.keep")
+                                ?.parentFile
+                            var err: String? = null
+                            if (target == null) err = "Invalid path."
+                            else try {
+                                target.mkdirs()
+                                withContext(Dispatchers.Main) {
+                                    expanded = expanded + relOf(target)
+                                    showNewFolder = false
+                                    nameInput = ""
+                                    status = "Created ${relOf(target)}/"
+                                    statusOk = true
+                                    refreshTick = System.currentTimeMillis()
+                                }
+                            } catch (e: Exception) {
+                                err = e.message
+                            }
+                            if (err != null) withContext(Dispatchers.Main) {
+                                status = "Error: $err"
+                                statusOk = false
+                            }
+                        }
                     }
-                },
-                shape = RoundedCornerShape(8.dp)
-            ) {
-                Text("Compile & Test", fontSize = 12.sp)
-            }
-        }
-        if (status != null) {
-            Spacer(Modifier.height(6.dp))
-            Text(status!!, color = if (statusOk) colors.accentGreen else colors.accentRed, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
-        }
+                }) { Text("Create", color = colors.accentGreen) }
+            },
+            dismissButton = { TextButton(onClick = { showNewFolder = false }) { Text("Cancel", color = colors.textMuted) } }
+        )
+    }
+    if (showRename) {
+        AlertDialog(
+            onDismissRequest = { showRename = false },
+            containerColor = colors.surface,
+            title = { Text("Rename", color = colors.textPrimary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold) },
+            text = {
+                OutlinedTextField(
+                    value = nameInput,
+                    onValueChange = { nameInput = it },
+                    label = { Text("New name") },
+                    singleLine = true,
+                    textStyle = androidx.compose.ui.text.TextStyle(color = colors.textPrimary),
+                    colors = karenFieldColors(colors)
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val rel = currentRel ?: return@TextButton
+                    val clean = nameInput.trim().replace('/', '_').replace('\\', '_')
+                    if (clean.isBlank() || clean.contains("..")) return@TextButton
+                    scope.launch(Dispatchers.IO) {
+                        try {
+                            val src = File(root, rel)
+                            val dst = File(src.parentFile, clean)
+                            val ok = src.renameTo(dst)
+                            withContext(Dispatchers.Main) {
+                                showRename = false
+                                if (ok) {
+                                    currentRel = relOf(dst)
+                                    loadRel(relOf(dst))
+                                    status = "Renamed to ${relOf(dst)}"
+                                    statusOk = true
+                                } else {
+                                    status = "Rename failed."
+                                    statusOk = false
+                                }
+                                refreshTick = System.currentTimeMillis()
+                            }
+                        } catch (e: Exception) {
+                            withContext(Dispatchers.Main) {
+                                status = "Error: ${e.message}"
+                                statusOk = false
+                            }
+                        }
+                    }
+                }) { Text("Rename", color = colors.accentGreen) }
+            },
+            dismissButton = { TextButton(onClick = { showRename = false }) { Text("Cancel", color = colors.textMuted) } }
+        )
+    }
+    val delRel = confirmDeleteRel
+    if (delRel != null) {
+        AlertDialog(
+            onDismissRequest = { confirmDeleteRel = null },
+            containerColor = colors.surface,
+            title = { Text("Delete?", color = colors.textPrimary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold) },
+            text = { Text("Delete $delRel and its contents? This cannot be undone.", color = colors.textSecondary, fontSize = 13.sp) },
+            confirmButton = {
+                TextButton(onClick = {
+                    scope.launch(Dispatchers.IO) {
+                        try {
+                            val target = File(root, delRel)
+                            if (target.isDirectory) target.deleteRecursively() else target.delete()
+                            withContext(Dispatchers.Main) {
+                                if (currentRel == delRel) {
+                                    currentRel = null
+                                    content = ""
+                                    savedText = ""
+                                    loadedFor = null
+                                    dirty = false
+                                    binaryNote = null
+                                }
+                                confirmDeleteRel = null
+                                status = "Deleted $delRel"
+                                statusOk = true
+                                refreshTick = System.currentTimeMillis()
+                            }
+                        } catch (e: Exception) {
+                            withContext(Dispatchers.Main) {
+                                status = "Error: ${e.message}"
+                                statusOk = false
+                                confirmDeleteRel = null
+                            }
+                        }
+                    }
+                }) { Text("Delete", color = colors.accentRed) }
+            },
+            dismissButton = { TextButton(onClick = { confirmDeleteRel = null }) { Text("Cancel", color = colors.textMuted) } }
+        )
     }
 }
 
@@ -727,17 +1702,125 @@ private fun PlanNodeDot(done: Boolean, active: Boolean) {
     }
 }
 
+/** Evidence verdict for a model plan step: manual taps can't fake it. */
+private data class StepVerdict(val ok: Boolean, val reason: String)
+
+/**
+ * Verifies a plan step against real project state. Classification uses the
+ * fixed template prefix (startsWith) so user prompt text embedded in step 1
+ * can't trigger the wrong check. A step counts as done only when its work
+ * actually exists: replies in chat, files on disk, clean checks.
+ */
+private suspend fun verifyPlanStep(project: Project, index: Int): StepVerdict {
+    val step = project.steps.getOrNull(index) ?: return StepVerdict(false, "Step not found.")
+    val t = step.text.lowercase()
+    val root = File(project.dir)
+    // Final review: everything before it verified + files exist.
+    if (t.startsWith("review")) {
+        val priorPending = project.steps.mapIndexedNotNull { i, s -> if (i != index && !s.done) i + 1 else null }
+        if (priorPending.isNotEmpty()) return StepVerdict(false, "Steps ${priorPending.joinToString(", ")} still pending.")
+        val hasFiles = withContext(Dispatchers.IO) {
+            listProjectEntries(root).any { it.isFile && it.name != "placeholder.keep" && it.length() > 0 }
+        }
+        return if (hasFiles) StepVerdict(true, "Prior steps done, files present")
+        else StepVerdict(false, "No project files yet — Code tab is empty.")
+    }
+    if (t.startsWith("understand")) {
+        return if (project.chat.any { it.role == "assistant" }) StepVerdict(true, "Assistant replied")
+        else StepVerdict(false, "No assistant reply yet — send a message first.")
+    }
+    if (t.startsWith("break")) {
+        return if (project.steps.size >= 2 && project.chat.any { it.role == "user" }) StepVerdict(true, "Plan generated")
+        else StepVerdict(false, "Plan not generated yet — send a message first.")
+    }
+    if (t.startsWith("implement")) {
+        val count = withContext(Dispatchers.IO) {
+            listProjectEntries(root).count { it.isFile && it.name != "placeholder.keep" && it.length() > 0 }
+        }
+        return if (count > 0) StepVerdict(true, "$count file(s) in project")
+        else StepVerdict(false, "No project files yet — Code tab is empty.")
+    }
+    if (t.startsWith("run")) {
+        if (project.terminalLog.isEmpty()) return StepVerdict(false, "Terminal never ran — open the Terminal tab.")
+        val out = compileAndTest(root)
+        return when {
+            out.startsWith("Error") -> StepVerdict(false, out.take(120))
+            "FAIL" in out -> StepVerdict(false, "Checks failing — see Terminal tab.")
+            else -> StepVerdict(true, "Checks clean")
+        }
+    }
+    // Unknown step text (future restructures): only when everything before it is done.
+    val priorPending = project.steps.mapIndexedNotNull { i, s -> if (i < index && !s.done) i + 1 else null }
+    return if (priorPending.isEmpty()) StepVerdict(true, "Prior steps done")
+    else StepVerdict(false, "Steps ${priorPending.joinToString(", ")} still pending.")
+}
+
 @Composable
 private fun PlanCanvasView(project: Project) {
     val colors = LocalKarenColors.current
+    val scope = rememberCoroutineScope()
+    val ctx = androidx.compose.ui.platform.LocalContext.current
     var newTask by remember { mutableStateOf("") }
+    var verifyingIndex by remember { mutableStateOf<Int?>(null) }
+    var verifyMsg by remember { mutableStateOf<Pair<Int, String>?>(null) }
     val remaining = project.steps.count { !it.done } + project.tasks.count { !it.done }
+    val verifiedCount = project.steps.count { it.done }
+
+    fun requestStepDone(i: Int, wantDone: Boolean) {
+        val s = project.steps.getOrNull(i) ?: return
+        if (!wantDone) {
+            project.steps[i] = s.copy(done = false)
+            if (verifyMsg?.first == i) verifyMsg = null
+            saveProjectState(project)
+            return
+        }
+        if (s.done || verifyingIndex != null) return
+        scope.launch {
+            verifyingIndex = i
+            verifyMsg = null
+            val v = verifyPlanStep(project, i)
+            if (v.ok) {
+                project.steps[i] = project.steps.getOrNull(i)?.copy(done = true) ?: s.copy(done = true)
+            } else {
+                verifyMsg = i to v.reason
+                android.widget.Toast.makeText(ctx, v.reason, android.widget.Toast.LENGTH_SHORT).show()
+            }
+            verifyingIndex = null
+            saveProjectState(project)
+        }
+    }
+
+    // Honest progress: re-verify pending steps whenever chat or terminal
+    // activity lands. Manual unchecks stick until new evidence arrives —
+    // the effect only flips false → true, never true → false.
+    val chatSig = project.chat.size
+    val termSig = project.terminalLog.size
+    LaunchedEffect(chatSig, termSig) {
+        if (project.steps.isEmpty() || verifyingIndex != null) return@LaunchedEffect
+        var changed = false
+        project.steps.forEachIndexed { i, s ->
+            if (!s.done) {
+                if (verifyPlanStep(project, i).ok) {
+                    project.steps[i] = s.copy(done = true)
+                    changed = true
+                }
+            }
+        }
+        if (changed) saveProjectState(project)
+    }
+
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         item {
-            Text("Plan · $remaining remaining", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold)
+            Text("Plan · $verifiedCount of ${project.steps.size} verified · $remaining remaining", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold)
+            Text(
+                "Steps check off only when the work really exists — tap a box to verify.",
+                color = colors.textMuted,
+                fontSize = 11.5.sp,
+                modifier = Modifier.padding(top = 2.dp)
+            )
             if (project.steps.isEmpty() && project.tasks.isEmpty()) {
                 Text("No data found — send a message and the plan appears here.", color = colors.textMuted, fontSize = 12.sp)
             }
@@ -759,21 +1842,48 @@ private fun PlanCanvasView(project: Project) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         PlanNodeDot(done = s.done, active = isActive)
                         Spacer(Modifier.width(10.dp))
-                        Row(
+                        Column(
                             modifier = Modifier.fillMaxWidth()
                                 .weight(1f)
                                 .clip(RoundedCornerShape(10.dp))
                                 .background(colors.surfaceHover.copy(alpha = 0.6f))
                                 .border(1.dp, if (isActive) colors.accentGreen.copy(alpha = 0.5f) else colors.border, RoundedCornerShape(10.dp))
-                                .padding(10.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                                .padding(10.dp)
                         ) {
-                            Checkbox(
-                                checked = s.done,
-                                onCheckedChange = { project.steps[i] = s.copy(done = it) },
-                                colors = CheckboxDefaults.colors(checkedColor = colors.accentGreen)
-                            )
-                            Text("${i + 1}. ${s.text}", color = if (s.done) colors.textMuted else colors.textPrimary, fontSize = 12.5.sp, modifier = Modifier.weight(1f))
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (verifyingIndex == i) {
+                                    Box(modifier = Modifier.size(20.dp), contentAlignment = Alignment.Center) {
+                                        CircularProgressIndicator(color = colors.accentGreen, strokeWidth = 2.dp, modifier = Modifier.size(16.dp))
+                                    }
+                                } else {
+                                    Checkbox(
+                                        checked = s.done,
+                                        onCheckedChange = { requestStepDone(i, it) },
+                                        colors = CheckboxDefaults.colors(checkedColor = colors.accentGreen)
+                                    )
+                                }
+                                Text("${i + 1}. ${s.text}", color = if (s.done) colors.textMuted else colors.textPrimary, fontSize = 12.5.sp, modifier = Modifier.weight(1f))
+                            }
+                            // Failed verification explains what is actually missing.
+                            if (verifyMsg?.first == i) {
+                                Spacer(Modifier.height(4.dp))
+                                Text(verifyMsg!!.second, color = colors.accentAmber, fontSize = 11.5.sp)
+                            } else if (!s.done) {
+                                Text(
+                                    "Tap the box to verify against project state",
+                                    color = colors.textMuted,
+                                    fontSize = 10.5.sp,
+                                    modifier = Modifier.padding(top = 2.dp)
+                                )
+                            } else {
+                                Text(
+                                    "Verified complete",
+                                    color = colors.accentGreen,
+                                    fontSize = 10.5.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    modifier = Modifier.padding(top = 2.dp)
+                                )
+                            }
                         }
                     }
                     // Link to the next node — green once this step is done.
@@ -794,7 +1904,7 @@ private fun PlanCanvasView(project: Project) {
             }
         }
         if (project.tasks.isNotEmpty()) {
-            item { Text("Tasks", color = colors.textMuted, fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold) }
+            item { Text("Tasks · manual check-off (your own todos)", color = colors.textMuted, fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold) }
         }
         items(project.tasks.size) { idx ->
             val t = project.tasks[idx]
@@ -843,13 +1953,28 @@ private fun PlanCanvasView(project: Project) {
 private fun TerminalCanvasView(project: Project) {
     val colors = LocalKarenColors.current
     val scope = rememberCoroutineScope()
+    val ctx = androidx.compose.ui.platform.LocalContext.current
     var cmd by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var result by remember { mutableStateOf<String?>(null) }
     var resultOk by remember { mutableStateOf(true) }
+    // Git: remote stored on-device per project; credentials never echoed.
+    var gitRemoteUrl by remember(project) { mutableStateOf(UserPrefs.gitRemote(ctx, project.dir)) }
+    var gitBusy by remember { mutableStateOf(false) }
+    var showRemoteDialog by remember { mutableStateOf(false) }
+    var remoteInput by remember { mutableStateOf("") }
+    var showCommitDialog by remember { mutableStateOf(false) }
+    var commitInput by remember { mutableStateOf("") }
     val termBg = if (colors.isDark) Color(0xFF09090B) else Color(0xFFF4F4F5)
     val termText = if (colors.isDark) Color(0xFFECECEC) else Color(0xFF1C1C1E)
     val termMuted = if (colors.isDark) Color(0xFF8E8E93) else Color(0xFF6B6B70)
+
+    if (showRemoteDialog || showCommitDialog) {
+        androidx.activity.compose.BackHandler {
+            showRemoteDialog = false
+            showCommitDialog = false
+        }
+    }
 
     Column(modifier = Modifier.fillMaxSize().background(termBg).padding(12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -908,6 +2033,55 @@ private fun TerminalCanvasView(project: Project) {
             }
         }
         Spacer(Modifier.height(6.dp))
+        // Git row: commit the project snapshot, push to the stored remote.
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.CloudUpload, contentDescription = null, tint = termMuted, modifier = Modifier.size(15.dp))
+            Spacer(Modifier.width(6.dp))
+            Text(
+                if (gitRemoteUrl.isBlank()) "No remote" else maskRemote(gitRemoteUrl),
+                color = termMuted,
+                fontSize = 10.5.sp,
+                fontFamily = FontFamily.Monospace,
+                maxLines = 1,
+                modifier = Modifier.weight(1f)
+            )
+            TextButton(
+                onClick = { remoteInput = gitRemoteUrl; showRemoteDialog = true },
+                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+            ) { Text("Remote", color = colors.accentGreen, fontSize = 11.5.sp) }
+            OutlinedButton(
+                onClick = { commitInput = ""; showCommitDialog = true },
+                enabled = !gitBusy,
+                shape = RoundedCornerShape(8.dp),
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+            ) { Text("Commit", fontSize = 11.5.sp) }
+            Spacer(Modifier.width(6.dp))
+            Button(
+                onClick = {
+                    if (gitBusy) return@Button
+                    gitBusy = true
+                    scope.launch {
+                        val root = File(project.dir)
+                        val ver = runShell("git --version", root)
+                        if (!ver.contains("git version")) {
+                            result = "git is not available on this device — push from a machine with git, or copy files out of ${project.name}."
+                            resultOk = false
+                        } else {
+                            val out = gitPushCurrent(root, gitRemoteUrl)
+                            result = out.take(800)
+                            resultOk = !out.startsWith("No remote") && ("Done" in out || "up-to-date" in out || "->" in out || "Everything" in out)
+                            project.terminalLog.add("[git] push\n$out".take(1200))
+                        }
+                        gitBusy = false
+                    }
+                },
+                enabled = !gitBusy,
+                colors = ButtonDefaults.buttonColors(containerColor = colors.accentGreen, contentColor = Color.White),
+                shape = RoundedCornerShape(8.dp),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+            ) { Text(if (gitBusy) "…" else "Push", fontSize = 11.5.sp) }
+        }
+        Spacer(Modifier.height(6.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(
                 onClick = {
@@ -926,6 +2100,79 @@ private fun TerminalCanvasView(project: Project) {
                 Text("Clear", color = termMuted, fontSize = 11.5.sp)
             }
         }
+    }
+
+    if (showRemoteDialog) {
+        AlertDialog(
+            onDismissRequest = { showRemoteDialog = false },
+            containerColor = colors.surface,
+            title = { Text("Git remote", color = colors.textPrimary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold) },
+            text = {
+                Column {
+                    OutlinedTextField(
+                        value = remoteInput,
+                        onValueChange = { remoteInput = it },
+                        label = { Text("origin URL (https or ssh)") },
+                        placeholder = { Text("https://github.com/you/repo.git") },
+                        singleLine = true,
+                        textStyle = androidx.compose.ui.text.TextStyle(color = colors.textPrimary, fontFamily = FontFamily.Monospace, fontSize = 12.sp),
+                        colors = karenFieldColors(colors)
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text("Stored on-device only. URLs with tokens are masked on screen and in logs.", color = colors.textMuted, fontSize = 11.5.sp)
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val clean = remoteInput.trim()
+                    UserPrefs.setGitRemote(ctx, project.dir, clean)
+                    gitRemoteUrl = clean
+                    showRemoteDialog = false
+                    project.terminalLog.add("[git] remote set (URL hidden)")
+                }) { Text("Save", color = colors.accentGreen) }
+            },
+            dismissButton = { TextButton(onClick = { showRemoteDialog = false }) { Text("Cancel", color = colors.textMuted) } }
+        )
+    }
+    if (showCommitDialog) {
+        AlertDialog(
+            onDismissRequest = { showCommitDialog = false },
+            containerColor = colors.surface,
+            title = { Text("Commit snapshot", color = colors.textPrimary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold) },
+            text = {
+                OutlinedTextField(
+                    value = commitInput,
+                    onValueChange = { commitInput = it },
+                    label = { Text("Commit message") },
+                    placeholder = { Text("Karen workspace update") },
+                    singleLine = true,
+                    textStyle = androidx.compose.ui.text.TextStyle(color = colors.textPrimary),
+                    colors = karenFieldColors(colors)
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showCommitDialog = false
+                    gitBusy = true
+                    val msg = commitInput
+                    scope.launch {
+                        val root = File(project.dir)
+                        val ver = runShell("git --version", root)
+                        if (!ver.contains("git version")) {
+                            result = "git is not available on this device."
+                            resultOk = false
+                        } else {
+                            val out = gitCommitAll(root, msg)
+                            result = out.take(800)
+                            resultOk = !out.startsWith("Error") && ("nothing to commit" in out || "files changed" in out || "create mode" in out || "master" in out || "main" in out)
+                            project.terminalLog.add("[git] commit\n$out".take(1200))
+                        }
+                        gitBusy = false
+                    }
+                }) { Text("Commit", color = colors.accentGreen) }
+            },
+            dismissButton = { TextButton(onClick = { showCommitDialog = false }) { Text("Cancel", color = colors.textMuted) } }
+        )
     }
 }
 

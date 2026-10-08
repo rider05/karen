@@ -103,4 +103,24 @@ object UserPrefs {
     fun saveModels(ctx: Context, items: List<String>) {
         prefs(ctx).edit().putString("installed_models", items.joinToString(";;")).apply()
     }
+
+    // Content window (context size) shared by Chat + Workspace, up to 16k.
+    // Larger windows keep more history and project files in front of the
+    // model; on-device loads use it as the llama.cpp n_ctx.
+    val contextWindowOptions = listOf(2048, 4096, 8192, 16384)
+    private const val KEY_CONTEXT_TOKENS = "context_tokens"
+    fun contextTokens(ctx: Context): Int =
+        (prefs(ctx).getInt(KEY_CONTEXT_TOKENS, 4096)).coerceIn(2048, 16384)
+    fun setContextTokens(ctx: Context, value: Int) {
+        prefs(ctx).edit().putInt(KEY_CONTEXT_TOKENS, value.coerceIn(2048, 16384)).apply()
+    }
+
+    // Per-project git remote URL, keyed by project dir (lives beside .karen
+    // state so it survives app restarts; never logged with credentials).
+    private const val KEY_GIT_REMOTE_PREFIX = "git_remote_"
+    fun gitRemote(ctx: Context, projectDir: String): String =
+        prefs(ctx).getString(KEY_GIT_REMOTE_PREFIX + projectDir.hashCode(), "") ?: ""
+    fun setGitRemote(ctx: Context, projectDir: String, url: String) {
+        prefs(ctx).edit().putString(KEY_GIT_REMOTE_PREFIX + projectDir.hashCode(), url).apply()
+    }
 }

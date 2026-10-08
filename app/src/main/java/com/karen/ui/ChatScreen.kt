@@ -67,6 +67,32 @@ fun maxTokensFor(effort: String): Int = when (effort) {
     else -> 512
 }
 
+/**
+ * Content-window scaling (Settings → Content Window, up to 16k). Larger
+ * windows keep more turns and more project text in front of the model.
+ */
+fun historyTurnsFor(windowTokens: Int): Int = when {
+    windowTokens >= 16384 -> 60
+    windowTokens >= 8192 -> 40
+    else -> 20
+}
+
+fun localTurnsFor(windowTokens: Int): Int = when {
+    windowTokens >= 16384 -> 24
+    windowTokens >= 8192 -> 16
+    else -> 10
+}
+
+/** Approx. chars of project context that fit ~half the window. */
+fun contextCharsFor(windowTokens: Int): Int = (windowTokens * 9 / 4).coerceIn(4096, 36864)
+
+fun windowLabel(tokens: Int): String = when {
+    tokens >= 16384 -> "16K"
+    tokens >= 8192 -> "8K"
+    tokens >= 4096 -> "4K"
+    else -> "2K"
+}
+
 @Composable
 fun ChatScreen(
     onOpenDrawer: () -> Unit = {},
@@ -387,7 +413,17 @@ fun ChatScreen(
                 items(messages, key = { when (it) { is ChatItem.User -> it.id; is ChatItem.Assistant -> it.id } }) { item ->
                     when (item) {
                         is ChatItem.User -> {
-                            UserMessageBubble(text = item.text, attachments = item.attachments)
+                            UserMessageBubble(
+                                text = item.text,
+                                attachments = item.attachments,
+                                onEdit = { edited ->
+                                    val idx = messages.indexOfFirst { (it as? ChatItem.User)?.id == item.id }
+                                    if (idx >= 0 && !isGenerating) {
+                                        messages[idx] = item.copy(text = edited)
+                                        persist()
+                                    }
+                                }
+                            )
                         }
                         is ChatItem.Assistant -> {
                             Column(
@@ -645,20 +681,23 @@ fun ChatScreen(
                         if (cloud != null && cloudKey.isNotBlank()) {
                             setStreamingText(aid, "Contacting ${cloud.name}…")
                             try {
+                                val window = UserPrefs.contextTokens(context)
+                                val limit = historyTurnsFor(window)
                                 val base = messages.mapNotNull { item ->
                                     when (item) {
                                         is ChatItem.User -> "user" to item.text
                                         is ChatItem.Assistant -> if (item.id == aid) null else "assistant" to item.text
                                     }
-                                }.takeLast(20)
+                                }.takeLast(limit)
                                 val history = if (web != null) {
-                                    (base + ("user" to "Use these fresh web results if relevant:\n$web")).takeLast(20)
+                                    (base + ("user" to "Use these fresh web results if relevant:\n$web")).takeLast(limit)
                                 } else base
                                 val reply = cloud.complete(
                                     cloudKey,
                                     history,
                                     maxTokensFor(effort),
-                                    thinkingBudget = if (cloud.reasoning) thinkingBudgetFor(effort) else null
+                                    thinkingBudget = if (cloud.reasoning) thinkingBudgetFor(effort) else null,
+                                    historyLimit = limit
                                 )
                                 if (cancelGeneration) {
                                     cancelSettle(aid)
@@ -685,8 +724,9 @@ fun ChatScreen(
                                 setStreamingText(aid, if (KarenLlama.isLoaded(selectedModel)) "Thinking on-device…" else "Loading $selectedModel…")
                                 try {
                                     val threads = maxOf(2, minOf(6, Runtime.getRuntime().availableProcessors()))
+                                    val window = UserPrefs.contextTokens(context)
                                     val loaded = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                                        KarenLlama.ensureLoaded(weightFile, selectedModel, 2048, threads)
+                                        KarenLlama.ensureLoaded(weightFile, selectedModel, window, threads)
                                     }
                                     if (!loaded) {
                                         if (cancelGeneration) cancelSettle(aid)
@@ -695,6 +735,8 @@ fun ChatScreen(
                                         cancelSettle(aid)
                                     } else {
                                         setStreamingText(aid, "Thinking on-device…")
+                                        val window = UserPrefs.contextTokens(context)
+                                        val localLimit = localTurnsFor(window)
                                         val basePairs = messages.mapNotNull { item ->
                                             when (item) {
                                                 is ChatItem.User -> "user" to item.text
@@ -702,8 +744,8 @@ fun ChatScreen(
                                             }
                                         }
                                         val trimmedPairs = if (web != null) {
-                                            (basePairs + ("user" to "Use these fresh web results if relevant:\n$web")).takeLast(10)
-                                        } else basePairs.takeLast(10)
+                                            (basePairs + ("user" to "Use these fresh web results if relevant:\n$web")).takeLast(localLimit)
+                                        } else basePairs.takeLast(localLimit)
                                         val reply = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                                             KarenLlama.complete(
                                                 "You are Karen, a concise on-device assistant.",

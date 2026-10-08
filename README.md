@@ -1,20 +1,85 @@
-# Karen Repository
+🤖 Karen — Offline AI Assistant
+📱 Download Karen
+Latest Android APK
+🚀 ⬇️ DOWNLOAD KAREN APK
+Latest Release • Android • APK
 
-This repository contains the design system, planning documents, prototype UI iterations, and captured screenshots for the Karen offline Android AI assistant project.
+Download the APK from the apks/ folder and install it on your Android device.
 
-## Structure
+✨ Features
+🧠 Offline AI Assistant
 
-- `docs/` — project strategy, dataset spec, design guidelines, and tool schema
-- `prototypes/` — HTML mockups and interface iterations for the Karen app
-- `assets/screenshots/` — captured UI screenshots for review and comparison
+🔒 Privacy-focused
 
-## Key documents
+📱 Android optimized
 
-- `docs/DESIGN.md` — visual language and design system
-- `docs/Karen_MASTER_MERGED_PLAN-1-1.md` — consolidated project plan and milestones
-- `docs/Karen_Dataset_Spec.md` — data requirements for fine-tuning and evaluation
-- `docs/tools.json` — tool schema for the assistant runtime
+⚡ Fast and lightweight
 
-## Notes
+🛠️ Tool-based assistant system
 
-The prototype files are intentionally kept in a single folder so different UI concepts can be reviewed side by side without cluttering the top-level workspace.
+🎨 Modern user interface
+
+🌐 Works without constant internet access
+
+📸 Screenshots
+Replace the screenshot filenames above with the actual files inside assets/screenshots/.
+
+📥 Installation
+Method 1 — Download from GitHub
+Open the APK folder.
+
+Download the latest .apk file.
+
+Open the downloaded APK on your Android phone.
+
+Follow Android's installation prompt.
+
+Launch Karen.
+
+Method 2 — GitHub Release
+If APKs are published through GitHub Releases, download the latest APK from the Releases section.
+
+🔐 Privacy
+Karen is designed as an offline Android AI assistant, with privacy and local processing as key goals.
+
+Your data should remain on your device whenever the application's architecture allows it.
+
+🧩 Project Structure
+karen/ ├── apks/                  # Android APK builds ├── app/                   # Android application source ├── assets/ │   └── screenshots/       # Application screenshots ├── docs/                  # Project documentation ├── gradle/                # Gradle configuration ├── webapp/                # Web interface / prototypes ├── build.gradle.kts ├── settings.gradle.kts └── README.md
+
+🛠️ Build From Source
+Clone the repository:
+
+git clone https://github.com/rider05/karen.git cd karen
+
+Build the Android project:
+
+./gradlew assembleDebug
+
+The generated APK will normally be available under:
+
+app/build/outputs/apk/
+
+🌟 Support the Project
+If you like Karen:
+
+⭐ Star the repository
+🐛 Report bugs
+💡 Suggest features
+🔧 Contribute improvements
+
+📄 Documentation
+Project Plan
+
+Design System
+
+Dataset Specification
+
+Tool Schema
+
+📜 License
+See the repository license for the terms governing use and distribution.
+
+Made with ❤️ for a private, local AI experience.
+
+🤖 Karen

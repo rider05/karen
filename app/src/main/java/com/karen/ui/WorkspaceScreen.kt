@@ -17,6 +17,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -58,7 +60,7 @@ data class Project(
 )
 
 /** True when the message asks for something to be built (not just discussed). */
-private fun projectNeedsScaffold(text: String): Boolean {
+internal fun projectNeedsScaffold(text: String): Boolean {
     val t = " $text ".lowercase()
     return listOf(" build ", " create ", " generate ", " implement ", " scaffold ", " add file ", " new file ", " write code ", " make an app ", " make a ")
         .any { t.contains(it) }
@@ -74,16 +76,6 @@ private fun buildStepsFor(prompt: String): List<String> {
         "Run checks in terminal and verify output",
         "Review diff and mark tasks complete"
     )
-}
-
-/** Generate updated code content from a prompt, preserving previous content. */
-private fun buildCodeFor(prompt: String, previous: String): String {
-    val note = "// ${prompt.trim().take(80)}"
-    return if (previous.isBlank()) {
-        "$note\n// Created on-device in project workspace\n\nfun main() {\n    println(\"${prompt.trim().take(40)}\")\n}\n"
-    } else {
-        "$previous\n$note\n// Update applied on-device\n"
-    }
 }
 
 /** Run a real shell command inside the project directory and capture output. */
@@ -200,7 +192,7 @@ private fun stripWrappingFence(content: String): String {
 
 private val SCAFFOLD_DIR_RENAME = mapOf("lib/main/java" to "src/main/java")
 
-private fun safeScaffoldPath(project: Project, relPath: String): File? {
+internal fun safeScaffoldPath(project: Project, relPath: String): File? {
     var clean = relPath.trim().replace('\\', '/').removePrefix("./")
     for ((from, to) in SCAFFOLD_DIR_RENAME) {
         if (clean.startsWith(from)) clean = to + clean.removePrefix(from)
@@ -460,8 +452,11 @@ private suspend fun scaffoldWithModel(
     val list = allFiles.toList()
     val chunkNote = if (chunks > 1) " (built in $chunks chunks)" else ""
     val truncNote = if (stillTruncated) " — still truncated after $chunks chunks; ask it to continue." else ""
-    project.chat.add(ProjectChat("assistant", "Scaffolded ${list.size} file(s)$chunkNote.\n${filesSummary(list)}$truncNote"))
-    return "${list.size} file(s) written$chunkNote$truncNote"
+    // Validate: confirm every written file is really on disk, non-empty.
+    val verdict = validateScaffoldFiles(project, list.map { it.first })
+    val verifyNote = if (verdict.ok) " Verified on disk." else " WARNING: ${verdict.detail}."
+    project.chat.add(ProjectChat("assistant", "Scaffolded ${list.size} file(s)$chunkNote.\n${filesSummary(list)}$truncNote$verifyNote"))
+    return "${list.size} file(s) written$chunkNote$truncNote$verifyNote"
 }
 
 private fun filesSummary(files: List<Pair<String, String>>): String =
@@ -665,28 +660,12 @@ fun WorkspaceScreen(
             steps.forEach { project.steps.add(ProjectStep(it)) }
             project.tasks.clear()
             steps.drop(1).forEach { project.tasks.add(ProjectTask(it)) }
-            // 2. Seed main.txt only for a brand-new empty project with a
-            //    discussion prompt, so the Code tab has something to show.
-            //    Build requests skip the seed — the scaffold below writes
-            //    real project files instead of a stray main.txt.
+            // 2. Project root on disk. No seed files are ever created here —
+            //    content appears only from real model scaffolds, chat file
+            //    blocks, or the user's own editor/terminal work.
             val dir = projectRootDir(project)
-            val wantsBuild = projectNeedsScaffold(t)
-            val isEmptyProject = withContext(Dispatchers.IO) {
-                dir.listFiles()?.none { it.name != ".karen" } ?: true
-            }
-            if (isEmptyProject && !wantsBuild) {
-                val mainFile = File(dir, "main.txt")
-                val prev = try {
-                    if (mainFile.exists()) mainFile.readText() else project.codeNew
-                } catch (_: Exception) { project.codeNew }
-                val next = buildCodeFor(t, prev)
-                project.codeOld = prev
-                project.codeNew = next
-                withContext(Dispatchers.IO) {
-                    try { mainFile.writeText(next) } catch (_: Exception) {}
-                }
-                project.filesVersion = System.currentTimeMillis()
-            }
+            // Tool routing: one decision drives scaffold / checks / web / chat.
+            val tool = routeTool(t)
             // Helper: apply ///FILE blocks from any model reply so follow-up
             // prompts continue the same structure instead of starting over.
             suspend fun applyModelFiles(reply: String): Boolean {
@@ -697,9 +676,9 @@ fun WorkspaceScreen(
                 project.chat.add(ProjectChat("assistant", "Applied to ${project.name}: $summary\n${filesSummary(files)}"))
                 return true
             }
-            // 3. If the user asked to build/change code, the model writes a full
-            //    multi-file scaffold into the project. Files land on real paths.
-            if (wantsBuild) {
+            // 3. SCAFFOLD tool: the model writes a full multi-file scaffold
+            //    into the project. Files land on real paths.
+            if (tool == WorkspaceTool.SCAFFOLD) {
                 val canCloud = findCloudProviderByName(sendModel)?.let { p ->
                     UserPrefs.apiKey(ctx, p.id).isNotBlank()
                 } ?: false
@@ -724,6 +703,23 @@ fun WorkspaceScreen(
             project.terminalLog.add("$ $t".take(120))
             val lsOut = runShell("ls -Rp | head -n 80", dir)
             project.terminalLog.add("[tool] ls -Rp\n$lsOut")
+            // CHECKS tool: run compile & test now and report the verdict.
+            if (tool == WorkspaceTool.CHECKS) {
+                val checksOut = compileAndTest(dir)
+                project.terminalLog.add("[tool] compile & test\n$checksOut")
+                val verdict = if (checksOut.startsWith("Error") || "FAIL" in checksOut) {
+                    ToolVerdict(false, "checks failing — see Terminal tab")
+                } else {
+                    ToolVerdict(true, "checks clean")
+                }
+                project.chat.add(
+                    ProjectChat(
+                        "assistant",
+                        if (verdict.ok) "Checks clean.\n$checksOut".take(1200)
+                        else "Checks failing: ${verdict.detail}\n$checksOut".take(1200)
+                    )
+                )
+            }
             // 5. Web context — only with prior consent (asked once in Chat) + enabled.
             var web: String? = null
             if (UserPrefs.webSearchEnabled(ctx) && UserPrefs.webSearchAsked(ctx) && WebSearch.needsSearch(t)) {
@@ -839,10 +835,15 @@ fun WorkspaceScreen(
             } else if (web != null) {
                 project.chat.add(ProjectChat("assistant", "Fresh web results:\n$web"))
             } else {
+                // No model answered: validate the web tool when it was the routed one.
+                val webVerdict = if (tool == WorkspaceTool.WEB) validateWebResult(web) else null
+                val webNote = if (webVerdict != null && !webVerdict.ok) {
+                    " Web lookup came back empty — check connection and try again."
+                } else ""
                 project.chat.add(
                     ProjectChat(
                         "assistant",
-                        "Planned ${steps.size} steps and listed the project tree. See Plan / Code / Terminal."
+                        "Planned ${steps.size} steps and listed the project tree. See Plan / Code / Terminal.$webNote"
                     )
                 )
             }
@@ -867,12 +868,19 @@ fun WorkspaceScreen(
             moreActions = listOf(
                 Triple("Scaffold project from prompt", Icons.Default.AutoFixHigh) {
                     scope.launch {
+                        // Guarded: the overflow menu also exists on the project
+                        // list, where no project is open (old NPE crash).
+                        val target = selected
+                        if (target == null) {
+                            android.widget.Toast.makeText(ctx, "Open a project first", android.widget.Toast.LENGTH_SHORT).show()
+                            return@launch
+                        }
                         chatBusy = true
                         val threads = maxOf(2, minOf(6, Runtime.getRuntime().availableProcessors()))
                         val cloud = findCloudProviderByName(selectedModel)
                         val cloudKey = cloud?.let { UserPrefs.apiKey(ctx, it.id) }.orEmpty()
                         val scaffold = scaffoldWithModel(
-                            selected!!,
+                            target,
                             "Create a small but complete Gradle hello-world project",
                             cloud, cloudKey,
                             weightFile = ModelDownloader.weightFileFor(ctx, selectedModel),
@@ -881,9 +889,9 @@ fun WorkspaceScreen(
                             windowTokens = UserPrefs.contextTokens(ctx),
                             modelOverride = cloud?.let { UserPrefs.apiModel(ctx, it.id) }.orEmpty().ifBlank { null }
                         )
-                        selected!!.chat.add(ProjectChat("assistant", scaffold))
-                        selected!!.filesVersion = System.currentTimeMillis()
-                        saveProjectState(selected!!)
+                        target.chat.add(ProjectChat("assistant", scaffold))
+                        target.filesVersion = System.currentTimeMillis()
+                        saveProjectState(target)
                         chatBusy = false
                     }
                 },
@@ -1175,19 +1183,16 @@ fun WorkspaceScreen(
             items(project.chat.size) { i ->
                 val m = project.chat[i]
                 if (m.role == "user") {
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(14.dp))
-                                .background(colors.userBubble)
-                                .padding(horizontal = 12.dp, vertical = 8.dp)
-                        ) {
-                            SelectionContainer {
-                                Text(m.text, color = colors.userBubbleText, fontSize = 14.sp)
-                            }
+                    UserMessageBubble(
+                        text = m.text,
+                        onEdit = { edited ->
+                            project.chat[i] = ProjectChat("user", edited)
+                            saveProjectState(project)
                         }
-                    }
+                    )
                 } else {
+                    val clipboard = LocalClipboardManager.current
+                    var copied by remember(m.text) { mutableStateOf(false) }
                     Column(modifier = Modifier.fillMaxWidth()) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Box(
@@ -1201,6 +1206,21 @@ fun WorkspaceScreen(
                             }
                             Spacer(Modifier.width(7.dp))
                             Text("Karen", color = colors.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                            Spacer(Modifier.weight(1f))
+                            IconButton(
+                                onClick = {
+                                    clipboard.setText(AnnotatedString(m.text))
+                                    copied = true
+                                },
+                                modifier = Modifier.size(30.dp)
+                            ) {
+                                Icon(
+                                    if (copied) Icons.Default.Check else Icons.Default.ContentCopy,
+                                    contentDescription = "Copy reply",
+                                    tint = if (copied) colors.accentGreen else colors.textMuted,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                            }
                         }
                         Spacer(Modifier.height(4.dp))
                         val thinkSplit = remember(m.text) { splitThinkBlock(m.text) }
@@ -2014,15 +2034,10 @@ private fun PlanCanvasView(project: Project) {
     val remaining = project.steps.count { !it.done } + project.tasks.count { !it.done }
     val verifiedCount = project.steps.count { it.done }
 
-    fun requestStepDone(i: Int, wantDone: Boolean) {
+    /** Verify-only: no manual check-off — a step counts only while its evidence holds. */
+    fun requestStepDone(i: Int) {
         val s = project.steps.getOrNull(i) ?: return
-        if (!wantDone) {
-            project.steps[i] = s.copy(done = false)
-            if (verifyMsg?.first == i) verifyMsg = null
-            saveProjectState(project)
-            return
-        }
-        if (s.done || verifyingIndex != null) return
+        if (verifyingIndex != null) return
         scope.launch {
             verifyingIndex = i
             verifyMsg = null
@@ -2030,6 +2045,7 @@ private fun PlanCanvasView(project: Project) {
             if (v.ok) {
                 project.steps[i] = project.steps.getOrNull(i)?.copy(done = true) ?: s.copy(done = true)
             } else {
+                project.steps[i] = project.steps.getOrNull(i)?.copy(done = false) ?: s.copy(done = false)
                 verifyMsg = i to v.reason
                 android.widget.Toast.makeText(ctx, v.reason, android.widget.Toast.LENGTH_SHORT).show()
             }
@@ -2038,20 +2054,20 @@ private fun PlanCanvasView(project: Project) {
         }
     }
 
-    // Honest progress: re-verify pending steps whenever chat or terminal
-    // activity lands. Manual unchecks stick until new evidence arrives —
-    // the effect only flips false → true, never true → false.
+    // Honest progress: every step is re-verified against real project state
+    // whenever chat or terminal activity lands — marks appear only while the
+    // work truly exists, and vanish again if it regresses.
     val chatSig = project.chat.size
     val termSig = project.terminalLog.size
-    LaunchedEffect(chatSig, termSig) {
+    val filesSig = project.filesVersion
+    LaunchedEffect(chatSig, termSig, filesSig) {
         if (project.steps.isEmpty() || verifyingIndex != null) return@LaunchedEffect
         var changed = false
         project.steps.forEachIndexed { i, s ->
-            if (!s.done) {
-                if (verifyPlanStep(project, i).ok) {
-                    project.steps[i] = s.copy(done = true)
-                    changed = true
-                }
+            val ok = verifyPlanStep(project, i).ok
+            if (ok != s.done) {
+                project.steps[i] = s.copy(done = ok)
+                changed = true
             }
         }
         if (changed) saveProjectState(project)
@@ -2064,7 +2080,7 @@ private fun PlanCanvasView(project: Project) {
         item {
             Text("Plan · $verifiedCount of ${project.steps.size} verified · $remaining remaining", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold)
             Text(
-                "Steps check off only when the work really exists — tap a box to verify.",
+                "Marks appear only while the work really exists — tap a step to re-check.",
                 color = colors.textMuted,
                 fontSize = 11.5.sp,
                 modifier = Modifier.padding(top = 2.dp)
@@ -2096,6 +2112,7 @@ private fun PlanCanvasView(project: Project) {
                                 .clip(RoundedCornerShape(10.dp))
                                 .background(colors.surfaceHover.copy(alpha = 0.6f))
                                 .border(1.dp, if (isActive) colors.accentGreen.copy(alpha = 0.5f) else colors.border, RoundedCornerShape(10.dp))
+                                .clickable { requestStepDone(i) }
                                 .padding(10.dp)
                         ) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -2103,12 +2120,7 @@ private fun PlanCanvasView(project: Project) {
                                     Box(modifier = Modifier.size(20.dp), contentAlignment = Alignment.Center) {
                                         CircularProgressIndicator(color = colors.accentGreen, strokeWidth = 2.dp, modifier = Modifier.size(16.dp))
                                     }
-                                } else {
-                                    Checkbox(
-                                        checked = s.done,
-                                        onCheckedChange = { requestStepDone(i, it) },
-                                        colors = CheckboxDefaults.colors(checkedColor = colors.accentGreen)
-                                    )
+                                    Spacer(Modifier.width(8.dp))
                                 }
                                 Text("${i + 1}. ${s.text}", color = if (s.done) colors.textMuted else colors.textPrimary, fontSize = 12.5.sp, modifier = Modifier.weight(1f))
                             }

@@ -328,8 +328,7 @@ fun ChatScreen(
         if (!isGenerating) return@LaunchedEffect
         while (true) {
             val id = streamingId
-            val len = messages.firstOrNull { (it as? ChatItem.Assistant)?.id == id }
-                ?.let { (it as ChatItem.Assistant).text.length } ?: 0
+            val len = (messages.firstOrNull { (it as? ChatItem.Assistant)?.id == id } as? ChatItem.Assistant)?.text?.length ?: 0
             val elapsed = (System.currentTimeMillis() - streamStartMs) / 1000.0
             genLive = "%.1fs · ~%d tok…".format(elapsed, len / 4)
             kotlinx.coroutines.delay(250)
@@ -340,7 +339,6 @@ fun ChatScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(colors.background)
-            .imePadding()
     ) {
         Column(
             modifier = Modifier.fillMaxSize()

@@ -36,6 +36,11 @@ fun FilesScreen(
     val context = androidx.compose.ui.platform.LocalContext.current
     var selectedVault by remember { mutableStateOf("Knowledge Vault") }
     var showVaultSheet by remember { mutableStateOf(false) }
+    var fileQuery by remember { mutableStateOf("") }
+
+    /** Case-insensitive name filter for the vault lists below. */
+    fun matchesQuery(f: java.io.File): Boolean =
+        fileQuery.isBlank() || f.name.contains(fileQuery.trim(), ignoreCase = true)
 
     // System back: dismiss the vault sheet first, otherwise route to Home —
     // same in-app behaviour as the chat screen (never exits to phone home).
@@ -109,6 +114,30 @@ fun FilesScreen(
 
             // Top Match / Active RAG Item
             item {
+                OutlinedTextField(
+                    value = fileQuery,
+                    onValueChange = { fileQuery = it },
+                    placeholder = { Text("Search local documents…", color = colors.textMuted) },
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search", tint = colors.textMuted, modifier = Modifier.size(18.dp)) },
+                    trailingIcon = {
+                        if (fileQuery.isNotEmpty()) {
+                            Icon(
+                                Icons.Default.Close,
+                                contentDescription = "Clear search",
+                                tint = colors.textMuted,
+                                modifier = Modifier
+                                    .size(18.dp)
+                                    .clickable { fileQuery = "" }
+                            )
+                        }
+                    },
+                    singleLine = true,
+                    textStyle = androidx.compose.ui.text.TextStyle(color = colors.textPrimary, fontSize = 13.5.sp),
+                    colors = karenFieldColors(colors),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 10.dp)
+                )
                 Text("Active RAG Document", color = colors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(4.dp))
                 Column(
@@ -149,11 +178,16 @@ fun FilesScreen(
                 Text("Indexed Vault Items (${sandboxFiles(context).size})", color = colors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(6.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    val files = sandboxFiles(context)
+                    val files = sandboxFiles(context).filter { matchesQuery(it) }
                     if (files.isEmpty()) {
-                        Text("No indexed files yet", color = colors.textMuted, fontSize = 12.sp)
+                        Text(
+                            if (fileQuery.isBlank()) "No indexed files yet" else "No matches for “${fileQuery.trim()}”",
+                            color = colors.textMuted,
+                            fontSize = 12.sp
+                        )
                     }
                     files.forEach { f ->
+                        val isDoc = f.extension.lowercase() in listOf("pdf", "md", "txt")
                         VaultFileRow(
                             f.name,
                             "${formatSize(f.length())} · ${java.text.DateFormat.getDateTimeInstance().format(java.util.Date(f.lastModified()))}",
@@ -163,7 +197,11 @@ fun FilesScreen(
                                 "gguf" -> Icons.Default.Memory
                                 "md", "txt", "pdf" -> Icons.Default.Description
                                 else -> Icons.AutoMirrored.Filled.InsertDriveFile
-                            }
+                            },
+                            primaryLabel = if (isDoc) "Study" else "Query",
+                            onPrimary = { onNavigate(if (isDoc) "StudyBook" else "Chat") },
+                            secondaryLabel = if (isDoc) "Query" else "Canvas",
+                            onSecondary = { onNavigate(if (isDoc) "Chat" else "Workspace") }
                         )
                     }
                 }
@@ -174,15 +212,23 @@ fun FilesScreen(
                 Text("Knowledge Vault", color = colors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(6.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    val kvFiles = sandboxFiles(context).filter { it.extension.lowercase() in listOf("pdf", "md", "txt") }
+                    val kvFiles = sandboxFiles(context).filter { it.extension.lowercase() in listOf("pdf", "md", "txt") && matchesQuery(it) }
                     if (kvFiles.isEmpty()) {
-                        Text("Drop PDFs/notes into the vault to build your knowledge base", color = colors.textMuted, fontSize = 12.sp)
+                        Text(
+                            if (fileQuery.isBlank()) "Drop PDFs/notes into the vault to build your knowledge base" else "No matches for “${fileQuery.trim()}”",
+                            color = colors.textMuted,
+                            fontSize = 12.sp
+                        )
                     }
                     kvFiles.forEach { f ->
                         VaultFileRow(
                             f.name,
                             "${formatSize(f.length())} · ${java.text.DateFormat.getDateTimeInstance().format(java.util.Date(f.lastModified()))}",
-                            Icons.Default.MenuBook
+                            Icons.Default.MenuBook,
+                            primaryLabel = "Study",
+                            onPrimary = { onNavigate("StudyBook") },
+                            secondaryLabel = "Query",
+                            onSecondary = { onNavigate("Chat") }
                         )
                     }
                 }
@@ -277,7 +323,15 @@ private fun VaultSelectorSheet(
 }
 
 @Composable
-private fun VaultFileRow(name: String, meta: String, icon: ImageVector) {
+private fun VaultFileRow(
+    name: String,
+    meta: String,
+    icon: ImageVector,
+    primaryLabel: String? = null,
+    onPrimary: () -> Unit = {},
+    secondaryLabel: String? = null,
+    onSecondary: () -> Unit = {}
+) {
     val colors = LocalKarenColors.current
     Row(
         modifier = Modifier
@@ -294,6 +348,17 @@ private fun VaultFileRow(name: String, meta: String, icon: ImageVector) {
             Text(name, color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
             Text(meta, color = colors.textMuted, fontSize = 11.5.sp)
         }
-        Icon(Icons.Default.MoreVert, contentDescription = "Options", tint = colors.textMuted, modifier = Modifier.size(18.dp))
+        if (primaryLabel != null) {
+            TextButton(
+                onClick = onPrimary,
+                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+            ) { Text(primaryLabel, color = colors.accentGreen, fontSize = 11.5.sp, fontWeight = FontWeight.Medium) }
+        }
+        if (secondaryLabel != null) {
+            TextButton(
+                onClick = onSecondary,
+                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+            ) { Text(secondaryLabel, color = colors.accentBlue, fontSize = 11.5.sp, fontWeight = FontWeight.Medium) }
+        }
     }
 }

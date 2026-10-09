@@ -102,9 +102,18 @@ object UserPrefs {
 
     // Allow keyed cloud APIs as routing candidates (off = on-device only).
     private const val KEY_AUTO_CLOUD = "auto_route_cloud"
-    fun autoCloud(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_AUTO_CLOUD, false)
+    fun autoCloud(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_AUTO_CLOUD, true)
     fun setAutoCloud(ctx: Context, enabled: Boolean) {
         prefs(ctx).edit().putBoolean(KEY_AUTO_CLOUD, enabled).apply()
+    }
+
+    // TTS voice persona for Voice mode (Juniper/Sol/Cove/Breeze/Ember).
+    val voicePersonas = listOf("Juniper", "Sol", "Cove", "Breeze", "Ember")
+    private const val KEY_VOICE_PERSONA = "voice_persona"
+    fun voicePersona(ctx: Context): String =
+        prefs(ctx).getString(KEY_VOICE_PERSONA, voicePersonas[0]) ?: voicePersonas[0]
+    fun setVoicePersona(ctx: Context, name: String) {
+        prefs(ctx).edit().putString(KEY_VOICE_PERSONA, name).apply()
     }
 
     fun projects(ctx: Context): List<Pair<String, String>> {

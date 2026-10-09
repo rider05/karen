@@ -64,6 +64,123 @@
   opacity: 1;
   transform: translateX(-50%) translateY(0);
 }
+/* New-UI mirror: effort pill, thinking dots, user actions, markdown, ripple */
+.effort-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid rgba(192, 132, 252, 0.45);
+  background: rgba(192, 132, 252, 0.12);
+  color: #c084fc;
+  border-radius: 9999px;
+  padding: 4px 8px;
+  font-size: 10.5px;
+  font-weight: 600;
+  margin-left: 4px;
+  cursor: pointer;
+}
+.thinking-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+}
+.thinking-dots { display: inline-flex; gap: 5px; }
+.thinking-dots span {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--accent-green);
+  animation: think-bounce 0.9s infinite ease-in-out;
+}
+.thinking-dots span:nth-child(2) { animation-delay: 0.15s; }
+.thinking-dots span:nth-child(3) { animation-delay: 0.3s; }
+@keyframes think-bounce {
+  0%, 100% { transform: scale(0.55); opacity: 0.6; }
+  50% { transform: scale(1); opacity: 1; }
+}
+.thinking-label { font-size: 13.5px; color: var(--text-secondary); font-weight: 500; }
+.user-msg-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 2px;
+  margin-top: 2px;
+}
+.user-msg-actions .msg-action-btn { width: 30px; height: 30px; }
+.user-msg-actions .msg-action-btn .material-symbols-outlined { font-size: 14px; }
+.md-table {
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  overflow: hidden;
+  margin: 8px 0;
+  font-size: 13px;
+}
+.md-table .md-tr { display: flex; }
+.md-table .md-th, .md-table .md-td { flex: 1; padding: 6px 8px; }
+.md-table .md-th { font-weight: 700; background: var(--bg-surface-hover, rgba(255,255,255,0.05)); }
+.md-table .md-tr + .md-tr { border-top: 1px solid var(--border-subtle); }
+.md-quote {
+  border-left: 3px solid var(--accent-blue);
+  padding: 2px 0 2px 10px;
+  color: var(--text-secondary);
+  margin: 8px 0;
+}
+.md-list { margin: 6px 0; padding-left: 20px; }
+.md-list li { margin: 3px 0; }
+.fresh-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.32);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 300;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.25s ease;
+}
+.fresh-overlay.show { opacity: 1; pointer-events: auto; }
+.ripple-wrap { position: relative; width: 128px; height: 128px; display: flex; align-items: center; justify-content: center; }
+.ripple-ring {
+  position: absolute;
+  width: 72px; height: 72px;
+  border: 2px solid var(--accent-green);
+  border-radius: 50%;
+  animation: ripple-out 1.8s infinite ease-out;
+  opacity: 0;
+}
+.ripple-ring:nth-child(2) { animation-delay: 0.6s; }
+.ripple-ring:nth-child(3) { animation-delay: 1.2s; }
+@keyframes ripple-out {
+  0% { transform: scale(0.75); opacity: 0.55; }
+  100% { transform: scale(1.65); opacity: 0; }
+}
+.ripple-core {
+  width: 72px; height: 72px; border-radius: 50%;
+  background: var(--accent-green);
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; z-index: 1;
+}
+.effort-chip {
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 11.5px;
+  cursor: pointer;
+  color: var(--text-primary);
+  background: var(--bg-surface-hover, rgba(255,255,255,0.05));
+}
+.effort-chip.selected { border-color: #c084fc; color: #c084fc; background: rgba(192,132,252,0.15); }
+.badge-thinks {
+  font-size: 10.5px; font-weight: 700;
+  background: rgba(16,163,127,0.15); color: var(--accent-green);
+  border-radius: 9999px; padding: 2px 8px; margin-left: 8px;
+}
+.catalog-hidden { display: none; }
+.sheet-toggle-row {
+  width: 100%; text-align: center;
+  background: none; border: none; cursor: pointer;
+  color: var(--accent-green); font-size: 12.5px; font-weight: 600;
+  padding: 8px 0;
+}
 </style>
 </head>
 <body>
@@ -197,9 +314,10 @@
 
   <div class="header-center">
     <div class="model-selector-pill" id="modelPill" onclick="toggleModelSheet(true)">
-      <span id="selectedModelLabel">Karen 4B</span>
+      <span id="selectedModelLabel">Auto → Qwen2.5 7B</span>
       <span class="material-symbols-outlined chevron">expand_more</span>
     </div>
+    <span class="effort-pill" onclick="toggleModelSheet(true)" title="Reasoning effort">Medium <span class="material-symbols-outlined" style="font-size:13px">expand_more</span></span>
   </div>
 
   <div class="header-right">
@@ -219,8 +337,16 @@
 <main class="chat-container" id="chatStream">
   
   <!-- User Message Bubble -->
-  <div class="chat-message-user">
+  <div class="chat-message-user" id="demoUserBubble">
     Can you inspect my Timetable_Sem5.pdf and check when my next Lab exam is scheduled, then add a reminder?
+  </div>
+  <div class="user-msg-actions">
+    <button class="msg-action-btn" title="Copy message" onclick="showToast('Copied to clipboard')">
+      <span class="material-symbols-outlined">content_copy</span>
+    </button>
+    <button class="msg-action-btn" title="Edit message" onclick="editDemoBubble()">
+      <span class="material-symbols-outlined">edit</span>
+    </button>
   </div>
 
   <!-- Assistant Message -->
@@ -278,6 +404,17 @@
 
     <div class="assistant-content">
       <p>I've prepared the on-device calendar event above. Confirm to commit it directly to your system database without any cloud sync.</p>
+      <ul class="md-list">
+        <li><b>What:</b> Distributed Systems Lab Exam</li>
+        <li><b>When:</b> Thursday, October 24th · 2:00 PM – 5:00 PM</li>
+        <li><b>Where:</b> Computing Complex Lab 4B</li>
+      </ul>
+      <div class="md-quote">Source: page 3, section 4.2 of Timetable_Sem5.pdf (cosine sim 0.941)</div>
+      <div class="md-table">
+        <div class="md-tr"><div class="md-th">Event</div><div class="md-th">Date</div><div class="md-th">Venue</div></div>
+        <div class="md-tr"><div class="md-td">DS Lab Exam</div><div class="md-td">Oct 24</div><div class="md-td">Lab 4B</div></div>
+        <div class="md-tr"><div class="md-td">DBMS Final</div><div class="md-td">Oct 28</div><div class="md-td">Hall 2</div></div>
+      </div>
     </div>
 
     <!-- Code Block -->
@@ -360,26 +497,67 @@
   <div class="sheet-title">Model Architecture</div>
   
   <div class="sheet-options-list">
-    <div class="sheet-option-item selected" onclick="selectModel('Karen 4B', 'Fast, local &amp; sandboxed')">
+    <div class="sheet-option-item selected" onclick="selectAuto(this)">
       <div class="sheet-option-left">
-        <span class="sheet-option-name">Karen 4B (Default)</span>
-        <span class="sheet-option-desc">Optimal everyday balance of speed, coding &amp; RAG. 0ms latency.</span>
+        <span class="sheet-option-name">Auto · best model per task<span class="badge-thinks">On</span></span>
+        <span class="sheet-option-desc">Code → strongest · reasoning → thinker · quick chats → fastest</span>
       </div>
       <span class="material-symbols-outlined" style="color:var(--accent-green)">check</span>
     </div>
 
-    <div class="sheet-option-item" onclick="selectModel('Karen Pro 9B', 'Deep reasoning &amp; complex code')">
+    <div class="sheet-option-item" onclick="selectModel('Qwen2.5 7B', '')">
       <div class="sheet-option-left">
-        <span class="sheet-option-name">Karen Pro 9B Reasoning</span>
-        <span class="sheet-option-desc">Uses chain-of-thought scratchpad for complex algorithms.</span>
+        <span class="sheet-option-name">Qwen2.5 7B</span>
+        <span class="sheet-option-desc">≈4.7 GB · Q4_K_M · RAM 5.5 GB · Installed</span>
       </div>
     </div>
 
-    <div class="sheet-option-item" onclick="selectModel('Karen 2B Eco', 'Ultra-low battery consumption')">
+    <div class="sheet-option-item" onclick="selectModel('DeepSeek R1 1.5B · Reasoning', '')">
       <div class="sheet-option-left">
-        <span class="sheet-option-name">Karen 2B Eco</span>
-        <span class="sheet-option-desc">Lightweight NPU runtime for background listeners and timers.</span>
+        <span class="sheet-option-name">DeepSeek R1 1.5B · Reasoning<span class="badge-thinks">Thinks</span></span>
+        <span class="sheet-option-desc">≈1.1 GB · Q4_K_M · RAM 2.5 GB · Installed</span>
       </div>
+    </div>
+
+    <div class="sheet-option-item" onclick="selectModel('Qwen2.5 0.5B Fast', '')">
+      <div class="sheet-option-left">
+        <span class="sheet-option-name">Qwen2.5 0.5B Fast</span>
+        <span class="sheet-option-desc">≈0.4 GB · Q4_K_M · RAM 1.5 GB · Installed</span>
+      </div>
+    </div>
+
+    <div class="sheet-option-item catalog-hidden" data-catalog-extra onclick="showToast('Downloading Qwen 3.5 2B…')">
+      <div class="sheet-option-left">
+        <span class="sheet-option-name">Qwen 3.5 2B</span>
+        <span class="sheet-option-desc">≈1.1 GB · IQ4_XS · RAM 2.0 GB · Tap to download</span>
+      </div>
+    </div>
+
+    <div class="sheet-option-item catalog-hidden" data-catalog-extra onclick="showToast('Downloading Qwen2.5 1.5B…')">
+      <div class="sheet-option-left">
+        <span class="sheet-option-name">Qwen2.5 1.5B</span>
+        <span class="sheet-option-desc">≈1.0 GB · Q4_K_M · RAM 2.0 GB · Tap to download</span>
+      </div>
+    </div>
+
+    <div class="sheet-option-item catalog-hidden" data-catalog-extra onclick="showToast('Downloading Qwen2.5 3B…')">
+      <div class="sheet-option-left">
+        <span class="sheet-option-name">Qwen2.5 3B</span>
+        <span class="sheet-option-desc">≈1.9 GB · Q4_K_M · RAM 2.5 GB · Tap to download</span>
+      </div>
+    </div>
+  </div>
+  <button class="sheet-toggle-row" id="catalogToggle" onclick="toggleCatalog()">Show all 6 models</button>
+
+  <div style="padding:10px 4px;border-top:1px solid var(--border-subtle);margin-top:4px">
+    <div style="font-size:12px;color:var(--text-muted);font-weight:600;margin-bottom:8px">Reasoning effort</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap" id="effortRow">
+      <button class="effort-chip" onclick="selectEffort(this)">Low</button>
+      <button class="effort-chip" onclick="selectEffort(this)">Medium</button>
+      <button class="effort-chip selected" onclick="selectEffort(this)">High</button>
+      <button class="effort-chip" onclick="selectEffort(this)">Max</button>
+      <button class="effort-chip" onclick="selectEffort(this)">Extreme</button>
+      <button class="effort-chip" onclick="selectEffort(this)">XHigh</button>
     </div>
   </div>
 
@@ -480,6 +658,46 @@ function selectModel(name, desc) {
   event.currentTarget.appendChild(check);
   toggleModelSheet(false);
   showToast('Switched to ' + name);
+}
+
+function selectAuto(el) {
+  document.getElementById('selectedModelLabel').innerText = 'Auto → Qwen2.5 7B';
+  document.querySelectorAll('.sheet-option-item').forEach(x => {
+    x.classList.remove('selected');
+    const c = x.querySelector('.material-symbols-outlined');
+    if (c && c.innerText === 'check') c.remove();
+  });
+  el.classList.add('selected');
+  const check = document.createElement('span');
+  check.className = 'material-symbols-outlined';
+  check.style.color = 'var(--accent-green)';
+  check.innerText = 'check';
+  el.appendChild(check);
+  toggleModelSheet(false);
+  showToast('Auto routing on · best model per task');
+}
+
+function toggleCatalog() {
+  const extras = document.querySelectorAll('[data-catalog-extra]');
+  const show = extras[0].classList.contains('catalog-hidden');
+  extras.forEach(el => el.classList.toggle('catalog-hidden', !show));
+  document.getElementById('catalogToggle').innerText = show ? 'Show less' : 'Show all 6 models';
+}
+
+function selectEffort(btn) {
+  document.querySelectorAll('#effortRow .effort-chip').forEach(b => b.classList.remove('selected'));
+  btn.classList.add('selected');
+  showToast('Effort: ' + btn.innerText);
+}
+
+function editDemoBubble() {
+  const bubble = document.getElementById('demoUserBubble');
+  const current = bubble.innerText;
+  const input = document.getElementById('messageInput');
+  input.value = current;
+  input.dispatchEvent(new Event('input'));
+  input.focus();
+  showToast('Loaded into composer for editing');
 }
 
 // Attachment Bottom Sheet
@@ -583,7 +801,7 @@ function sendMessage() {
 
   window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' });
 
-  // Simulate ChatGPT assistant streaming response
+  // Simulate ChatGPT assistant streaming response (thinking dots first)
   setTimeout(() => {
     const assistantDiv = document.createElement('div');
     assistantDiv.className = 'chat-message-assistant';
@@ -595,8 +813,12 @@ function sendMessage() {
         </div>
         <span class="assistant-name">Karen</span>
       </div>
-      <div class="assistant-content">
-        <p id="${msgId}" style="display:inline"></p><span class="thought-dot" style="display:inline-block;vertical-align:middle;margin-left:4px"></span>
+      <div class="thinking-row" id="${msgId}_thinking">
+        <span class="thinking-dots"><span></span><span></span><span></span></span>
+        <span class="thinking-label">Thinking…</span>
+      </div>
+      <div class="assistant-content" style="display:none">
+        <p id="${msgId}" style="display:inline"></p>
       </div>
       <div class="msg-actions" style="margin-top:6px">
         <button class="msg-action-btn" title="Copy message" onclick="showToast('Copied to clipboard')">
@@ -616,25 +838,48 @@ function sendMessage() {
     chatStream.appendChild(assistantDiv);
     window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' });
 
-    const reply = "I've processed your query locally using Karen 4B Q4. All documents and actions are kept strictly offline within your hardware sandbox.";
-    let idx = 0;
-    const target = assistantDiv.querySelector('#' + msgId);
-    const interval = setInterval(() => {
-      if (idx < reply.length) {
-        target.innerText += reply[idx++];
-        window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' });
-      } else {
-        clearInterval(interval);
-        assistantDiv.querySelector('.thought-dot')?.remove();
-      }
-    }, 20);
+    const reply = "I've processed your query locally using Qwen2.5 7B Q4. All documents and actions are kept strictly offline within your hardware sandbox.";
+    setTimeout(() => {
+      assistantDiv.querySelector('#' + msgId + '_thinking')?.remove();
+      assistantDiv.querySelector('.assistant-content').style.display = 'block';
+      let idx = 0;
+      const target = assistantDiv.querySelector('#' + msgId);
+      const interval = setInterval(() => {
+        if (idx < reply.length) {
+          target.innerText += reply[idx++];
+          window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' });
+        } else {
+          clearInterval(interval);
+        }
+      }, 20);
+    }, 900);
   }, 450);
 }
 
 function startNewChat() {
   toggleDrawer(false);
-  const chatStream = document.getElementById('chatStream');
-  chatStream.innerHTML = `
+  const overlay = document.createElement('div');
+  overlay.className = 'fresh-overlay show';
+  overlay.innerHTML = `
+    <div style="display:flex;flex-direction:column;align-items:center;gap:18px">
+      <div class="ripple-wrap">
+        <div class="ripple-ring"></div>
+        <div class="ripple-ring"></div>
+        <div class="ripple-ring"></div>
+        <div class="ripple-core"><span class="material-symbols-outlined" style="font-size:34px">auto_awesome</span></div>
+      </div>
+      <div class="thinking-row">
+        <span class="thinking-dots"><span></span><span></span><span></span></span>
+        <span class="thinking-label">Starting a fresh chat</span>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  setTimeout(() => {
+    overlay.classList.remove('show');
+    setTimeout(() => overlay.remove(), 300);
+    const chatStream = document.getElementById('chatStream');
+    chatStream.innerHTML = `
     <div style="text-align:center;padding:60px 20px 20px;display:flex;flex-direction:column;align-items:center;gap:14px">
       <div style="width:48px;height:48px;border-radius:50%;background:rgba(255,255,255,0.06);display:flex;align-items:center;justify-content:center">
         <span class="material-symbols-outlined" style="font-size:28px;color:var(--accent-green)">token</span>
@@ -646,7 +891,8 @@ function startNewChat() {
         <button class="btn-secondary" onclick="insertPrompt('Explain BCNF vs 3NF with examples')">📚 BCNF vs 3NF</button>
       </div>
     </div>
-  `;
+    `;
+  }, 1100);
 }
 
 function insertPrompt(txt) {

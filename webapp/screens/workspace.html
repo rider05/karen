@@ -74,6 +74,27 @@
 }
 .diff-added { background: rgba(16, 185, 129, 0.15); color: #34d399; }
 .diff-removed { background: rgba(244, 63, 94, 0.15); color: #fb7185; }
+.user-msg-actions { display: flex; justify-content: flex-end; gap: 2px; margin-top: 2px; }
+.user-msg-actions .msg-action-btn { width: 30px; height: 30px; }
+.user-msg-actions .msg-action-btn .material-symbols-outlined { font-size: 14px; }
+.explorer { display: flex; gap: 8px; }
+.explorer-tree {
+  flex: 0 0 38%; background: rgba(255,255,255,0.03);
+  border: 1px solid var(--border-subtle); border-radius: 8px;
+  padding: 8px 4px; font-family: var(--font-mono); font-size: 11.5px;
+}
+.explorer-row { display: flex; align-items: center; gap: 6px; padding: 5px 6px; border-radius: 6px; color: var(--text-secondary); }
+.explorer-row.selected { background: rgba(16,163,127,0.16); color: var(--text-primary); }
+.explorer-row .material-symbols-outlined { font-size: 14px; }
+.explorer-editor { flex: 1; min-width: 0; }
+.file-toolbar { display: flex; align-items: center; gap: 2px; padding-bottom: 6px; }
+.file-toolbar .icon-btn { width: 30px; height: 30px; }
+.file-toolbar .icon-btn .material-symbols-outlined { font-size: 17px; }
+.crumb { font-family: var(--font-mono); font-size: 11px; color: var(--text-primary); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.verify-line { font-size: 10.5px; color: var(--text-muted); margin-top: 2px; }
+.verify-line.ok { color: var(--accent-green); font-weight: 600; }
+.verify-line.warn { color: #f59e0b; }
+.git-row { display: flex; align-items: center; gap: 8px; padding: 8px 0; font-size: 11.5px; color: var(--text-muted); font-family: var(--font-mono); }
 </style>
 </head>
 <body>
@@ -86,8 +107,10 @@
     </button>
   </div>
   <div style="display:flex;flex-direction:column;align-items:center">
-    <div style="font-size:14px;font-weight:600">BiometricAuthManager.kt</div>
-    <div style="font-size:11px;color:var(--text-muted)">TreeVision-Android · feat/biometric</div>
+    <div class="model-selector-pill" style="font-size:11px" onclick="showToast('Auto routing on · best model per task')">
+      <span>Auto → Qwen2.5 7B</span>
+      <span class="material-symbols-outlined chevron">expand_more</span>
+    </div>
   </div>
   <div class="header-right">
     <button class="icon-btn" onclick="toggleTheme()" title="Toggle Dark / Light Mode">
@@ -99,6 +122,45 @@
   </div>
 </header>
 
+<!-- Active project header + project card with overflow menu -->
+<div style="padding:10px 14px 0">
+  <div class="card-group" style="margin-bottom:8px">
+    <div class="card-cell">
+      <div class="cell-info">
+        <span class="cell-title">TreeVision-Android</span>
+        <span class="cell-subtitle" style="font-family:var(--font-mono)">/projects/TreeVision-Android · 00:12:40</span>
+      </div>
+      <div style="position:relative">
+        <button class="icon-btn" onclick="document.getElementById('projMenu').classList.toggle('catalog-hidden')" title="Project options">
+          <span class="material-symbols-outlined">more_vert</span>
+        </button>
+        <div id="projMenu" class="catalog-hidden" style="position:absolute;right:0;top:36px;background:var(--bg-surface);border:1px solid var(--border-subtle);border-radius:12px;min-width:150px;z-index:50;overflow:hidden">
+          <div class="sheet-option-item" style="padding:10px 14px" onclick="showToast('Rename dialog…')"><span class="material-symbols-outlined" style="font-size:16px">edit</span>&nbsp;&nbsp;Rename</div>
+          <div class="sheet-option-item" style="padding:10px 14px" onclick="showToast('Duplicated as TreeVision-Android copy')"><span class="material-symbols-outlined" style="font-size:16px">content_copy</span>&nbsp;&nbsp;Duplicate</div>
+          <div class="sheet-option-item" style="padding:10px 14px;color:var(--accent-red)" onclick="showToast('Delete needs confirmation')"><span class="material-symbols-outlined" style="font-size:16px">delete</span>&nbsp;&nbsp;Delete</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Mini project thread: user bubble with copy/edit, assistant with copy -->
+<div style="padding:0 14px">
+  <div class="chat-message-user">Add StrongBox fallback to the biometric executor</div>
+  <div class="user-msg-actions">
+    <button class="msg-action-btn" title="Copy" onclick="showToast('Copied to clipboard')"><span class="material-symbols-outlined">content_copy</span></button>
+    <button class="msg-action-btn" title="Edit" onclick="showToast('Loaded into composer for editing')"><span class="material-symbols-outlined">edit</span></button>
+  </div>
+  <div class="chat-message-assistant" style="margin-top:8px">
+    <div class="assistant-avatar-badge">
+      <div class="karen-spark-logo"><span class="material-symbols-outlined" style="font-size:20px">token</span></div>
+      <span class="assistant-name">Karen</span>
+      <button class="msg-action-btn" style="margin-left:auto" title="Copy reply" onclick="showToast('Copied to clipboard')"><span class="material-symbols-outlined">content_copy</span></button>
+    </div>
+    <div class="assistant-content"><p>Applied to <b>TreeVision-Android</b>: 2 file(s) written. Verified on disk.</p></div>
+  </div>
+</div>
+
 <!-- Canvas Segmented Tabs -->
 <div class="tab-pill-bar">
   <button class="tab-btn active" onclick="switchTab(this, 'codeView')">Code</button>
@@ -107,9 +169,41 @@
   <button class="tab-btn" onclick="switchTab(this, 'diffView')">Diff (+84/-3)</button>
 </div>
 
-<!-- Tab Content: Code Editor -->
+<!-- Tab Content: Code Editor with file explorer -->
 <div id="codeView" class="tab-content">
-  <div class="canvas-editor">
+  <div style="padding:10px 14px 0">
+    <div class="file-toolbar">
+      <span class="crumb">src/main/AuthManager.kt</span>
+      <button class="icon-btn" title="New file" onclick="showToast('New file: src/main/…')"><span class="material-symbols-outlined">note_add</span></button>
+      <button class="icon-btn" title="New folder" onclick="showToast('New folder')"><span class="material-symbols-outlined">create_new_folder</span></button>
+      <button class="icon-btn" title="Rename" onclick="showToast('Rename dialog…')"><span class="material-symbols-outlined">edit</span></button>
+      <button class="icon-btn" title="Delete" onclick="showToast('Delete needs confirmation')"><span class="material-symbols-outlined">delete</span></button>
+      <button class="icon-btn" title="Refresh" onclick="showToast('File tree refreshed')"><span class="material-symbols-outlined">refresh</span></button>
+    </div>
+    <div class="explorer">
+      <div class="explorer-tree">
+        <div style="font-size:10px;font-weight:700;color:var(--text-muted);padding:2px 6px 6px">FILES · 3</div>
+        <div class="explorer-row"><span class="material-symbols-outlined" style="color:#f59e0b">folder</span> src/</div>
+        <div class="explorer-row"><span style="width:14px"></span><span class="material-symbols-outlined" style="color:#f59e0b">folder_open</span> main/</div>
+        <div class="explorer-row selected"><span style="width:28px"></span><span class="material-symbols-outlined">code</span> AuthManager.kt</div>
+        <div class="explorer-row"><span style="width:28px"></span><span class="material-symbols-outlined">description</span> README.md</div>
+      </div>
+      <div class="explorer-editor">
+        <div class="canvas-editor" style="min-height:220px">
+          <div class="code-line"><span class="line-num">1</span><span class="line-text"><span style="color:#f472b6">package</span> com.karen.treevision.auth</span></div>
+          <div class="code-line"><span class="line-num">2</span><span class="line-text"></span></div>
+          <div class="code-line"><span class="line-num">3</span><span class="line-text"><span style="color:#38bdf8">class</span> <span style="color:#facc15">AuthManager</span>(</span></div>
+          <div class="code-line"><span class="line-num">4</span><span class="line-text">    <span style="color:#f472b6">private val</span> executor = Executors.newSingleThreadExecutor()</span></div>
+          <div class="code-line"><span class="line-num">5</span><span class="line-text">)</span></div>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:8px">
+          <button class="btn-primary" onclick="showToast('Saved AuthManager.kt')">Save</button>
+          <button class="btn-secondary" onclick="showToast('Checks clean')">Compile &amp; Test</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="canvas-editor" style="margin-top:10px">
     <div class="code-line"><span class="line-num">1</span><span class="line-text"><span style="color:#f472b6">package</span> com.karen.treevision.auth</span></div>
     <div class="code-line"><span class="line-num">2</span><span class="line-text"></span></div>
     <div class="code-line"><span class="line-num">3</span><span class="line-text"><span style="color:#f472b6">import</span> androidx.biometric.BiometricPrompt</span></div>
@@ -140,36 +234,45 @@
   </div>
 </div>
 
-<!-- Tab Content: Autonomous Plan -->
+<!-- Tab Content: Autonomous Plan (verified — checks off only when real) -->
 <div id="planView" class="tab-content" style="display:none;padding:16px 14px">
+  <div style="font-size:13.5px;font-weight:600">Plan · 3 of 5 verified · 2 remaining</div>
+  <div style="font-size:11.5px;color:var(--text-muted);margin:2px 0 10px">Steps check off only when the work really exists — tap a box to verify.</div>
   <div class="card-group">
     <div class="card-cell">
       <div class="cell-info">
-        <span class="cell-title">✓ T1: Analyze security specifications</span>
-        <span class="cell-subtitle">100% · Validated against NIST SP 800-63B</span>
+        <span class="cell-title">1. Understand request: StrongBox fallback</span>
+        <div class="verify-line ok">Verified complete</div>
       </div>
       <span class="tag-pill green">Done</span>
     </div>
     <div class="card-cell">
       <div class="cell-info">
-        <span class="cell-title">✓ T2: Inspect AndroidX Biometric deps</span>
-        <span class="cell-subtitle">100% · androidx.biometric:1.2.0-alpha05</span>
+        <span class="cell-title">2. Break down into subtasks and target files</span>
+        <div class="verify-line ok">Verified complete</div>
       </div>
       <span class="tag-pill green">Done</span>
     </div>
     <div class="card-cell">
       <div class="cell-info">
-        <span class="cell-title">● T3: Implement BiometricPrompt callback</span>
-        <span class="cell-subtitle">Generating failover tokens in BiometricPromptWrapper.kt</span>
+        <span class="cell-title">3. Implement changes in project files</span>
+        <div class="verify-line ok">Verified complete</div>
       </div>
-      <span class="tag-pill blue">Running</span>
+      <span class="tag-pill green">Done</span>
     </div>
     <div class="card-cell">
       <div class="cell-info">
-        <span class="cell-title">○ T4: Unit test keystore encryption</span>
-        <span class="cell-subtitle">Awaiting T3 AST completion</span>
+        <span class="cell-title">4. Run checks in terminal and verify output</span>
+        <div class="verify-line warn">Terminal never ran — open the Terminal tab.</div>
       </div>
-      <span class="tag-pill">Queued</span>
+      <span class="tag-pill">Pending</span>
+    </div>
+    <div class="card-cell">
+      <div class="cell-info">
+        <span class="cell-title">5. Review diff and mark tasks complete</span>
+        <div class="verify-line">Tap the box to verify against project state</div>
+      </div>
+      <span class="tag-pill">Pending</span>
     </div>
   </div>
 </div>
@@ -183,6 +286,13 @@
 ✓ BiometricAuthManagerTest &gt; testHardwareUnavailableHandled PASSED
 ↻ Running: CryptoKeyStoreProviderTest &gt; testKeyGen()
 27 passed, 1 running... (2.89s)</code></pre>
+  </div>
+  <div class="git-row">
+    <span class="material-symbols-outlined" style="font-size:15px">cloud_upload</span>
+    <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">github.com/you/treevision.git</span>
+    <button class="btn-secondary" style="padding:4px 10px;font-size:11.5px" onclick="showToast('Remote saved on-device')">Remote</button>
+    <button class="btn-secondary" style="padding:4px 10px;font-size:11.5px" onclick="showToast('Committed snapshot')">Commit</button>
+    <button class="btn-primary" style="padding:4px 12px;font-size:11.5px" onclick="showToast('Pushed to origin')">Push</button>
   </div>
 </div>
 
@@ -208,6 +318,20 @@ CryptoUtils.kt          | +12 -3 modifications</code></pre>
 </div>
 
 <script>
+function showToast(msg) {
+  let t = document.getElementById('wsToast');
+  if (!t) {
+    t = document.createElement('div');
+    t.id = 'wsToast';
+    t.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:rgba(47,47,47,0.95);color:#fff;padding:8px 18px;border-radius:9999px;font-size:13px;z-index:200;transition:opacity 0.2s;';
+    document.body.appendChild(t);
+  }
+  t.innerText = msg;
+  t.style.opacity = '1';
+  clearTimeout(t._h);
+  t._h = setTimeout(() => t.style.opacity = '0', 2000);
+}
+
 function switchTab(btn, tabId) {
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');

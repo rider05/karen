@@ -47,6 +47,10 @@ fun VoiceScreen(
             isSpeaking = false
         }
     )
+    val colors = LocalKarenColors.current
+    val personaCtx = androidx.compose.ui.platform.LocalContext.current
+    var voicePersona by remember { mutableStateOf(UserPrefs.voicePersona(personaCtx)) }
+    var personaMenu by remember { mutableStateOf(false) }
 
     val infiniteTransition = rememberInfiniteTransition(label = "voice_orb")
 
@@ -88,11 +92,11 @@ fun VoiceScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black)
+            .background(colors.background)
             .statusBarsPadding()
             .navigationBarsPadding()
     ) {
-        // Voice Top Bar
+        // Voice Top Bar: close + persisted TTS voice persona picker.
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -106,22 +110,76 @@ fun VoiceScreen(
                 modifier = Modifier
                     .size(40.dp)
                     .clip(CircleShape)
-                    .background(Color(0xFF1C1C1E))
+                    .background(colors.surface)
+                    .border(1.dp, colors.border, CircleShape)
             ) {
                 Icon(
                     imageVector = Icons.Default.Close,
                     contentDescription = "Close Voice",
-                    tint = Color.White
+                    tint = colors.textPrimary
                 )
             }
 
-            // Status Pill
+            // TTS voice persona picker (Juniper/Sol/Cove/Breeze/Ember), persisted.
             Row(
                 modifier = Modifier
                     .clip(RoundedCornerShape(20.dp))
-                    .background(Color(0x22FFFFFF))
-                    .border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(20.dp))
-                    .padding(horizontal = 14.dp, vertical = 6.dp),
+                    .background(colors.surface)
+                    .border(1.dp, colors.border, RoundedCornerShape(20.dp))
+                    .clickable { personaMenu = true }
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Default.RecordVoiceOver,
+                    contentDescription = null,
+                    tint = colors.accentGreen,
+                    modifier = Modifier.size(14.dp)
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    text = voicePersona,
+                    color = colors.textPrimary,
+                    fontSize = 12.5.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Spacer(Modifier.width(4.dp))
+                Icon(
+                    imageVector = Icons.Default.KeyboardArrowDown,
+                    contentDescription = "Select voice",
+                    tint = colors.textMuted,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+            DropdownMenu(
+                expanded = personaMenu,
+                onDismissRequest = { personaMenu = false },
+                modifier = Modifier.background(colors.surface)
+            ) {
+                UserPrefs.voicePersonas.forEach { v ->
+                    DropdownMenuItem(
+                        text = { Text(v, color = if (v == voicePersona) colors.accentGreen else colors.textPrimary) },
+                        onClick = {
+                            voicePersona = v
+                            UserPrefs.setVoicePersona(personaCtx, v)
+                            personaMenu = false
+                        }
+                    )
+                }
+            }
+        }
+
+        // Live status card: centered, rounded on all four corners.
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.Center
+        ) {
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(colors.surface)
+                    .border(1.dp, colors.border, RoundedCornerShape(16.dp))
+                    .padding(horizontal = 18.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Box(
@@ -129,59 +187,18 @@ fun VoiceScreen(
                         .size(8.dp)
                         .clip(CircleShape)
                         .background(
-                            if (voiceStt.state.isListening) Color(0xFF10A37F).copy(alpha = statusPulse)
-                            else if (isSpeaking) Color(0xFF38BDF8).copy(alpha = statusPulse)
-                            else Color(0xFF8E8E93)
+                            if (voiceStt.state.isListening) colors.accentGreen.copy(alpha = statusPulse)
+                            else if (isSpeaking) colors.accentBlue.copy(alpha = statusPulse)
+                            else colors.textMuted
                         )
                 )
                 Spacer(Modifier.width(8.dp))
                 Text(
                     text = if (voiceStt.state.isListening) "Listening..." else if (isSpeaking) "Speaking · Piper TTS" else "Ready · Tap to Speak",
-                    color = Color(0xFFC4C4C8),
+                    color = colors.textSecondary,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.Medium
                 )
-            }
-
-            // Voice engine dropdown: system STT/TTS + models from Model Manager
-            val engineOptions = listOf("System Speech-to-Text", "System Text-to-Speech") + UserPrefs.models(androidx.compose.ui.platform.LocalContext.current)
-            var engineMenu by remember { mutableStateOf(false) }
-            var engineName by remember { mutableStateOf("Karen Alto") }
-            Row(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(20.dp))
-                    .background(Color(0x22FFFFFF))
-                    .clickable { engineMenu = true }
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = engineName,
-                    color = Color.White,
-                    fontSize = 12.5.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
-                Spacer(Modifier.width(4.dp))
-                Icon(
-                    imageVector = Icons.Default.KeyboardArrowDown,
-                    contentDescription = "Select engine",
-                    tint = Color(0xFF8E8E93),
-                    modifier = Modifier.size(16.dp)
-                )
-            }
-            DropdownMenu(expanded = engineMenu, onDismissRequest = { engineMenu = false }) {
-                engineOptions.forEach { e ->
-                    DropdownMenuItem(
-                        text = { Text(e, color = if (e == engineName) Color(0xFF10A37F) else Color(0xFFECECEC)) },
-                        onClick = {
-                            engineName = e
-                            engineMenu = false
-                        }
-                    )
-                }
-                if (engineOptions.isEmpty()) {
-                    DropdownMenuItem(text = { Text("No data found") }, onClick = { engineMenu = false })
-                }
             }
         }
 
@@ -290,14 +307,14 @@ fun VoiceScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(20.dp))
-                    .background(Color(0x24FFFFFF))
-                    .border(1.dp, Color(0x22FFFFFF), RoundedCornerShape(20.dp))
+                    .background(colors.surface)
+                    .border(1.dp, colors.border, RoundedCornerShape(20.dp))
                     .padding(18.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
-                    text = if (voiceStt.state.isListening) "YOU (LISTENING...)" else if (isSpeaking) "KAREN" else "STANDBY",
-                    color = Color(0xFF10A37F),
+                    text = if (voiceStt.state.isListening) "YOU (LISTENING...)" else if (isSpeaking) "KAREN · ${voicePersona.uppercase()}" else "STANDBY",
+                    color = colors.accentGreen,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
                     letterSpacing = 1.sp
@@ -311,7 +328,7 @@ fun VoiceScreen(
                     } else {
                         "Tap orb to speak. Karen native STT is ready..."
                     },
-                    color = Color.White,
+                    color = colors.textPrimary,
                     fontSize = 14.5.sp,
                     lineHeight = 22.sp,
                     textAlign = androidx.compose.ui.text.style.TextAlign.Center
@@ -320,7 +337,7 @@ fun VoiceScreen(
                 if (isVisionActive) {
                     Text(
                         text = "● Local Camera Vision Feed Active · 0 cloud frames",
-                        color = Color(0xFF10A37F),
+                        color = colors.accentGreen,
                         fontSize = 11.5.sp,
                         fontWeight = FontWeight.SemiBold,
                         fontFamily = FontFamily.Monospace
@@ -329,7 +346,7 @@ fun VoiceScreen(
                 }
                 Text(
                     text = "Whisper.cpp / Android STT · ${if (device.networkUp) "Network Up" else "0 egress"} · 16kHz beamforming · ${device.deviceModel}",
-                    color = Color(0xFF8E8E93),
+                    color = colors.textMuted,
                     fontSize = 11.sp,
                     fontFamily = FontFamily.Monospace
                 )
@@ -355,7 +372,7 @@ fun VoiceScreen(
                                 .width(3.dp)
                                 .height(h.dp)
                                 .clip(RoundedCornerShape(2.dp))
-                                .background(if (voiceStt.state.isListening) Color(0xFF10A37F) else Color(0xFF3A3A3C))
+                                .background(if (voiceStt.state.isListening) colors.accentGreen else colors.border)
                         )
                     }
                 }
@@ -376,7 +393,8 @@ fun VoiceScreen(
                 modifier = Modifier
                     .size(58.dp)
                     .clip(CircleShape)
-                    .background(if (voiceStt.state.isListening) Color(0xFF10A37F).copy(alpha = 0.25f) else if (isMuted) Color(0xFF3A3A3C) else Color(0xFF2C2C2E))
+                    .background(if (voiceStt.state.isListening) colors.accentGreen.copy(alpha = 0.25f) else if (isMuted) colors.surface else colors.surfaceHover)
+                    .border(1.dp, colors.border, CircleShape)
                     .clickable {
                         isMuted = !isMuted
                         if (voiceStt.state.isListening) {
@@ -390,7 +408,7 @@ fun VoiceScreen(
                 Icon(
                     imageVector = if (voiceStt.state.isListening) Icons.Default.Mic else if (isMuted) Icons.Default.MicOff else Icons.Default.Mic,
                     contentDescription = "Mute",
-                    tint = if (voiceStt.state.isListening) Color(0xFF10A37F) else if (isMuted) Color(0xFFEF4444) else Color.White,
+                    tint = if (voiceStt.state.isListening) colors.accentGreen else if (isMuted) colors.accentRed else colors.textPrimary,
                     modifier = Modifier.size(26.dp)
                 )
             }
@@ -400,7 +418,8 @@ fun VoiceScreen(
                 modifier = Modifier
                     .size(58.dp)
                     .clip(CircleShape)
-                    .background(if (isVisionActive) Color(0xFF10A37F) else Color(0xFF2C2C2E))
+                    .background(if (isVisionActive) colors.accentGreen else colors.surfaceHover)
+                    .border(1.dp, colors.border, CircleShape)
                     .clickable { isVisionActive = !isVisionActive },
                 contentAlignment = Alignment.Center
             ) {

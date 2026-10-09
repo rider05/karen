@@ -104,6 +104,57 @@
     </div>
   </div>
 
+  <!-- Model Routing & Content Window (mirrors Settings → Performance) -->
+  <div class="section-label">Model Routing</div>
+  <div class="card-group">
+    <div class="card-cell">
+      <div class="cell-info">
+        <span class="cell-title">Auto Model Routing</span>
+        <span class="cell-subtitle">Code → strongest · reasoning → thinker · quick chats → fastest</span>
+      </div>
+      <label class="switch">
+        <input type="checkbox" checked onchange="showToast(this.checked ? 'Auto routing on' : 'Auto routing off')">
+        <span class="slider"></span>
+      </label>
+    </div>
+    <div class="card-cell">
+      <div class="cell-info">
+        <span class="cell-title">Include Cloud APIs</span>
+        <span class="cell-subtitle">Let Auto use keyed cloud models for hard tasks</span>
+      </div>
+      <label class="switch">
+        <input type="checkbox" checked onchange="showToast(this.checked ? 'Cloud included in routing' : 'On-device only')">
+        <span class="slider"></span>
+      </label>
+    </div>
+    <div class="card-cell" style="display:block">
+      <div class="cell-info" style="margin-bottom:8px">
+        <span class="cell-title">Content Window</span>
+        <span class="cell-subtitle">History + project context kept per reply (up to 16K)</span>
+      </div>
+      <div style="display:flex;gap:6px" id="windowRow">
+        <button class="btn-secondary chip" onclick="pickChip('windowRow', this)">2K</button>
+        <button class="btn-secondary chip" onclick="pickChip('windowRow', this)">4K</button>
+        <button class="btn-secondary chip" onclick="pickChip('windowRow', this)">8K</button>
+        <button class="btn-secondary chip" onclick="pickChip('windowRow', this)">16K</button>
+      </div>
+    </div>
+    <div class="card-cell" style="display:block">
+      <div class="cell-info" style="margin-bottom:8px">
+        <span class="cell-title">Default Reasoning Effort</span>
+        <span class="cell-subtitle">Thinking depth for reasoning models</span>
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap" id="effortRow">
+        <button class="btn-secondary chip" onclick="pickChip('effortRow', this)">Low</button>
+        <button class="btn-secondary chip" onclick="pickChip('effortRow', this)">Medium</button>
+        <button class="btn-secondary chip" onclick="pickChip('effortRow', this)">High</button>
+        <button class="btn-secondary chip" onclick="pickChip('effortRow', this)">Max</button>
+        <button class="btn-secondary chip" onclick="pickChip('effortRow', this)">Extreme</button>
+        <button class="btn-secondary chip" onclick="pickChip('effortRow', this)">XHigh</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Pending Approvals -->
   <div class="section-label">Pending Verification (2)</div>
   <div class="action-card">
@@ -166,6 +217,30 @@
 </div>
 
 <script>
+function showToast(msg) {
+  let t = document.getElementById('memToast');
+  if (!t) {
+    t = document.createElement('div');
+    t.id = 'memToast';
+    t.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:rgba(47,47,47,0.95);color:#fff;padding:8px 18px;border-radius:9999px;font-size:13px;z-index:200;transition:opacity 0.2s;';
+    document.body.appendChild(t);
+  }
+  t.innerText = msg;
+  t.style.opacity = '1';
+  clearTimeout(t._h);
+  t._h = setTimeout(() => t.style.opacity = '0', 2000);
+}
+
+function pickChip(rowId, btn) {
+  document.querySelectorAll('#' + rowId + ' .chip').forEach(b => {
+    b.style.borderColor = '';
+    b.style.color = '';
+  });
+  btn.style.borderColor = 'var(--accent-green)';
+  btn.style.color = 'var(--accent-green)';
+  showToast(btn.innerText + ' selected');
+}
+
 function deleteMemory(btn) {
   const item = btn.closest('.memory-item');
   item.style.opacity = '0';

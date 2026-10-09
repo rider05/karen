@@ -165,6 +165,7 @@ fun KarenApp() {
                         modifier = Modifier
                             .fillMaxSize()
                             .padding(paddingValues)
+                            .imePadding()
                     ) {
                         when (currentScreen) {
                             "Home" -> HomeScreen(

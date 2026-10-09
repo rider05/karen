@@ -99,45 +99,122 @@ input[type="range"]::-webkit-slider-thumb {
     </div>
   </div>
 
-  <!-- Available Local Models -->
+  <!-- Available Local Models (real catalog) -->
   <div class="section-label">Installed Models</div>
-  <div class="card-group">
+  <div class="card-group" id="catalogList">
     
-    <div class="card-cell">
+    <div class="card-cell" data-catalog-card>
       <div class="cell-info">
-        <div style="display:flex;align-items:center;gap:6px">
-          <span class="cell-title">Karen 4B Q4 (Current)</span>
-        </div>
-        <span class="cell-subtitle">2.72 GB GGUF · 18.4 tok/s · All-purpose</span>
+        <span class="cell-title">Qwen2.5 7B</span>
+        <span class="cell-subtitle">≈4.7 GB · Q4_K_M · RAM 5.5 GB</span>
       </div>
       <span class="material-symbols-outlined" style="color:var(--accent-green)">check_circle</span>
     </div>
 
-    <div class="card-cell">
+    <div class="card-cell" data-catalog-card>
       <div class="cell-info">
-        <span class="cell-title">Karen 2B Eco</span>
-        <span class="cell-subtitle">1.48 GB GGUF · 28.6 tok/s · Low battery</span>
+        <span class="cell-title">DeepSeek R1 1.5B · Reasoning</span>
+        <span class="cell-subtitle">≈1.1 GB · Q4_K_M · RAM 2.5 GB · Reasons</span>
       </div>
-      <button class="btn-secondary" style="padding:4px 12px;font-size:12px" onclick="alert('Switched runtime to Karen 2B')">Switch</button>
+      <span class="material-symbols-outlined" style="color:var(--accent-green)">check_circle</span>
     </div>
 
-    <div class="card-cell">
+    <div class="card-cell" data-catalog-card>
       <div class="cell-info">
-        <span class="cell-title">Karen Pro 9B Reasoning</span>
-        <span class="cell-subtitle">5.64 GB GGUF · 9.2 tok/s · Deep reasoning</span>
+        <span class="cell-title">Qwen2.5 0.5B Fast</span>
+        <span class="cell-subtitle">≈0.4 GB · Q4_K_M · RAM 1.5 GB</span>
       </div>
-      <button class="btn-secondary" style="padding:4px 12px;font-size:12px" onclick="alert('Switched runtime to Karen 9B')">Switch</button>
+      <button class="btn-secondary" style="padding:4px 12px;font-size:12px" onclick="showToast('Downloading Qwen2.5 0.5B…')">Get</button>
     </div>
 
-    <div class="card-cell">
+    <div class="card-cell catalog-hidden" data-catalog-card data-catalog-extra>
       <div class="cell-info">
-        <span class="cell-title">Whisper Medium En-Only</span>
-        <span class="cell-subtitle">380 MB · On-Device Voice Dictation</span>
+        <span class="cell-title">Qwen 3.5 2B</span>
+        <span class="cell-subtitle">≈1.1 GB · IQ4_XS · RAM 2.0 GB</span>
       </div>
-      <span class="tag-pill">Daemon</span>
+      <button class="btn-secondary" style="padding:4px 12px;font-size:12px" onclick="showToast('Downloading Qwen 3.5 2B…')">Get</button>
+    </div>
+
+    <div class="card-cell catalog-hidden" data-catalog-card data-catalog-extra>
+      <div class="cell-info">
+        <span class="cell-title">Qwen2.5 1.5B</span>
+        <span class="cell-subtitle">≈1.0 GB · Q4_K_M · RAM 2.0 GB</span>
+      </div>
+      <button class="btn-secondary" style="padding:4px 12px;font-size:12px" onclick="showToast('Downloading Qwen2.5 1.5B…')">Get</button>
+    </div>
+
+    <div class="card-cell catalog-hidden" data-catalog-card data-catalog-extra>
+      <div class="cell-info">
+        <span class="cell-title">Qwen2.5 3B</span>
+        <span class="cell-subtitle">≈1.9 GB · Q4_K_M · RAM 2.5 GB</span>
+      </div>
+      <button class="btn-secondary" style="padding:4px 12px;font-size:12px" onclick="showToast('Downloading Qwen2.5 3B…')">Get</button>
     </div>
 
   </div>
+  <button id="catalogToggle" onclick="toggleCatalog()" style="width:100%;background:none;border:none;color:var(--accent-green);font-size:12.5px;font-weight:600;padding:8px 0;cursor:pointer">Show all 6 models</button>
+
+  <!-- Cloud APIs with per-key model override -->
+  <div class="section-label">Connected Cloud APIs</div>
+  <div class="card-group">
+    <div class="card-cell">
+      <div class="cell-info">
+        <span class="cell-title">Anthropic Claude</span>
+        <span class="cell-subtitle" style="font-family:var(--font-mono)">key stored · claude-sonnet-4-20250514</span>
+      </div>
+      <button class="btn-secondary" style="padding:4px 12px;font-size:12px" onclick="toggleApiDialog(true)">Edit</button>
+    </div>
+    <div class="card-cell">
+      <div class="cell-info">
+        <span class="cell-title">OpenAI GPT-4o</span>
+        <span class="cell-subtitle">No key — tap to connect</span>
+      </div>
+      <button class="btn-secondary" style="padding:4px 12px;font-size:12px" onclick="toggleApiDialog(true)">Connect</button>
+    </div>
+  </div>
+
+  <div id="apiDialog" class="catalog-hidden" style="position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:100;display:flex;align-items:center;justify-content:center;padding:24px">
+    <div style="background:var(--bg-surface);border:1px solid var(--border-subtle);border-radius:16px;padding:20px;width:100%;max-width:340px">
+      <div style="font-size:16px;font-weight:700;margin-bottom:4px">Anthropic Claude</div>
+      <a href="https://console.anthropic.com" target="_blank" style="font-size:12px;font-family:var(--font-mono);color:var(--accent-blue)">Get a key: console.anthropic.com</a>
+      <div style="font-size:12px;font-family:var(--font-mono);color:var(--accent-green);margin:6px 0 10px">Calls: claude-sonnet-4-20250514 (live)</div>
+      <label style="font-size:12px;color:var(--text-muted)">Model</label>
+      <input type="text" value="claude-sonnet-4-20250514" style="width:100%;margin:4px 0 10px;padding:8px 10px;border-radius:8px;border:1px solid var(--border-subtle);background:transparent;color:var(--text-primary);font-family:var(--font-mono);font-size:12.5px;box-sizing:border-box">
+      <label style="font-size:12px;color:var(--text-muted)">API key</label>
+      <input type="password" placeholder="sk-…" style="width:100%;margin:4px 0 12px;padding:8px 10px;border-radius:8px;border:1px solid var(--border-subtle);background:transparent;color:var(--text-primary);font-size:13px;box-sizing:border-box">
+      <div style="display:flex;justify-content:flex-end;gap:8px">
+        <button class="btn-secondary" onclick="toggleApiDialog(false)">Cancel</button>
+        <button class="btn-primary" onclick="toggleApiDialog(false);showToast('Anthropic connected')">Save &amp; Connect</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+  function toggleCatalog() {
+    const extras = document.querySelectorAll('[data-catalog-extra]');
+    const show = extras[0].classList.contains('catalog-hidden');
+    extras.forEach(el => el.classList.toggle('catalog-hidden', !show));
+    document.getElementById('catalogToggle').innerText = show ? 'Show less' : 'Show all 6 models';
+  }
+  function toggleApiDialog(open) {
+    document.getElementById('apiDialog').classList.toggle('catalog-hidden', !open);
+  }
+  function showToast(msg) {
+    let t = document.getElementById('mmToast');
+    if (!t) {
+      t = document.createElement('div');
+      t.id = 'mmToast';
+      t.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:rgba(47,47,47,0.95);color:#fff;padding:8px 18px;border-radius:9999px;font-size:13px;z-index:200;transition:opacity 0.2s;';
+      document.body.appendChild(t);
+    }
+    t.innerText = msg;
+    t.style.opacity = '1';
+    clearTimeout(t._h);
+    t._h = setTimeout(() => t.style.opacity = '0', 2000);
+  }
+  </script>
+
+  <style>.catalog-hidden { display: none !important; }</style>
 
 </div>
 

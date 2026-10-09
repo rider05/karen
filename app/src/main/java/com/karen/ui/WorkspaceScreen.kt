@@ -30,6 +30,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -43,7 +44,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-data class ProjectChat(val role: String, val text: String)
+data class ProjectChat(val role: String, val text: String, val tookMs: Long = 0L)
 data class ProjectTask(val text: String, val done: Boolean = false)
 data class ProjectStep(val text: String, val done: Boolean = false)
 data class Project(
@@ -325,6 +326,53 @@ private fun projectContextForModel(root: File, maxChars: Int = 9000): String {
     return sb.toString()
 }
 
+/** Webapp-mirror syntax colors: pink keywords, amber strings, blue types. */
+private val CODE_KEYWORD = Color(0xFFF472B6)
+private val CODE_STRING = Color(0xFFFBBF24)
+private val CODE_NUMBER = Color(0xFFFACC15)
+private val CODE_ANNOTATION = Color(0xFFC084FC)
+private val CODE_FUNCTION = Color(0xFF60A5FA)
+
+private val CODE_TOKEN = Regex(
+    """(//[^\n]*)|("(?:[^"\\\n]|\\.)*")|\b(\d[\d_]*(?:\.\d+)?)\b|\b(package|import|class|interface|object|fun|val|var|private|public|protected|internal|override|open|abstract|data|sealed|enum|if|else|when|for|while|do|return|break|continue|in|is|as|try|catch|finally|throw|this|super|null|true|false|const|lateinit|companion|suspend|inline|operator|infix)\b|(@\w+)|\b([A-Za-z_]\w*)(?=\s*\()"""
+)
+
+/** Single-pass tokenizer: comment > string > number > keyword > annotation > call. */
+private fun highlightCodeLine(
+    line: String,
+    base: Color,
+    muted: Color
+): AnnotatedString {
+    val builder = AnnotatedString.Builder()
+    var pos = 0
+    for (m in CODE_TOKEN.findAll(line)) {
+        if (m.range.first > pos) {
+            builder.pushStyle(SpanStyle(color = base))
+            builder.append(line.substring(pos, m.range.first))
+            builder.pop()
+        }
+        val style = when {
+            m.groupValues[1].isNotEmpty() -> SpanStyle(color = muted)
+            m.groupValues[2].isNotEmpty() -> SpanStyle(color = CODE_STRING)
+            m.groupValues[3].isNotEmpty() -> SpanStyle(color = CODE_NUMBER)
+            m.groupValues[4].isNotEmpty() -> SpanStyle(color = CODE_KEYWORD, fontWeight = FontWeight.SemiBold)
+            m.groupValues[5].isNotEmpty() -> SpanStyle(color = CODE_ANNOTATION)
+            m.groupValues[6].isNotEmpty() -> SpanStyle(color = CODE_FUNCTION)
+            else -> SpanStyle(color = base)
+        }
+        builder.pushStyle(style)
+        builder.append(m.value)
+        builder.pop()
+        pos = m.range.last + 1
+    }
+    if (pos < line.length) {
+        builder.pushStyle(SpanStyle(color = base))
+        builder.append(line.substring(pos))
+        builder.pop()
+    }
+    return builder.toAnnotatedString()
+}
+
 private fun fileIconFor(name: String, isDir: Boolean): androidx.compose.ui.graphics.vector.ImageVector {
     if (isDir) return Icons.Default.Folder
     return when (name.substringAfterLast('.', "").lowercase()) {
@@ -372,7 +420,8 @@ private suspend fun scaffoldWithModel(
     threads: Int,
     selectedModelName: String,
     windowTokens: Int,
-    modelOverride: String? = null
+    modelOverride: String? = null,
+    sendStartMs: Long = 0L
 ): String {
     val perFileCap = (windowTokens / 4).coerceIn(2000, 12000)
     val system = "You are a code projectator for Karen Workspace. Reply using this exact format:\n" +
@@ -445,8 +494,11 @@ private suspend fun scaffoldWithModel(
         if (next.isNullOrBlank()) break
         reply = next
     }
+    /** Stamps scaffold replies with send-relative timing (0 when unknown). */
+    fun scaffoldStamp(): Long =
+        if (sendStartMs > 0) System.currentTimeMillis() - sendStartMs else 0L
     if (allFiles.isEmpty()) {
-        project.chat.add(ProjectChat("assistant", "The model replied, but produced no parseable files."))
+        project.chat.add(ProjectChat("assistant", "The model replied, but produced no parseable files.", tookMs = scaffoldStamp()))
         return "0 files written"
     }
     val list = allFiles.toList()
@@ -455,7 +507,7 @@ private suspend fun scaffoldWithModel(
     // Validate: confirm every written file is really on disk, non-empty.
     val verdict = validateScaffoldFiles(project, list.map { it.first })
     val verifyNote = if (verdict.ok) " Verified on disk." else " WARNING: ${verdict.detail}."
-    project.chat.add(ProjectChat("assistant", "Scaffolded ${list.size} file(s)$chunkNote.\n${filesSummary(list)}$truncNote$verifyNote"))
+    project.chat.add(ProjectChat("assistant", "Scaffolded ${list.size} file(s)$chunkNote.\n${filesSummary(list)}$truncNote$verifyNote", tookMs = scaffoldStamp()))
     return "${list.size} file(s) written$chunkNote$truncNote$verifyNote"
 }
 
@@ -498,7 +550,7 @@ private fun saveProjectState(project: Project) {
     try {
         val dir = stateDir(project)
         File(dir, "chat.txt").writeText(
-            project.chat.takeLast(200).joinToString("\n") { "${it.role}\t${enc(it.text)}" }
+            project.chat.takeLast(200).joinToString("\n") { "${it.role}\t${enc(it.text)}\t${it.tookMs}" }
         )
         File(dir, "steps.txt").writeText(
             project.steps.joinToString("\n") { "${if (it.done) 1 else 0}\t${enc(it.text)}" }
@@ -518,9 +570,9 @@ private fun loadProjectState(project: Project): Boolean {
         var restored = false
         File(dir, "chat.txt").takeIf { it.exists() }?.let { f ->
             val items = f.readLines().mapNotNull { line ->
-                val p = line.split('\t', limit = 2)
+                val p = line.split('\t')
                 if (p.size < 2 || (p[0] != "user" && p[0] != "assistant")) null
-                else ProjectChat(p[0], dec(p[1]))
+                else ProjectChat(p[0], dec(p[1]), p.getOrNull(2)?.toLongOrNull() ?: 0L)
             }
             if (items.isNotEmpty()) {
                 project.chat.clear()
@@ -654,6 +706,11 @@ fun WorkspaceScreen(
         // Auto routing swaps in the best model for this prompt.
         val sendModel = routeFor(t)
         scope.launch {
+            val sendStartMs = System.currentTimeMillis()
+            /** Assistant replies stamp how long they took to appear. */
+            fun addAssistant(text: String) {
+                project.chat.add(ProjectChat("assistant", text, tookMs = System.currentTimeMillis() - sendStartMs))
+            }
             // 1. Plan steps derived from the ask (the model restructures on send).
             val steps = buildStepsFor(t)
             project.steps.clear()
@@ -673,7 +730,7 @@ fun WorkspaceScreen(
                 if (files.isEmpty()) return false
                 val summary = withContext(Dispatchers.IO) { writeScaffoldFiles(project, files) }
                 project.filesVersion = System.currentTimeMillis()
-                project.chat.add(ProjectChat("assistant", "Applied to ${project.name}: $summary\n${filesSummary(files)}"))
+                addAssistant("Applied to ${project.name}: $summary\n${filesSummary(files)}")
                 return true
             }
             // 3. SCAFFOLD tool: the model writes a full multi-file scaffold
@@ -693,9 +750,10 @@ fun WorkspaceScreen(
                         effort = effort, threads = threads,
                         selectedModelName = sendModel,
                         windowTokens = UserPrefs.contextTokens(ctx),
-                        modelOverride = cloudScaffold?.let { UserPrefs.apiModel(ctx, it.id) }.orEmpty().ifBlank { null }
+                        modelOverride = cloudScaffold?.let { UserPrefs.apiModel(ctx, it.id) }.orEmpty().ifBlank { null },
+                        sendStartMs = sendStartMs
                     )
-                    project.chat.add(ProjectChat("assistant", scaffoldMsg))
+                    addAssistant(scaffoldMsg)
                     project.filesVersion = System.currentTimeMillis()
                 }
             }
@@ -712,12 +770,9 @@ fun WorkspaceScreen(
                 } else {
                     ToolVerdict(true, "checks clean")
                 }
-                project.chat.add(
-                    ProjectChat(
-                        "assistant",
-                        if (verdict.ok) "Checks clean.\n$checksOut".take(1200)
-                        else "Checks failing: ${verdict.detail}\n$checksOut".take(1200)
-                    )
+                addAssistant(
+                    if (verdict.ok) "Checks clean.\n$checksOut".take(1200)
+                    else "Checks failing: ${verdict.detail}\n$checksOut".take(1200)
                 )
             }
             // 5. Web context — only with prior consent (asked once in Chat) + enabled.
@@ -769,28 +824,21 @@ fun WorkspaceScreen(
                         historyLimit = cloudLimit,
                         model = UserPrefs.apiModel(ctx, cloud.id).ifBlank { null }
                     )
-                    project.chat.add(ProjectChat("assistant", reply))
+                    project.chat.add(ProjectChat("assistant", reply, tookMs = System.currentTimeMillis() - sendStartMs))
                     applyModelFiles(reply)
                 } catch (e: CloudApiException) {
-                    project.chat.add(
-                        ProjectChat("assistant", "⚠ ${cloud.name} error (HTTP ${e.status}): ${e.message}")
-                    )
+                    addAssistant("⚠ ${cloud.name} error (HTTP ${e.status}): ${e.message}")
                 } catch (e: Exception) {
-                    project.chat.add(
-                        ProjectChat("assistant", "⚠ Could not reach ${cloud.name} — check internet and your API key. (${e.message})")
-                    )
+                    addAssistant("⚠ Could not reach ${cloud.name} — check internet and your API key. (${e.message})")
                 }
             } else if (weightFile != null) {
                 // Real on-device inference through the bundled llama.cpp core.
                 if (!KarenLlama.ready) {
-                    project.chat.add(ProjectChat("assistant", "Local runtime failed to load on this device."))
+                    addAssistant("Local runtime failed to load on this device.")
                 } else if (UserPrefs.thermalGuard(ctx) && device.batteryTempC >= UserPrefs.thermalLimitC(ctx)) {
-                    project.chat.add(
-                        ProjectChat(
-                            "assistant",
-                            "Paused by Thermal Guard — battery ${"%.0f".format(device.batteryTempC)}°C " +
-                                "is at/above your ${UserPrefs.thermalLimitC(ctx).toInt()}°C limit. Let the phone cool down."
-                        )
+                    addAssistant(
+                        "Paused by Thermal Guard — battery ${"%.0f".format(device.batteryTempC)}°C " +
+                            "is at/above your ${UserPrefs.thermalLimitC(ctx).toInt()}°C limit. Let the phone cool down."
                     )
                 } else {
                     try {
@@ -799,7 +847,7 @@ fun WorkspaceScreen(
                             KarenLlama.ensureLoaded(weightFile, sendModel, window, threads)
                         }
                         if (!loaded) {
-                            project.chat.add(ProjectChat("assistant", "Could not load $sendModel into RAM."))
+                            addAssistant("Could not load $sendModel into RAM.")
                         } else {
                             val pairs = mutableListOf<Pair<String, String>>()
                             pairs.add("user" to "Project files:\n$modelCtx")
@@ -822,29 +870,26 @@ fun WorkspaceScreen(
                                 )
                             }
                             if (reply.isNotBlank()) {
-                                project.chat.add(ProjectChat("assistant", reply))
+                                project.chat.add(ProjectChat("assistant", reply, tookMs = System.currentTimeMillis() - sendStartMs))
                                 applyModelFiles(reply)
                             } else {
-                                project.chat.add(ProjectChat("assistant", "The model returned an empty reply."))
+                                addAssistant("The model returned an empty reply.")
                             }
                         }
                     } catch (e: Exception) {
-                        project.chat.add(ProjectChat("assistant", "Local model error: ${e.message}"))
+                        addAssistant("Local model error: ${e.message}")
                     }
                 }
             } else if (web != null) {
-                project.chat.add(ProjectChat("assistant", "Fresh web results:\n$web"))
+                addAssistant("Fresh web results:\n$web")
             } else {
                 // No model answered: validate the web tool when it was the routed one.
                 val webVerdict = if (tool == WorkspaceTool.WEB) validateWebResult(web) else null
                 val webNote = if (webVerdict != null && !webVerdict.ok) {
                     " Web lookup came back empty — check connection and try again."
                 } else ""
-                project.chat.add(
-                    ProjectChat(
-                        "assistant",
-                        "Planned ${steps.size} steps and listed the project tree. See Plan / Code / Terminal.$webNote"
-                    )
+                addAssistant(
+                    "Planned ${steps.size} steps and listed the project tree. See Plan / Code / Terminal.$webNote"
                 )
             }
             saveProjectState(project)
@@ -876,6 +921,7 @@ fun WorkspaceScreen(
                             return@launch
                         }
                         chatBusy = true
+                        val menuStartMs = System.currentTimeMillis()
                         val threads = maxOf(2, minOf(6, Runtime.getRuntime().availableProcessors()))
                         val cloud = findCloudProviderByName(selectedModel)
                         val cloudKey = cloud?.let { UserPrefs.apiKey(ctx, it.id) }.orEmpty()
@@ -887,9 +933,10 @@ fun WorkspaceScreen(
                             effort = effort, threads = threads,
                             selectedModelName = selectedModel,
                             windowTokens = UserPrefs.contextTokens(ctx),
-                            modelOverride = cloud?.let { UserPrefs.apiModel(ctx, it.id) }.orEmpty().ifBlank { null }
+                            modelOverride = cloud?.let { UserPrefs.apiModel(ctx, it.id) }.orEmpty().ifBlank { null },
+                            sendStartMs = menuStartMs
                         )
-                        target.chat.add(ProjectChat("assistant", scaffold))
+                        target.chat.add(ProjectChat("assistant", scaffold, tookMs = System.currentTimeMillis() - menuStartMs))
                         target.filesVersion = System.currentTimeMillis()
                         saveProjectState(target)
                         chatBusy = false
@@ -1242,6 +1289,15 @@ fun WorkspaceScreen(
                                 )
                             }
                         }
+                        if (m.tookMs > 0) {
+                            Text(
+                                text = "took ${formatDuration(m.tookMs)}",
+                                color = colors.textMuted,
+                                fontSize = 10.5.sp,
+                                fontFamily = FontFamily.Monospace,
+                                modifier = Modifier.padding(top = 2.dp)
+                            )
+                        }
                     }
                 }
             }
@@ -1268,14 +1324,14 @@ fun WorkspaceScreen(
             }
         }
 
-        // Artifact tabs (outputs only — Chat lives above, Tasks live in Plan)
+        // Artifact tabs — webapp-mirror pill bar.
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 4.dp)
-                .clip(RoundedCornerShape(10.dp))
+                .clip(RoundedCornerShape(50.dp))
                 .background(colors.surface)
-                .border(1.dp, colors.border, RoundedCornerShape(10.dp))
+                .border(1.dp, colors.border, RoundedCornerShape(50.dp))
                 .padding(3.dp)
         ) {
             tabs.forEach { tab ->
@@ -1283,15 +1339,20 @@ fun WorkspaceScreen(
                 Box(
                     modifier = Modifier
                         .weight(1f)
-                        .clip(RoundedCornerShape(8.dp))
+                        .clip(RoundedCornerShape(50.dp))
                         .background(if (isSelected) colors.surfaceHover else Color.Transparent)
+                        .border(
+                            1.dp,
+                            if (isSelected) colors.accentGreen.copy(alpha = 0.45f) else Color.Transparent,
+                            RoundedCornerShape(50.dp)
+                        )
                         .clickable { activeTab = tab }
                         .padding(vertical = 6.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
                         text = tab,
-                        color = if (isSelected) colors.textPrimary else colors.textMuted,
+                        color = if (isSelected) colors.accentGreen else colors.textMuted,
                         fontSize = 12.sp,
                         fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal
                     )
@@ -1388,6 +1449,7 @@ private fun CodeCanvasView(project: Project) {
     var savedText by remember(project) { mutableStateOf("") }
     var loadedFor by remember(project) { mutableStateOf<String?>(null) }
     var dirty by remember { mutableStateOf(false) }
+    var previewMode by remember { mutableStateOf(true) }
     var binaryNote by remember(project) { mutableStateOf<String?>(null) }
     var status by remember(project) { mutableStateOf<String?>(null) }
     var statusOk by remember(project) { mutableStateOf(true) }
@@ -1460,6 +1522,7 @@ private fun CodeCanvasView(project: Project) {
         savedText = text
         loadedFor = rel
         dirty = false
+        previewMode = true
     }
 
     // Initial + model-write refresh. Typing never triggers this — only
@@ -1630,6 +1693,47 @@ private fun CodeCanvasView(project: Project) {
                             Text(currentFile.name, color = colors.textSecondary, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
                         }
                     }
+                } else if (previewMode) {
+                    // Webapp-mirror colored preview: line numbers + syntax tint.
+                    val previewLines = remember(content) { content.lines() }
+                    SelectionContainer {
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(if (colors.isDark) Color(0xFF0F0F11) else Color(0xFFF4F4F5))
+                                .border(1.dp, colors.border, RoundedCornerShape(8.dp))
+                                .padding(vertical = 8.dp)
+                        ) {
+                            items(previewLines.size) { idx ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 10.dp, vertical = 1.dp)
+                                ) {
+                                    Text(
+                                        "${idx + 1}",
+                                        color = colors.textMuted,
+                                        fontSize = 11.5.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        modifier = Modifier.width(28.dp)
+                                    )
+                                    Text(
+                                        highlightCodeLine(
+                                            previewLines[idx].ifBlank { " " },
+                                            colors.textPrimary,
+                                            colors.textMuted
+                                        ),
+                                        fontSize = 12.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        lineHeight = 18.sp,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+                            }
+                        }
+                    }
                 } else {
                     OutlinedTextField(
                         value = content,
@@ -1641,6 +1745,21 @@ private fun CodeCanvasView(project: Project) {
                 }
                 Spacer(Modifier.height(6.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedButton(
+                        onClick = { previewMode = !previewMode },
+                        enabled = currentFile != null && binaryNote == null,
+                        shape = RoundedCornerShape(8.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                    ) {
+                        Icon(
+                            if (previewMode) Icons.Default.Edit else Icons.Default.Visibility,
+                            contentDescription = if (previewMode) "Edit" else "Preview",
+                            tint = colors.textSecondary,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(if (previewMode) "Edit" else "Preview", fontSize = 11.5.sp)
+                    }
                     Button(
                         onClick = {
                             val f = currentFile ?: return@Button
@@ -2130,7 +2249,7 @@ private fun PlanCanvasView(project: Project) {
                                 Text(verifyMsg!!.second, color = colors.accentAmber, fontSize = 11.5.sp)
                             } else if (!s.done) {
                                 Text(
-                                    "Tap the box to verify against project state",
+                                    "Tap the step to verify against project state",
                                     color = colors.textMuted,
                                     fontSize = 10.5.sp,
                                     modifier = Modifier.padding(top = 2.dp)

@@ -1306,7 +1306,7 @@ fun UserMessageBubble(
                                 shape = RoundedCornerShape(8.dp),
                                 contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
                             ) {
-                                Text("Save", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
+                                Text("Send", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
                             }
                         }
                     }
@@ -2051,6 +2051,40 @@ fun AttachmentSheet(
  * Slide-out Navigation Drawer matching ChatGPT Mobile
  */
 @Composable
+private fun DrawerSectionHeader(
+    title: String,
+    collapsed: Boolean,
+    onToggle: () -> Unit
+) {
+    val colors = LocalKarenColors.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .clickable { onToggle() }
+            .padding(vertical = 6.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = title,
+            color = colors.textMuted,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.SemiBold
+        )
+        Icon(
+            imageVector = if (collapsed) Icons.Default.KeyboardArrowDown else Icons.Default.KeyboardArrowUp,
+            contentDescription = if (collapsed) "Expand $title" else "Collapse $title",
+            tint = colors.textMuted,
+            modifier = Modifier.size(16.dp)
+        )
+    }
+}
+
+/**
+ * Slide-out Navigation Drawer matching ChatGPT Mobile
+ */
+@Composable
 fun ChatGPTDrawerContent(
     currentScreen: String = "Chat",
     onNavigate: (String) -> Unit = {},
@@ -2063,6 +2097,9 @@ fun ChatGPTDrawerContent(
     val colors = LocalKarenColors.current
     val currentMode = LocalKarenThemeMode.current
     var searchQuery by remember { mutableStateOf("") }
+    var toolsCollapsed by remember { mutableStateOf(false) }
+    var managersCollapsed by remember { mutableStateOf(false) }
+    var historyCollapsed by remember { mutableStateOf(false) }
     val drawerCtx = androidx.compose.ui.platform.LocalContext.current
     val conversations = remember(historyVersion) { ChatHistoryStore.loadConversations(drawerCtx) }
     val visibleConversations = remember(conversations, searchQuery) {
@@ -2162,69 +2199,80 @@ fun ChatGPTDrawerContent(
         ) {
             // Section Capabilities & Tools (system screens first)
             item {
-                Text(
-                    "Capabilities & Tools",
-                    color = colors.textMuted,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.padding(vertical = 6.dp)
+                DrawerSectionHeader(
+                    title = "Capabilities & Tools",
+                    collapsed = toolsCollapsed,
+                    onToggle = { toolsCollapsed = !toolsCollapsed }
                 )
-                DrawerNavItem("Home Dashboard", Icons.Default.Home, currentScreen == "Home") {
-                    onNavigate("Home"); onCloseDrawer()
-                }
-                DrawerNavItem("Advanced Voice Mode", Icons.Default.GraphicEq, currentScreen == "Voice") {
-                    onNavigate("Voice"); onCloseDrawer()
-                }
-                DrawerNavItem("Dev Workspace / Canvas", Icons.Default.Terminal, currentScreen == "Workspace") {
-                    onNavigate("Workspace"); onCloseDrawer()
-                }
-                DrawerNavItem("Knowledge Vault & Files", Icons.Default.Folder, currentScreen == "Files") {
-                    onNavigate("Files"); onCloseDrawer()
-                }
-                DrawerNavItem("Memory & Preferences", Icons.Default.Psychology, currentScreen == "Memory") {
-                    onNavigate("Memory"); onCloseDrawer()
-                }
-                DrawerNavItem("Local Models (GGUF)", Icons.Default.Memory, currentScreen == "ModelManager") {
-                    onNavigate("ModelManager"); onCloseDrawer()
-                }
-                DrawerNavItem("Performance & TTFT", Icons.Default.Speed, currentScreen == "Performance") {
-                    onNavigate("Performance"); onCloseDrawer()
-                }
-                DrawerNavItem("Hardware & Governance", Icons.Default.Shield, currentScreen == "Hardware") {
-                    onNavigate("Hardware"); onCloseDrawer()
+                AnimatedVisibility(visible = !toolsCollapsed) {
+                    Column {
+                        DrawerNavItem("Home Dashboard", Icons.Default.Home, currentScreen == "Home") {
+                            onNavigate("Home"); onCloseDrawer()
+                        }
+                        DrawerNavItem("Advanced Voice Mode", Icons.Default.GraphicEq, currentScreen == "Voice") {
+                            onNavigate("Voice"); onCloseDrawer()
+                        }
+                        DrawerNavItem("Dev Workspace / Canvas", Icons.Default.Terminal, currentScreen == "Workspace") {
+                            onNavigate("Workspace"); onCloseDrawer()
+                        }
+                        DrawerNavItem("Knowledge Vault & Files", Icons.Default.Folder, currentScreen == "Files") {
+                            onNavigate("Files"); onCloseDrawer()
+                        }
+                        DrawerNavItem("Memory & Preferences", Icons.Default.Psychology, currentScreen == "Memory") {
+                            onNavigate("Memory"); onCloseDrawer()
+                        }
+                        DrawerNavItem("Local Models (GGUF)", Icons.Default.Memory, currentScreen == "ModelManager") {
+                            onNavigate("ModelManager"); onCloseDrawer()
+                        }
+                        DrawerNavItem("Performance & TTFT", Icons.Default.Speed, currentScreen == "Performance") {
+                            onNavigate("Performance"); onCloseDrawer()
+                        }
+                        DrawerNavItem("Hardware & Governance", Icons.Default.Shield, currentScreen == "Hardware") {
+                            onNavigate("Hardware"); onCloseDrawer()
+                        }
+                    }
                 }
                 Spacer(Modifier.height(6.dp))
-                Text(
-                    "Managers · v2.2 preview",
-                    color = colors.textMuted,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.padding(vertical = 6.dp)
+                DrawerSectionHeader(
+                    title = "Managers · v2.2 preview",
+                    collapsed = managersCollapsed,
+                    onToggle = { managersCollapsed = !managersCollapsed }
                 )
-                DrawerNavItem("Model Import", Icons.Default.FolderOpen, currentScreen == "ModelImport") {
-                    onNavigate("ModelImport"); onCloseDrawer()
-                }
-                DrawerNavItem("Model Export", Icons.Default.Upload, currentScreen == "ModelExport") {
-                    onNavigate("ModelExport"); onCloseDrawer()
-                }
-                DrawerNavItem("Memory Transfer", Icons.Default.Sync, currentScreen == "MemoryTransfer") {
-                    onNavigate("MemoryTransfer"); onCloseDrawer()
-                }
-                DrawerNavItem("Backup Package", Icons.Default.Archive, currentScreen == "BackupPackage") {
-                    onNavigate("BackupPackage"); onCloseDrawer()
-                }
-                DrawerNavItem("Karen Storage", Icons.Default.Storage, currentScreen == "StorageManager") {
-                    onNavigate("StorageManager"); onCloseDrawer()
-                }
-                DrawerNavItem("Device Migration", Icons.Default.SwapHoriz, currentScreen == "Migration") {
-                    onNavigate("Migration"); onCloseDrawer()
+                AnimatedVisibility(visible = !managersCollapsed) {
+                    Column {
+                        DrawerNavItem("Model Import", Icons.Default.FolderOpen, currentScreen == "ModelImport") {
+                            onNavigate("ModelImport"); onCloseDrawer()
+                        }
+                        DrawerNavItem("Model Export", Icons.Default.Upload, currentScreen == "ModelExport") {
+                            onNavigate("ModelExport"); onCloseDrawer()
+                        }
+                        DrawerNavItem("Memory Transfer", Icons.Default.Sync, currentScreen == "MemoryTransfer") {
+                            onNavigate("MemoryTransfer"); onCloseDrawer()
+                        }
+                        DrawerNavItem("Backup Package", Icons.Default.Archive, currentScreen == "BackupPackage") {
+                            onNavigate("BackupPackage"); onCloseDrawer()
+                        }
+                        DrawerNavItem("Karen Storage", Icons.Default.Storage, currentScreen == "StorageManager") {
+                            onNavigate("StorageManager"); onCloseDrawer()
+                        }
+                        DrawerNavItem("Device Migration", Icons.Default.SwapHoriz, currentScreen == "Migration") {
+                            onNavigate("Migration"); onCloseDrawer()
+                        }
+                    }
                 }
                 Spacer(Modifier.height(12.dp))
             }
 
             // Chat history from local storage, grouped by recency.
             item {
-                if (visibleConversations.isEmpty()) {
+                DrawerSectionHeader(
+                    title = "Conversations (${visibleConversations.size})",
+                    collapsed = historyCollapsed,
+                    onToggle = { historyCollapsed = !historyCollapsed }
+                )
+                AnimatedVisibility(visible = !historyCollapsed) {
+                    Column {
+                        if (visibleConversations.isEmpty()) {
                     Text(
                         if (searchQuery.isBlank()) "No saved chats yet — they appear here after your first message."
                         else "No chats match your search.",
@@ -2291,6 +2339,8 @@ fun ChatGPTDrawerContent(
                             Spacer(Modifier.height(6.dp))
                         }
                     }
+                }
+                }
                 }
                 Spacer(Modifier.height(12.dp))
             }

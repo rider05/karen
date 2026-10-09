@@ -71,7 +71,8 @@ object ChatHistoryStore {
                         id = "asst_${id}_$i",
                         thought = dec(parts[1]).ifEmpty { null },
                         toolCall = dec(parts[2]).ifEmpty { null },
-                        text = dec(parts[3])
+                        text = dec(parts[3]),
+                        tookMs = parts.getOrNull(4)?.toLongOrNull() ?: 0L
                     )
                 }
                 else -> null
@@ -86,7 +87,7 @@ object ChatHistoryStore {
         val lines = messages.map { item ->
             when (item) {
                 is ChatItem.User -> "U\t${enc(item.text)}\t${enc(item.attachments.joinToString("\n") { it.name })}"
-                is ChatItem.Assistant -> "A\t${enc(item.thought ?: "")}\t${enc(item.toolCall ?: "")}\t${enc(item.text)}"
+                is ChatItem.Assistant -> "A\t${enc(item.thought ?: "")}\t${enc(item.toolCall ?: "")}\t${enc(item.text)}\t${item.tookMs}"
             }
         }
         chatFile(ctx, id).writeText(lines.joinToString("\n"))
@@ -108,9 +109,38 @@ object ChatHistoryStore {
         )
     }
 
-    private fun titleOf(text: String): String {
-        val oneLine = text.replace('\n', ' ').trim()
-        return if (oneLine.length <= MAX_TITLE) oneLine.ifEmpty { "New chat" }
-        else oneLine.take(MAX_TITLE).trimEnd() + "…"
+    /** Short summary title from the first prompt: politeness filler stripped,
+        key words kept, capped at [MAX_TITLE]. Falls back to "New chat". */
+    fun summarizeTitle(text: String): String {
+        var s = text.replace('\n', ' ').replace(Regex("\\s+"), " ").trim()
+        if (s.isEmpty()) return "New chat"
+        var changed = true
+        while (changed && s.isNotEmpty()) {
+            changed = false
+            for (filler in TITLE_FILLERS) {
+                val m = filler.find(s)
+                if (m != null && m.range.first == 0 && m.range.last + 1 < s.length) {
+                    s = s.substring(m.range.last + 1).trim()
+                    changed = true
+                    break
+                }
+            }
+        }
+        if (s.isEmpty()) return "New chat"
+        var title = s.split(' ').filter { it.isNotBlank() }.take(7).joinToString(" ")
+        title = title.trimEnd('?', ' ', '.', '!')
+        if (title.isEmpty()) return "New chat"
+        return if (title.length <= MAX_TITLE) title else title.take(MAX_TITLE).trimEnd() + "…"
     }
+
+    private val TITLE_FILLERS = listOf(
+        Regex("^please\\s+", RegexOption.IGNORE_CASE),
+        Regex("^(hi|hey|hello)[,.]?\\s+", RegexOption.IGNORE_CASE),
+        Regex("^(can|could|would)\\s+you\\s+", RegexOption.IGNORE_CASE),
+        Regex("^(i|we)\\s+(want|need|would like)\\s+(you\\s+)?to\\s+", RegexOption.IGNORE_CASE),
+        Regex("^help\\s+me\\s+(to\\s+)?", RegexOption.IGNORE_CASE),
+        Regex("^(give|show|tell)\\s+me\\s+", RegexOption.IGNORE_CASE)
+    )
+
+    private fun titleOf(text: String): String = summarizeTitle(text)
 }

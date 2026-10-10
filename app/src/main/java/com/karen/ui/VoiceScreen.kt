@@ -24,8 +24,15 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.launch
 import com.karen.rememberDeviceTelemetry
 import com.karen.rememberVoiceStt
+
+/** Spoken-reply instruction: short, human, TTS-safe answers for voice mode. */
+const val VOICE_REPLY_STYLE =
+    "Reply as natural human speech for text-to-speech: 1-3 short spoken sentences, " +
+        "warm and conversational, plain words only — no markdown, no lists, no tables, " +
+        "no code, no emojis, no stage directions, no bullet points."
 
 @Composable
 fun VoiceScreen(
@@ -44,18 +51,89 @@ fun VoiceScreen(
         onDispose { TtsManager.stop() }
     }
 
+    val colors = LocalKarenColors.current
+    val personaCtx = androidx.compose.ui.platform.LocalContext.current
+    var voicePersona by remember { mutableStateOf(UserPrefs.voicePersona(personaCtx)) }
+    var personaMenu by remember { mutableStateOf(false) }
+
+    // Voice chat loop: STT transcript → model API → human-spoken TTS reply.
+    var voiceBusy by remember { mutableStateOf(false) }
+    var voiceReply by remember { mutableStateOf("") }
+    var cancelVoice by remember { mutableStateOf(false) }
+    val voiceScope = rememberCoroutineScope()
+
+    fun runVoiceTurn(prompt: String) {
+        val text = prompt.trim()
+        if (text.isBlank() || voiceBusy) return
+        voiceBusy = true
+        cancelVoice = false
+        voiceReply = ""
+        voiceScope.launch {
+            try {
+                val locals = UserPrefs.models(personaCtx)
+                    .filter { !isCloudProviderName(it) && ModelDownloader.isRunnableWeight(personaCtx, it) }
+                val keyed = cloudProviders.filter { UserPrefs.apiKey(personaCtx, it.id).isNotBlank() }
+                val pick = routeModel(text, locals, keyed, UserPrefs.autoCloud(personaCtx))?.modelName
+                    ?: UserPrefs.selectedModel(personaCtx).takeIf { isSelectableModel(personaCtx, it) }
+                val cloud = pick?.let { findCloudProviderByName(it) }
+                val key = cloud?.let { UserPrefs.apiKey(personaCtx, it.id) }.orEmpty()
+                val answer = if (cloud != null && key.isNotBlank()) {
+                    cloud.complete(
+                        key,
+                        listOf("user" to "$VOICE_REPLY_STYLE\n\n$text"),
+                        maxTokensFor("Low"),
+                        thinkingBudget = null,
+                        historyLimit = 4,
+                        model = UserPrefs.apiModel(personaCtx, cloud.id).ifBlank { null }
+                    )
+                } else {
+                    val modelName = pick
+                    val wf = if (cloud == null && modelName != null) ModelDownloader.weightFileFor(personaCtx, modelName) else null
+                    if (wf != null && KarenLlama.ready && modelName != null) {
+                        val threads = maxOf(2, minOf(6, Runtime.getRuntime().availableProcessors()))
+                        val ok = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            KarenLlama.ensureLoaded(wf, modelName, 2048, threads)
+                        }
+                        if (!ok || cancelVoice) null
+                        else kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            KarenLlama.complete(
+                                "You are Karen, a voice assistant. $VOICE_REPLY_STYLE",
+                                arrayOf("user"),
+                                arrayOf(text),
+                                maxTokensFor("Low")
+                            )
+                        }
+                    } else null
+                }
+                if (cancelVoice) return@launch
+                val said = answer?.trim().orEmpty()
+                if (said.isNotBlank()) {
+                    voiceReply = said
+                    TtsManager.speak(personaCtx, said, voicePersona)
+                } else {
+                    voiceReply = "I couldn't answer that. Connect a model in Model Manager to chat by voice."
+                    TtsManager.speak(personaCtx, voiceReply, voicePersona)
+                }
+            } catch (e: Exception) {
+                if (!cancelVoice) {
+                    voiceReply = "Sorry, something went wrong."
+                    TtsManager.speak(personaCtx, voiceReply, voicePersona)
+                }
+            } finally {
+                voiceBusy = false
+            }
+        }
+    }
+
     val voiceStt = rememberVoiceStt(
         onResult = { result ->
             userSpokenText = result
+            runVoiceTurn(result)
         },
         onPartialResult = { interim ->
             userSpokenText = interim
         }
     )
-    val colors = LocalKarenColors.current
-    val personaCtx = androidx.compose.ui.platform.LocalContext.current
-    var voicePersona by remember { mutableStateOf(UserPrefs.voicePersona(personaCtx)) }
-    var personaMenu by remember { mutableStateOf(false) }
 
     val infiniteTransition = rememberInfiniteTransition(label = "voice_orb")
 
@@ -221,7 +299,10 @@ fun VoiceScreen(
                 modifier = Modifier
                     .size(240.dp)
                     .clickable {
-                        if (voiceStt.state.isListening) {
+                        if (voiceBusy) {
+                            cancelVoice = true
+                            TtsManager.stop()
+                        } else if (voiceStt.state.isListening) {
                             voiceStt.stopListening()
                         } else {
                             voiceStt.startListening()
@@ -329,12 +410,12 @@ fun VoiceScreen(
                 )
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    text = if (userSpokenText.isNotEmpty() && !isSpeaking) {
-                        "“$userSpokenText”"
-                    } else if (isSpeaking) {
-                        "No data found"
-                    } else {
-                        "Tap orb to speak. Karen native STT is ready..."
+                    text = when {
+                        voiceStt.state.isListening -> "YOU (LISTENING...)"
+                        voiceBusy -> "Thinking…"
+                        voiceReply.isNotBlank() -> "“$voiceReply”"
+                        userSpokenText.isNotEmpty() -> "“$userSpokenText”"
+                        else -> "Tap orb to speak. Karen native STT is ready..."
                     },
                     color = colors.textPrimary,
                     fontSize = 14.5.sp,

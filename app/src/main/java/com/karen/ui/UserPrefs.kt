@@ -93,6 +93,15 @@ object UserPrefs {
         prefs(ctx).edit().putString(KEY_API_MODEL_PREFIX + providerId, model.trim()).apply()
     }
 
+    // Premium Visual Technical Explainer Mode: structured answers with
+    // diagrams, tables, checklists, and labeled code blocks. On by default
+    // (docs/premium_visual_technical_explainer_prompt.md).
+    private const val KEY_EXPLAINER = "explainer_mode"
+    fun explainerMode(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_EXPLAINER, true)
+    fun setExplainerMode(ctx: Context, enabled: Boolean) {
+        prefs(ctx).edit().putBoolean(KEY_EXPLAINER, enabled).apply()
+    }
+
     // Auto model routing: pick the best installed/connected model per task.
     private const val KEY_AUTO_ROUTE = "auto_route"
     fun autoRoute(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_AUTO_ROUTE, true)

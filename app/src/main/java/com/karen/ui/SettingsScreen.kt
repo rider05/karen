@@ -254,6 +254,30 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                             )
                         )
                     }
+                    var explainerPref by remember { mutableStateOf(UserPrefs.explainerMode(context)) }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Premium Explainer Style", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
+                            Text("Structured answers: titles, tables, diagrams, checklists, code", color = colors.textMuted, fontSize = 11.5.sp)
+                        }
+                        Switch(
+                            checked = explainerPref,
+                            onCheckedChange = {
+                                explainerPref = it
+                                UserPrefs.setExplainerMode(context, it)
+                            },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color.White,
+                                checkedTrackColor = colors.accentGreen,
+                                uncheckedThumbColor = colors.textMuted,
+                                uncheckedTrackColor = colors.surfaceHover
+                            )
+                        )
+                    }
                     // Default chat effort (per-level colors, theme-aware)
                     Text("Default Chat Effort", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {

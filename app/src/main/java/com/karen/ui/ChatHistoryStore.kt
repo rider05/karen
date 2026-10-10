@@ -67,12 +67,15 @@ object ChatHistoryStore {
                     )
                 }
                 "A" -> if (parts.size < 4) null else {
+                    val body = dec(parts[3])
                     ChatItem.Assistant(
                         id = "asst_${id}_$i",
                         thought = dec(parts[1]).ifEmpty { null },
                         toolCall = dec(parts[2]).ifEmpty { null },
-                        text = dec(parts[3]),
-                        tookMs = parts.getOrNull(4)?.toLongOrNull() ?: 0L
+                        text = body,
+                        tookMs = parts.getOrNull(4)?.toLongOrNull() ?: 0L,
+                        tokens = parts.getOrNull(5)?.toIntOrNull() ?: body.length / 4,
+                        interrupted = parts.getOrNull(6) == "1"
                     )
                 }
                 else -> null
@@ -87,7 +90,7 @@ object ChatHistoryStore {
         val lines = messages.map { item ->
             when (item) {
                 is ChatItem.User -> "U\t${enc(item.text)}\t${enc(item.attachments.joinToString("\n") { it.name })}"
-                is ChatItem.Assistant -> "A\t${enc(item.thought ?: "")}\t${enc(item.toolCall ?: "")}\t${enc(item.text)}\t${item.tookMs}"
+                is ChatItem.Assistant -> "A\t${enc(item.thought ?: "")}\t${enc(item.toolCall ?: "")}\t${enc(item.text)}\t${item.tookMs}\t${item.tokens}\t${if (item.interrupted) 1 else 0}"
             }
         }
         chatFile(ctx, id).writeText(lines.joinToString("\n"))

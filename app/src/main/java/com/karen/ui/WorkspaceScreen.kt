@@ -797,7 +797,8 @@ fun WorkspaceScreen(
                     "Maintain the existing file structure. When changing code, output each changed file as " +
                     "///FILE: relative/path\n<complete file content>\n///END (up to 8 files, no fences, no prose inside blocks), " +
                     "then a 1-2 line summary. For discussion-only replies, answer normally with no ///FILE blocks." +
-                    if (isReasoningModel(sendModel)) reasoningEffortHint(effort) else ""
+                    if (isReasoningModel(sendModel)) reasoningEffortHint(effort) else "" +
+                    if (UserPrefs.explainerMode(ctx)) " $EXPLAINER_STYLE_GUIDE" else ""
             // 6. Assistant reply — live cloud call, on-device GGUF, else canned.
             val cloud = findCloudProviderByName(sendModel)
             val cloudKey = cloud?.let { UserPrefs.apiKey(ctx, it.id) }.orEmpty()

@@ -10,6 +10,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -44,9 +45,16 @@ sealed class ChatItem {
         val showCalendarAction: Boolean = false,
         val codeJson: String? = null,
         /** How long this reply took to generate, ms. 0 = unknown/not finished. */
-        val tookMs: Long = 0L
+        val tookMs: Long = 0L,
+        /** Approx. reply tokens (chars/4). 0 = unknown/not finished. */
+        val tokens: Int = 0,
+        /** True when this reply was cut short by Stop. */
+        val interrupted: Boolean = false
     ) : ChatItem()
 }
+
+/** A prompt typed while the model was busy, run after the current reply. */
+data class QueuedPrompt(val text: String, val attachments: List<Attachment> = emptyList())
 
 /** An attachment picked from the device, pending to be added to the chat. */
 data class Attachment(val name: String, val sizeBytes: Long, val mime: String? = null)
@@ -238,6 +246,20 @@ fun ChatScreen(
         mutableStateListOf<ChatItem>()
     }
     var conversationId by remember { mutableStateOf(System.currentTimeMillis().toString()) }
+    // Prompts typed while the model was busy: run in order after each reply.
+    val queue = remember { mutableStateListOf<QueuedPrompt>() }
+    // Id of a queued user message awaiting its turn (set by completeSettle).
+    var pendingDrainId by remember { mutableStateOf<String?>(null) }
+
+    /** Parks the current composer text to run after the in-flight reply. */
+    fun enqueueCurrent() {
+        val userText = input.trim()
+        if (userText.isBlank() && attachments.isEmpty()) return
+        val sentAttachments = attachments
+        input = ""
+        attachments = emptyList()
+        queue.add(QueuedPrompt(userText.ifBlank { sentAttachments.joinToString(", ") { it.name } }, sentAttachments))
+    }
 
     /** Writes the current conversation to local history (skipped for temporary chats). */
     fun persist() {
@@ -260,6 +282,20 @@ fun ChatScreen(
         }
     }
 
+    /**
+     * Follows new output only when the user is already near the bottom —
+     * scrolled-up readers are never yanked (free to scroll while streaming).
+     */
+    suspend fun scrollToBottomIfNear() {
+        try {
+            val info = listState.layoutInfo
+            val total = info.totalItemsCount
+            if (total == 0) return
+            val lastVisible = info.visibleItemsInfo.lastOrNull()?.index ?: return
+            if (total - 1 - lastVisible <= 2) listState.scrollToItem(total - 1)
+        } catch (_: Exception) {}
+    }
+
     fun setStats(finalLen: Int) {
         val elapsed = (System.currentTimeMillis() - streamStartMs) / 1000.0
         val tok = finalLen / 4
@@ -277,18 +313,20 @@ fun ChatScreen(
             setStreamingText(id, text.substring(0, idx + 1))
             n++
             if (n % 8 == 0) {
-                try { listState.scrollToItem(messages.size - 1) } catch (_: Exception) {}
+                scrollToBottomIfNear()
             }
             kotlinx.coroutines.delay(effortDelayMs(effort))
         }
     }
 
     /** Stamps the finished reply with how long it took (even when stopped). */
-    fun stampTook(id: String) {
+    fun stampTook(id: String, tokens: Int? = null) {
         val elapsed = System.currentTimeMillis() - streamStartMs
         val i = messages.indexOfFirst { (it as? ChatItem.Assistant)?.id == id }
         if (i >= 0) {
-            (messages[i] as? ChatItem.Assistant)?.let { messages[i] = it.copy(tookMs = elapsed) }
+            (messages[i] as? ChatItem.Assistant)?.let {
+                messages[i] = it.copy(tookMs = elapsed, tokens = tokens ?: it.text.length / 4)
+            }
         }
     }
 
@@ -298,35 +336,46 @@ fun ChatScreen(
             messages.removeAll { (it as? ChatItem.Assistant)?.id == id }
         } else {
             stampTook(id)
+            val i = messages.indexOfFirst { (it as? ChatItem.Assistant)?.id == id }
+            if (i >= 0) {
+                (messages[i] as? ChatItem.Assistant)?.let { messages[i] = it.copy(interrupted = true) }
+            }
             persist()
         }
         isGenerating = false
         streamingId = null
         genLive = null
-        listState.animateScrollToItem(messages.size - 1)
+        scrollToBottomIfNear()
     }
 
-    /** End-of-generation on success: stamp stats and archive. */
+    /** End-of-generation on success: stamp stats, archive, then run queued prompts. */
     suspend fun completeSettle(finalLen: Int) {
-        streamingId?.let { stampTook(it) }
+        streamingId?.let { stampTook(it, finalLen / 4) }
         setStats(finalLen)
         persist()
         isGenerating = false
         streamingId = null
         genLive = null
-        listState.animateScrollToItem(messages.size - 1)
+        scrollToBottomIfNear()
+        // Queued prompts (typed while busy) run now, one following the other.
+        if (queue.isNotEmpty()) {
+            val q = queue.removeAt(0)
+            val qid = "user_${System.currentTimeMillis()}"
+            messages.add(ChatItem.User(id = qid, text = q.text, attachments = q.attachments))
+            pendingDrainId = qid
+        }
     }
 
     /** Failed turn: show the error inline in the provisional bubble. */
     suspend fun errorSettle(id: String, text: String) {
         streamingContent = true
         setStreamingText(id, text)
-        stampTook(id)
+        stampTook(id, 0)
         persist()
         isGenerating = false
         streamingId = null
         genLive = null
-        listState.animateScrollToItem(messages.size - 1)
+        scrollToBottomIfNear()
     }
 
     /**
@@ -358,7 +407,7 @@ fun ChatScreen(
             messages.add(ChatItem.Assistant(id = aid, text = ""))
             streamingId = aid
             isGenerating = true
-            listState.animateScrollToItem(messages.size - 1)
+            scrollToBottomIfNear()
             // Web search tool: runs when the message needs fresh info,
             // gated by the one-time permission dialog on first use.
             var web: String? = null
@@ -407,11 +456,16 @@ fun ChatScreen(
                     val instructed = if (regenerateHint != null) {
                         (history + ("user" to regenerateHint)).takeLast(limit)
                     } else history
+                    // Explainer Mode: style the answer being generated without
+                    // touching stored history.
+                    val styled = if (UserPrefs.explainerMode(context) && instructed.isNotEmpty() && instructed.last().first == "user") {
+                        instructed.dropLast(1) + ("user" to instructed.last().second + "\n\n" + EXPLAINER_STYLE_GUIDE)
+                    } else instructed
                     // Recursively continue cut-off replies: when the model hits
                     // its output cap it stops mid-answer, so keep asking for
                     // the rest instead of making the user type "continue".
                     val fullReply = StringBuilder()
-                    var roundHistory = instructed
+                    var roundHistory = styled
                     var rounds = 0
                     var cut = true
                     while (cut && rounds < 4 && !cancelGeneration) {
@@ -488,7 +542,8 @@ fun ChatScreen(
                             val reply = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                                 KarenLlama.complete(
                                     "You are Karen, a concise on-device assistant." +
-                                        if (isReasoningModel(sendModel)) reasoningEffortHint(effort) else "",
+                                        if (isReasoningModel(sendModel)) reasoningEffortHint(effort) else "" +
+                                        if (UserPrefs.explainerMode(context)) " $EXPLAINER_STYLE_GUIDE" else "",
                                     instructedPairs.map { it.first }.toTypedArray(),
                                     instructedPairs.map { it.second }.toTypedArray(),
                                     maxTokensFor(effort)
@@ -530,12 +585,31 @@ fun ChatScreen(
         }
     }
 
+    /** Lists a user message and starts the assistant turn for it. */
+    fun sendNow(userText: String, sentAttachments: List<Attachment>) {
+        val newId = System.currentTimeMillis().toString()
+        messages.add(ChatItem.User(id = "user_$newId", text = userText.ifBlank { sentAttachments.joinToString(", ") { it.name } }, attachments = sentAttachments))
+        // Model answers (fresh sends, edited resends, regenerates) run here.
+        runAssistantTurn(userText, sentAttachments)
+    }
+
+    // Starts the turn for a queued prompt listed by completeSettle.
+    LaunchedEffect(pendingDrainId) {
+        val id = pendingDrainId ?: return@LaunchedEffect
+        pendingDrainId = null
+        if (isGenerating) return@LaunchedEffect
+        val u = messages.filterIsInstance<ChatItem.User>().find { it.id == id }
+            ?: return@LaunchedEffect
+        runAssistantTurn(u.text, u.attachments)
+    }
+
     // Open a saved conversation from the history list.
     LaunchedEffect(openConversationId) {
         val id = openConversationId ?: return@LaunchedEffect
         persist()
         val loaded = ChatHistoryStore.loadMessages(context, id)
         messages.clear()
+                        queue.clear()
         messages.addAll(loaded)
         conversationId = id
         onConversationOpened()
@@ -546,6 +620,7 @@ fun ChatScreen(
         if (newChatSignal == 0) return@LaunchedEffect
         persist()
         messages.clear()
+                        queue.clear()
         conversationId = System.currentTimeMillis().toString()
     }
 
@@ -553,6 +628,12 @@ fun ChatScreen(
     LaunchedEffect(isGenerating) {
         if (!isGenerating) return@LaunchedEffect
         while (true) {
+            // Settle (stop/done/error) nulls the readout; quit instead of
+            // repainting one stale tick after it.
+            if (!isGenerating) {
+                genLive = null
+                return@LaunchedEffect
+            }
             val id = streamingId
             val len = (messages.firstOrNull { (it as? ChatItem.Assistant)?.id == id } as? ChatItem.Assistant)?.text?.length ?: 0
             val elapsed = (System.currentTimeMillis() - streamStartMs) / 1000.0
@@ -585,6 +666,7 @@ fun ChatScreen(
                         kotlinx.coroutines.delay(700)
                         persist()
                         messages.clear()
+                        queue.clear()
                         conversationId = System.currentTimeMillis().toString()
                         kotlinx.coroutines.delay(100)
                         resettingNewChat = false
@@ -603,6 +685,7 @@ fun ChatScreen(
                     Triple("Archive this chat", Icons.Default.Archive) {
                         persist()
                         messages.clear()
+                        queue.clear()
                         conversationId = System.currentTimeMillis().toString()
                         android.widget.Toast.makeText(context, "Chat archived to history", android.widget.Toast.LENGTH_SHORT).show()
                     },
@@ -610,6 +693,7 @@ fun ChatScreen(
                         if (!temporaryChat) {
                             persist()
                             messages.clear()
+                        queue.clear()
                             conversationId = System.currentTimeMillis().toString()
                         }
                         temporaryChat = !temporaryChat
@@ -618,6 +702,7 @@ fun ChatScreen(
                     Triple("Clear conversation", Icons.Default.Delete) {
                         ChatHistoryStore.deleteConversation(context, conversationId)
                         messages.clear()
+                        queue.clear()
                         conversationId = System.currentTimeMillis().toString()
                         onHistoryChanged()
                     },
@@ -784,15 +869,46 @@ fun ChatScreen(
                                         )
                                     }
                                 )
-                                // Reply timing footer, per response.
+                                // Reply timing + token footer, per response.
                                 if (item.tookMs > 0) {
                                     Text(
-                                        text = "took ${formatDuration(item.tookMs)}",
+                                        text = if (item.tokens > 0) "took ${formatDuration(item.tookMs)} · ~${item.tokens} tok"
+                                            else "took ${formatDuration(item.tookMs)}",
                                         color = colors.textMuted,
                                         fontSize = 10.5.sp,
                                         fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
                                         modifier = Modifier.padding(top = 2.dp)
                                     )
+                                }
+                                // Interrupted marker after a stopped reply.
+                                if (item.interrupted) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(top = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.Center
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(0.75f),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            HorizontalDivider(
+                                                modifier = Modifier.weight(1f),
+                                                color = colors.border
+                                            )
+                                            Text(
+                                                text = "Interrupted",
+                                                color = colors.textMuted,
+                                                fontSize = 11.sp,
+                                                modifier = Modifier.padding(horizontal = 8.dp)
+                                            )
+                                            HorizontalDivider(
+                                                modifier = Modifier.weight(1f),
+                                                color = colors.border
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -867,33 +983,6 @@ fun ChatScreen(
             }
         }
 
-        // Slim stop pill while generating (the reply itself streams inline above).
-        if (isGenerating) {
-            Row(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .navigationBarsPadding()
-                    .imePadding()
-                    .padding(bottom = 96.dp)
-                    .clip(RoundedCornerShape(20.dp))
-                    .background(colors.surface)
-                    .border(1.dp, colors.border, RoundedCornerShape(20.dp))
-                    .clickable {
-                        cancelGeneration = true
-                        KarenLlama.cancel()
-                        webConsentGate?.complete(false)
-                        webConsentGate = null
-                        webConsentPreview = null
-                    }
-                    .padding(horizontal = 16.dp, vertical = 9.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                CircularProgressIndicator(color = colors.accentGreen, strokeWidth = 2.dp, modifier = Modifier.size(13.dp))
-                Spacer(Modifier.width(8.dp))
-                Text("Stop", color = colors.textPrimary, fontSize = 12.5.sp, fontWeight = FontWeight.Medium)
-            }
-        }
-
         Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -912,6 +1001,49 @@ fun ChatScreen(
                     Text(statsLine, color = colors.textMuted, fontSize = 10.5.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
                 }
             }
+            // Queued prompts: parked while the model was busy, run in order.
+            if (queue.isNotEmpty()) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 22.dp, end = 14.dp, bottom = 6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    queue.forEachIndexed { i, q ->
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(colors.surface)
+                                .border(1.dp, colors.border, RoundedCornerShape(12.dp))
+                                .padding(horizontal = 10.dp, vertical = 6.dp)
+                        ) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.PlaylistAdd,
+                                contentDescription = null,
+                                tint = colors.accentGreen,
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                text = "${i + 1}. ${q.text.take(60)}",
+                                color = colors.textPrimary,
+                                fontSize = 12.sp,
+                                maxLines = 1,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Icon(
+                                Icons.Default.Close,
+                                contentDescription = "Remove queued prompt",
+                                tint = colors.textMuted,
+                                modifier = Modifier
+                                    .size(16.dp)
+                                    .clickable { queue.removeAt(i) }
+                            )
+                        }
+                    }
+                }
+            }
             ChatGPTFloatingComposer(
                 value = input,
                 onValueChange = { input = it },
@@ -921,11 +1053,8 @@ fun ChatScreen(
                     input = ""
                     val sentAttachments = attachments
                     attachments = emptyList()
-                    val newId = System.currentTimeMillis().toString()
-                    messages.add(ChatItem.User(id = "user_$newId", text = userText.ifBlank { sentAttachments.joinToString(", ") { it.name } }, attachments = sentAttachments))
-
                     // Model answers (fresh sends, edited resends, regenerates) run here.
-                    runAssistantTurn(userText, sentAttachments)
+                    sendNow(userText, sentAttachments)
                 }
             },
             onAttachClick = { showAttachmentSheet = true },
@@ -935,6 +1064,15 @@ fun ChatScreen(
             onVoiceModeClick = onNavigateToVoice,
             isListening = voiceStt.state.isListening,
             listeningText = voiceStt.state.partialText,
+            isGenerating = isGenerating,
+            onStop = {
+                cancelGeneration = true
+                KarenLlama.cancel()
+                webConsentGate?.complete(false)
+                webConsentGate = null
+                webConsentPreview = null
+            },
+            onQueue = { enqueueCurrent() },
             modifier = Modifier.fillMaxWidth()
         )
         }

@@ -533,7 +533,9 @@ private sealed interface MdBlock {
     data class Paragraph(val text: String) : MdBlock
     data class Header(val level: Int, val text: String) : MdBlock
     data class Code(val lang: String, val code: String) : MdBlock
+    data class Diagram(val code: String) : MdBlock
     data class Bullet(val text: String) : MdBlock
+    data class Task(val text: String, val checked: Boolean) : MdBlock
     data class Numbered(val num: String, val text: String) : MdBlock
     data class Quote(val text: String) : MdBlock
     data object Rule : MdBlock
@@ -565,6 +567,8 @@ private fun parseMarkdownBlocks(text: String): List<MdBlock> {
     }
     val headerRe = Regex("^(#{1,4})\\s+(.*)$")
     val bulletRe = Regex("^([-*•])\\s+(.*)$")
+    val taskRe = Regex("^([-*•])\\s+\\[([ xX])\\]\\s+(.*)$")
+    val numberedTaskRe = Regex("^(\\d+)[.)]\\s+\\[([ xX])\\]\\s+(.*)$")
     val numberedRe = Regex("^(\\d+)[.)]\\s+(.*)$")
     while (i < lines.size) {
         val line = lines[i]
@@ -579,7 +583,11 @@ private fun parseMarkdownBlocks(text: String): List<MdBlock> {
                 i++
             }
             i++
-            out.add(MdBlock.Code(lang, code.toString().trimEnd('\n')))
+            if (lang.equals("mermaid", ignoreCase = true)) {
+                out.add(MdBlock.Diagram(code.toString().trimEnd('\n')))
+            } else {
+                out.add(MdBlock.Code(lang, code.toString().trimEnd('\n')))
+            }
             continue
         }
         if (t.isBlank()) {
@@ -623,10 +631,24 @@ private fun parseMarkdownBlocks(text: String): List<MdBlock> {
             out.add(MdBlock.Quote(quote.toString()))
             continue
         }
+        val taskM = taskRe.matchEntire(t)
+        if (taskM != null) {
+            flush()
+            out.add(MdBlock.Task(taskM.groupValues[3].ifBlank { " " }, taskM.groupValues[2].lowercase() == "x"))
+            i++
+            continue
+        }
         val bulletM = bulletRe.matchEntire(t)
         if (bulletM != null) {
             flush()
             out.add(MdBlock.Bullet(bulletM.groupValues[2].ifBlank { " " }))
+            i++
+            continue
+        }
+        val numberedTaskM = numberedTaskRe.matchEntire(t)
+        if (numberedTaskM != null) {
+            flush()
+            out.add(MdBlock.Task(numberedTaskM.groupValues[3].ifBlank { " " }, numberedTaskM.groupValues[2].lowercase() == "x"))
             i++
             continue
         }
@@ -722,6 +744,43 @@ fun MarkdownText(
         blocks.forEach { block ->
             when (block) {
                 is MdBlock.Code -> CodeBlockView(language = block.lang, code = block.code)
+                is MdBlock.Diagram -> MermaidDiagram(code = block.code)
+                is MdBlock.Task -> {
+                    var done by remember(block.text) { mutableStateOf(block.checked) }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (done) Color.Transparent else colors.surface)
+                            .border(1.dp, if (done) Color.Transparent else colors.border, RoundedCornerShape(8.dp))
+                            .padding(horizontal = 4.dp, vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Checkbox(
+                            checked = done,
+                            onCheckedChange = { done = it },
+                            colors = CheckboxDefaults.colors(
+                                checkedColor = colors.accentGreen,
+                                uncheckedColor = colors.textMuted
+                            ),
+                            modifier = Modifier.size(32.dp)
+                        )
+                        ClickableText(
+                            text = inline(block.text),
+                            style = TextStyle(
+                                color = if (done) colors.textMuted else color,
+                                fontSize = fontSize,
+                                lineHeight = lineHeight,
+                                textDecoration = if (done) androidx.compose.ui.text.style.TextDecoration.LineThrough else null
+                            ),
+                            onClick = { offset ->
+                                inline(block.text).getStringAnnotations("url", offset, offset)
+                                    .firstOrNull()?.let { runCatching { uriHandler.openUri(it.item) } }
+                            },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
                 is MdBlock.Header -> {
                     val size = when (block.level) {
                         1 -> (fontSize.value + 6).sp
@@ -1331,6 +1390,9 @@ fun ChatGPTFloatingComposer(
     listeningText: String = "",
     attachmentsPreview: List<Attachment> = emptyList(),
     onRemoveAttachment: (Int) -> Unit = {},
+    isGenerating: Boolean = false,
+    onStop: () -> Unit = {},
+    onQueue: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val colors = LocalKarenColors.current
@@ -1459,7 +1521,9 @@ fun ChatGPTFloatingComposer(
                     ),
                     keyboardActions = KeyboardActions(
                         onSend = {
-                            if (canSend) onSend()
+                            if (isGenerating) {
+                                if (canSend) onQueue()
+                            } else if (canSend) onSend()
                         }
                     ),
                     maxLines = 4,
@@ -1469,9 +1533,45 @@ fun ChatGPTFloatingComposer(
 
             Spacer(Modifier.width(6.dp))
 
-            // Actions row: Dictate, Advanced Voice, Send
+            // Actions row: Stop (while generating), Dictate, Advanced Voice, Send
             Row(verticalAlignment = Alignment.CenterVertically) {
-                if (!canSend) {
+                if (isGenerating) {
+                    // Typed while busy: park it to run after this reply.
+                    if (canSend) {
+                        Box(
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clip(CircleShape)
+                                .background(colors.surfaceHover)
+                                .clickable { onQueue() },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.PlaylistAdd,
+                                contentDescription = "Add to queue",
+                                tint = colors.accentGreen,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                        Spacer(Modifier.width(6.dp))
+                    }
+                    // Stop button in place of Send — same footprint, accent fill.
+                    Box(
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(colors.accentGreen)
+                            .clickable { onStop() },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Stop,
+                            contentDescription = "Stop generating",
+                            tint = Color.White,
+                            modifier = Modifier.size(19.dp)
+                        )
+                    }
+                } else if (!canSend) {
                     // Mic button for dictation with native STT pulse
                     Box(
                         modifier = Modifier

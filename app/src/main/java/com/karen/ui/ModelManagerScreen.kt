@@ -123,6 +123,25 @@ fun ModelManagerScreen(
         if (activeModel != null && models.none { it.name == activeModel?.name }) activeModel = null
     }
 
+    /** Installed voice weights (whistle.cact, sherpa-onnx files). */
+    val voiceModels = remember {
+        mutableStateListOf<String>().apply { addAll(UserPrefs.voiceModels(ctx)) }
+    }
+
+    fun reloadVoices() {
+        voiceModels.clear()
+        voiceModels.addAll(UserPrefs.voiceModels(ctx))
+    }
+
+    fun deleteVoice(name: String, fileName: String) {
+        try {
+            ModelDownloader.voiceFile(ctx, fileName).delete()
+        } catch (_: Exception) {
+        }
+        UserPrefs.saveVoiceModels(ctx, UserPrefs.voiceModels(ctx).filter { it != name })
+        reloadVoices()
+    }
+
     /** Manual refresh: weights, connections, and one downloader poll. */
     fun refreshAll() {
         reloadModels()
@@ -153,6 +172,8 @@ fun ModelManagerScreen(
     var selectedProvider by remember { mutableStateOf<CloudProvider?>(null) }
     var apiKeyInput by remember { mutableStateOf("") }
     var apiModelInput by remember { mutableStateOf("") }
+    var modelMenu by remember { mutableStateOf(false) }
+    var modelCustom by remember { mutableStateOf(false) }
     var keyVisible by remember { mutableStateOf(false) }
     // Download catalog collapse: 3 cards by default.
     var catalogExpanded by remember { mutableStateOf(false) }
@@ -181,6 +202,16 @@ fun ModelManagerScreen(
                 }
                 is DownloadEvent.Failed -> {
                     android.widget.Toast.makeText(ctx, "Download failed: ${ev.reason}", android.widget.Toast.LENGTH_LONG).show()
+                }
+                else -> {}
+            }
+            when (val vev = ModelDownloader.refreshVoice(ctx)) {
+                is DownloadEvent.Completed -> {
+                    reloadVoices()
+                    android.widget.Toast.makeText(ctx, "${vev.name} installed", android.widget.Toast.LENGTH_SHORT).show()
+                }
+                is DownloadEvent.Failed -> {
+                    android.widget.Toast.makeText(ctx, "Voice download failed: ${vev.reason}", android.widget.Toast.LENGTH_LONG).show()
                 }
                 else -> {}
             }
@@ -642,6 +673,81 @@ fun ModelManagerScreen(
                         )
                     }
                 )
+                Spacer(Modifier.height(10.dp))
+                Text("Downloadable voice weights", color = colors.textMuted, fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(6.dp))
+                ModelDownloader.voiceCatalog.forEach { v ->
+                    val installed = v.name in voiceModels
+                    val downloading = ModelDownloader.activeVoiceName == v.name
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(colors.surfaceHover.copy(alpha = 0.6f))
+                            .border(1.dp, colors.border.copy(alpha = 0.6f), RoundedCornerShape(12.dp))
+                            .padding(12.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(v.name, color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    "${v.sizeLabel} · ${v.engine}",
+                                    color = colors.textMuted,
+                                    fontSize = 11.sp,
+                                    fontFamily = FontFamily.Monospace
+                                )
+                            }
+                            if (installed) {
+                                IconButton(
+                                    onClick = { deleteVoice(v.name, v.fileName) },
+                                    modifier = Modifier.size(32.dp)
+                                ) {
+                                    Icon(Icons.Default.DeleteOutline, contentDescription = "Delete ${v.name}", tint = colors.textMuted, modifier = Modifier.size(16.dp))
+                                }
+                            } else if (!downloading) {
+                                TextButton(onClick = {
+                                    if (!ModelDownloader.startVoice(ctx, v)) {
+                                        Toast.makeText(ctx, "Another download is running", Toast.LENGTH_SHORT).show()
+                                    }
+                                }) { Text("Download", color = colors.accentGreen) }
+                            }
+                        }
+                        Text(v.note, color = colors.textSecondary, fontSize = 11.5.sp)
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            VoiceEngine.status(ctx, v),
+                            color = if (installed) colors.accentGreen else colors.textMuted,
+                            fontSize = 11.sp,
+                            fontFamily = FontFamily.Monospace
+                        )
+                        if (downloading) {
+                            Spacer(Modifier.height(6.dp))
+                            LinearProgressIndicator(
+                                progress = { ModelDownloader.voiceProgress },
+                                modifier = Modifier.fillMaxWidth(),
+                                color = colors.accentGreen,
+                                trackColor = colors.surfaceHover
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    ModelDownloader.voiceStatus,
+                                    color = colors.textMuted,
+                                    fontSize = 11.5.sp,
+                                    fontFamily = FontFamily.Monospace
+                                )
+                                OutlinedButton(onClick = { ModelDownloader.cancelVoice(ctx) }) {
+                                    Text("Cancel", fontSize = 12.sp)
+                                }
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                }
             }
 
             // Available to download — tap to fetch real GGUF weights.
@@ -842,6 +948,8 @@ fun ModelManagerScreen(
                                             selectedProvider = p
                                             apiKeyInput = UserPrefs.apiKey(ctx, p.id)
                                             apiModelInput = UserPrefs.apiModel(ctx, p.id).ifBlank { p.defaultModel }
+                                            modelCustom = false
+                                            modelMenu = false
                                             keyVisible = false
                                             apiStep = 1
                                         }
@@ -911,19 +1019,79 @@ fun ModelManagerScreen(
                                 color = colors.accentGreen
                             )
                             Spacer(Modifier.height(10.dp))
-                            OutlinedTextField(
-                                value = apiModelInput,
-                                onValueChange = { apiModelInput = it },
-                                label = { Text("Model") },
-                                placeholder = { Text(provider.defaultModel) },
-                                singleLine = true,
-                                textStyle = androidx.compose.ui.text.TextStyle(
-                                    color = colors.textPrimary,
-                                    fontFamily = FontFamily.Monospace
-                                ),
-                                colors = karenFieldColors(colors),
-                                modifier = Modifier.fillMaxWidth()
-                            )
+                            Text("Model", color = colors.textMuted, fontSize = 12.sp)
+                            Spacer(Modifier.height(4.dp))
+                            Box {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(colors.surfaceHover.copy(alpha = 0.6f))
+                                        .border(1.dp, colors.border.copy(alpha = 0.6f), RoundedCornerShape(10.dp))
+                                        .clickable { modelMenu = true }
+                                        .padding(horizontal = 12.dp, vertical = 11.dp)
+                                ) {
+                                    Text(
+                                        text = apiModelInput.ifBlank { provider.defaultModel },
+                                        color = colors.textPrimary,
+                                        fontSize = 13.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Icon(Icons.Default.ArrowDropDown, contentDescription = "Choose model", tint = colors.textMuted, modifier = Modifier.size(18.dp))
+                                }
+                                DropdownMenu(
+                                    expanded = modelMenu,
+                                    onDismissRequest = { modelMenu = false },
+                                    modifier = Modifier
+                                        .background(colors.cardBackground, RoundedCornerShape(12.dp))
+                                        .border(1.dp, colors.border, RoundedCornerShape(12.dp))
+                                        .clip(RoundedCornerShape(12.dp))
+                                ) {
+                                    providerModelChoices(provider, apiModelInput).forEach { choice ->
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text(
+                                                    text = choice,
+                                                    color = if (choice == apiModelInput.ifBlank { provider.defaultModel }) colors.accentGreen else colors.textPrimary,
+                                                    fontSize = 13.sp,
+                                                    fontFamily = FontFamily.Monospace
+                                                )
+                                            },
+                                            onClick = {
+                                                if (choice == CUSTOM_MODEL) {
+                                                    modelCustom = true
+                                                    apiModelInput = ""
+                                                } else {
+                                                    modelCustom = false
+                                                    apiModelInput = choice
+                                                }
+                                                modelMenu = false
+                                            },
+                                            modifier = Modifier
+                                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                                                .clip(RoundedCornerShape(8.dp))
+                                        )
+                                    }
+                                }
+                            }
+                            if (modelCustom) {
+                                Spacer(Modifier.height(8.dp))
+                                OutlinedTextField(
+                                    value = apiModelInput,
+                                    onValueChange = { apiModelInput = it },
+                                    label = { Text("Custom model id") },
+                                    placeholder = { Text(provider.defaultModel) },
+                                    singleLine = true,
+                                    textStyle = androidx.compose.ui.text.TextStyle(
+                                        color = colors.textPrimary,
+                                        fontFamily = FontFamily.Monospace
+                                    ),
+                                    colors = karenFieldColors(colors),
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
                             Spacer(Modifier.height(10.dp))
                             OutlinedTextField(
                                 value = apiKeyInput,

@@ -687,6 +687,7 @@ fun WorkspaceScreen(
     // Project chat input (ChatScreen-style, per project)
     var chatInput by remember { mutableStateOf("") }
     var chatBusy by remember { mutableStateOf(false) }
+    var cancelChat by remember { mutableStateOf(false) }
     val chatThreadState = androidx.compose.foundation.lazy.rememberLazyListState()
 
     // Keep the thinking indicator in view while a reply generates.
@@ -703,6 +704,7 @@ fun WorkspaceScreen(
         val t = text.trim()
         if (t.isBlank() || chatBusy) return
         chatBusy = true
+        cancelChat = false
         project.chat.add(ProjectChat("user", t))
         // Auto routing swaps in the best model for this prompt.
         val sendModel = routeFor(t)
@@ -758,6 +760,13 @@ fun WorkspaceScreen(
                     project.filesVersion = System.currentTimeMillis()
                 }
             }
+            // Stop checkpoint: abandon the turn without further work.
+            if (cancelChat) {
+                project.chat.add(ProjectChat("assistant", "(stopped)"))
+                saveProjectState(project)
+                chatBusy = false
+                return@launch
+            }
             // 4. Terminal echo of the send + a recursive listing across the project dir.
             project.terminalLog.add("$ $t".take(120))
             val lsOut = runShell("ls -Rp | head -n 80", dir)
@@ -776,6 +785,13 @@ fun WorkspaceScreen(
                     else "Checks failing: ${verdict.detail}\n$checksOut".take(1200)
                 )
             }
+            // Stop checkpoint: abandon the turn without further work.
+            if (cancelChat) {
+                project.chat.add(ProjectChat("assistant", "(stopped)"))
+                saveProjectState(project)
+                chatBusy = false
+                return@launch
+            }
             // 5. Web context — only with prior consent (asked once in Chat) + enabled.
             var web: String? = null
             if (UserPrefs.webSearchEnabled(ctx) && UserPrefs.webSearchAsked(ctx) && WebSearch.needsSearch(t)) {
@@ -786,6 +802,13 @@ fun WorkspaceScreen(
                 } catch (_: Exception) {
                     null
                 }
+            }
+            // Stop checkpoint: abandon the turn without further work.
+            if (cancelChat) {
+                project.chat.add(ProjectChat("assistant", "(stopped)"))
+                saveProjectState(project)
+                chatBusy = false
+                return@launch
             }
             // Project structure + file contents so the model continues in place.
             // Scaled by the Settings content window (up to 16k).
@@ -827,6 +850,12 @@ fun WorkspaceScreen(
                         historyLimit = cloudLimit,
                         model = UserPrefs.apiModel(ctx, cloud.id).ifBlank { null }
                     )
+                    if (cancelChat) {
+                        project.chat.add(ProjectChat("assistant", "(stopped)"))
+                        saveProjectState(project)
+                        chatBusy = false
+                        return@launch
+                    }
                     project.chat.add(ProjectChat("assistant", reply, tookMs = System.currentTimeMillis() - sendStartMs))
                     applyModelFiles(reply)
                 } catch (e: CloudApiException) {
@@ -871,6 +900,12 @@ fun WorkspaceScreen(
                                     withWeb.map { it.second }.toTypedArray(),
                                     maxTokensFor(effort)
                                 )
+                            }
+                            if (cancelChat) {
+                                project.chat.add(ProjectChat("assistant", "(stopped)"))
+                                saveProjectState(project)
+                                chatBusy = false
+                                return@launch
                             }
                             if (reply.isNotBlank()) {
                                 project.chat.add(ProjectChat("assistant", reply, tookMs = System.currentTimeMillis() - sendStartMs))
@@ -1385,6 +1420,8 @@ fun WorkspaceScreen(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .navigationBarsPadding()
+                .imePadding()
                 .padding(horizontal = 14.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -1402,15 +1439,20 @@ fun WorkspaceScreen(
                 modifier = Modifier
                     .size(44.dp)
                     .clip(CircleShape)
-                    .background(if (chatBusy) colors.surfaceHover else colors.accentGreen)
-                    .clickable(enabled = !chatBusy) {
-                        sendProjectMessage(project, chatInput)
-                        chatInput = ""
+                    .background(colors.accentGreen)
+                    .clickable {
+                        if (chatBusy) {
+                            cancelChat = true
+                            KarenLlama.cancel()
+                        } else {
+                            sendProjectMessage(project, chatInput)
+                            chatInput = ""
+                        }
                     },
                 contentAlignment = Alignment.Center
             ) {
                 if (chatBusy) {
-                    CircularProgressIndicator(color = colors.textMuted, strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
+                    Icon(Icons.Default.Stop, contentDescription = "Stop", tint = Color.White, modifier = Modifier.size(20.dp))
                 } else {
                     Icon(Icons.Default.Send, contentDescription = "Send", tint = Color.White, modifier = Modifier.size(20.dp))
                 }

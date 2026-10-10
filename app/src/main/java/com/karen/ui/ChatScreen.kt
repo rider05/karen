@@ -37,7 +37,7 @@ import androidx.core.content.FileProvider
 import java.io.File
 
 sealed class ChatItem {
-    data class User(val id: String, val text: String, val attachments: List<Attachment> = emptyList()) : ChatItem()
+    data class User(val id: String, val text: String, val attachments: List<Attachment> = emptyList(), val tokens: Int = 0) : ChatItem()
     data class Assistant(
         val id: String,
         val thought: String? = null,
@@ -160,20 +160,6 @@ fun ChatScreen(
     var dislikeFor by remember { mutableStateOf<ChatItem.Assistant?>(null) }
     var dislikeText by remember { mutableStateOf("") }
 
-    // System back button: dismiss open sheets first, stop generation, else Home
-    androidx.activity.compose.BackHandler {
-        when {
-            showModelSheet -> showModelSheet = false
-            showAttachmentSheet -> showAttachmentSheet = false
-            webConsentGate != null -> {
-                webConsentGate?.complete(false)
-                webConsentGate = null
-                webConsentPreview = null
-            }
-            isGenerating -> { cancelGeneration = true; KarenLlama.cancel() }
-            else -> onNavigateToHome()
-        }
-    }
     var resettingNewChat by remember { mutableStateOf(false) }
     var temporaryChat by remember { mutableStateOf(false) }
     val karenCtx = androidx.compose.ui.platform.LocalContext.current
@@ -269,6 +255,38 @@ fun ChatScreen(
     // Id of a queued user message awaiting its turn (set by completeSettle).
     var pendingDrainId by remember { mutableStateOf<String?>(null) }
 
+    /**
+     * Immediate stop feedback: swaps a bare status bubble to "Cancelling…"
+     * while the native call winds down. Real reply text is never clobbered.
+     */
+    fun markCancelling() {
+        streamingId?.let { id ->
+            val i = messages.indexOfFirst { (it as? ChatItem.Assistant)?.id == id }
+            if (i >= 0) {
+                (messages[i] as? ChatItem.Assistant)?.let {
+                    if (it.text.isBlank() || it.text.trimEnd().endsWith("…")) {
+                        messages[i] = it.copy(text = "Cancelling…")
+                    }
+                }
+            }
+        }
+    }
+
+    // System back button: dismiss open sheets first, stop generation, else Home
+    androidx.activity.compose.BackHandler {
+        when {
+            showModelSheet -> showModelSheet = false
+            showAttachmentSheet -> showAttachmentSheet = false
+            webConsentGate != null -> {
+                webConsentGate?.complete(false)
+                webConsentGate = null
+                webConsentPreview = null
+            }
+            isGenerating -> { cancelGeneration = true; KarenLlama.cancel(); markCancelling() }
+            else -> onNavigateToHome()
+        }
+    }
+
     /** Parks the current composer text to run after the in-flight reply. */
     fun enqueueCurrent() {
         val userText = input.trim()
@@ -301,16 +319,20 @@ fun ChatScreen(
     }
 
     /**
-     * Follows new output only when the user is already near the bottom —
+     * Follows new output only when the user is already at the bottom —
      * scrolled-up readers are never yanked (free to scroll while streaming).
+     * Offset-aware: a tall streaming reply still counts as "left behind" once
+     * its bottom runs past the viewport.
      */
     suspend fun scrollToBottomIfNear() {
         try {
             val info = listState.layoutInfo
             val total = info.totalItemsCount
             if (total == 0) return
-            val lastVisible = info.visibleItemsInfo.lastOrNull()?.index ?: return
-            if (total - 1 - lastVisible <= 2) listState.scrollToItem(total - 1)
+            val last = info.visibleItemsInfo.lastOrNull() ?: return
+            if (last.index < total - 1) return
+            val beyondPx = (last.offset + last.size) - info.viewportEndOffset
+            if (beyondPx <= 200) listState.scrollToItem(total - 1)
         } catch (_: Exception) {}
     }
 
@@ -357,7 +379,7 @@ fun ChatScreen(
         if (queue.isEmpty()) return
         val q = queue.removeAt(0)
         val qid = "user_${System.currentTimeMillis()}"
-        messages.add(ChatItem.User(id = qid, text = q.text, attachments = q.attachments))
+        messages.add(ChatItem.User(id = qid, text = q.text, attachments = q.attachments, tokens = q.text.length / 4))
         StyleMemory.bumpMessageCount(context)
         pendingDrainId = qid
     }
@@ -529,6 +551,7 @@ fun ChatScreen(
             streamStartMs = System.currentTimeMillis()
             streamingContent = false
             genLive = null
+            genStats = null
             val aid = "asst_${System.currentTimeMillis()}"
             messages.add(ChatItem.Assistant(id = aid, text = "", model = sendModel))
             streamingId = aid
@@ -675,7 +698,8 @@ fun ChatScreen(
     /** Lists a user message and starts the assistant turn for it. */
     fun sendNow(userText: String, sentAttachments: List<Attachment>) {
         val newId = System.currentTimeMillis().toString()
-        messages.add(ChatItem.User(id = "user_$newId", text = userText.ifBlank { sentAttachments.joinToString(", ") { it.name } }, attachments = sentAttachments))
+        val body = userText.ifBlank { sentAttachments.joinToString(", ") { it.name } }
+        messages.add(ChatItem.User(id = "user_$newId", text = body, attachments = sentAttachments, tokens = body.length / 4))
         StyleMemory.bumpMessageCount(context)
         // Model answers (fresh sends, edited resends, regenerates) run here.
         runAssistantTurn(userText, sentAttachments)
@@ -835,11 +859,12 @@ fun ChatScreen(
                             UserMessageBubble(
                                 text = item.text,
                                 attachments = item.attachments,
+                                tokens = item.tokens,
                                 onEdit = { edited ->
                                     val idx = messages.indexOfFirst { (it as? ChatItem.User)?.id == item.id }
                                     if (idx >= 0 && !isGenerating) {
                                         val changed = edited != item.text
-                                        messages[idx] = item.copy(text = edited)
+                                        messages[idx] = item.copy(text = edited, tokens = edited.length / 4)
                                         if (changed) {
                                             // Drop everything after the edited message: the old
                                             // reply no longer matches, so ask the AI again.
@@ -1171,6 +1196,7 @@ fun ChatScreen(
             onStop = {
                 cancelGeneration = true
                 KarenLlama.cancel()
+                markCancelling()
                 webConsentGate?.complete(false)
                 webConsentGate = null
                 webConsentPreview = null

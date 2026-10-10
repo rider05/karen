@@ -149,6 +149,18 @@ object UserPrefs {
         prefs(ctx).edit().putString("installed_models", items.joinToString(";;")).apply()
     }
 
+    // Installed voice models (whistle.cact, sherpa-onnx files). Kept apart
+    // from chat weights: voice engines are separate runtimes.
+    fun voiceModels(ctx: Context): List<String> {
+        return (prefs(ctx).getString("installed_voices", "") ?: "")
+            .split(";;")
+            .filter { it.isNotBlank() }
+    }
+
+    fun saveVoiceModels(ctx: Context, items: List<String>) {
+        prefs(ctx).edit().putString("installed_voices", items.joinToString(";;")).apply()
+    }
+
     // Content window (context size) shared by Chat + Workspace, up to 16k.
     // Larger windows keep more history and project files in front of the
     // model; on-device loads use it as the llama.cpp n_ctx.

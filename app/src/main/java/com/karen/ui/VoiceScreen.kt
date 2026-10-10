@@ -31,6 +31,8 @@ import com.karen.rememberVoiceStt
 fun VoiceScreen(
     onClose: () -> Unit = {}
 ) {
+    // System back returns to Chat (same as the close button).
+    androidx.activity.compose.BackHandler { onClose() }
     val device = rememberDeviceTelemetry()
     var isMuted by remember { mutableStateOf(false) }
     var isSpeaking by remember { mutableStateOf(false) }

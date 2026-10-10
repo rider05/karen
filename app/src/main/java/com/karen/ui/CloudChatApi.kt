@@ -43,6 +43,31 @@ val cloudProviders = listOf(
     CloudProvider("groq", "Groq", "console.groq.com", "Ultra-low-latency LPU inference", "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile", CloudProtocol.OPENAI)
 )
 
+/** Supported model ids per provider for the key dialog (default first). */
+val providerModels: Map<String, List<String>> = mapOf(
+    "openai" to listOf("gpt-4o", "gpt-4o-mini"),
+    "anthropic" to listOf("claude-sonnet-4-20250514", "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022"),
+    "gemini" to listOf("gemini-2.0-flash", "gemini-1.5-flash"),
+    "mistral" to listOf("mistral-large-latest", "mistral-small-latest"),
+    "grok" to listOf("grok-3", "grok-3-mini"),
+    "openrouter" to listOf("openrouter/auto"),
+    "deepseek" to listOf("deepseek-chat", "deepseek-reasoner"),
+    "groq" to listOf("llama-3.3-70b-versatile", "llama-3.1-8b-instant")
+)
+
+/** Dropdown marker for free-typed model ids (OpenRouter takes any model id). */
+const val CUSTOM_MODEL = "Custom…"
+
+/** Dropdown choices for a provider: known models, default first, then Custom. */
+fun providerModelChoices(provider: CloudProvider, current: String): List<String> {
+    val known = (providerModels[provider.id] ?: listOf(provider.defaultModel)).toMutableList()
+    if (provider.defaultModel !in known) known.add(0, provider.defaultModel)
+    val cur = current.trim()
+    if (cur.isNotBlank() && cur != CUSTOM_MODEL && cur !in known) known.add(cur)
+    known.add(CUSTOM_MODEL)
+    return known
+}
+
 /** Thinking-token budget per effort level for reasoning models. */
 fun thinkingBudgetFor(effort: String): Int = when (effort) {
     "Low" -> 1000

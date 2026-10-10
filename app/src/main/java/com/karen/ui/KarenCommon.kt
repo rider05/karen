@@ -1331,7 +1331,9 @@ fun UserMessageBubble(
     text: String,
     attachments: List<Attachment> = emptyList(),
     modifier: Modifier = Modifier,
-    onEdit: ((String) -> Unit)? = null
+    onEdit: ((String) -> Unit)? = null,
+    /** Approx. input tokens for this request (chars/4). 0 hides the footer. */
+    tokens: Int = 0
 ) {
     val colors = LocalKarenColors.current
     val clipboardManager = LocalClipboardManager.current
@@ -1489,6 +1491,16 @@ fun UserMessageBubble(
                         }
                     }
                 }
+            }
+            // Input-token footer under each request.
+            if (tokens > 0 && !isEditing) {
+                Text(
+                    text = "~$tokens tok in",
+                    color = colors.textMuted,
+                    fontSize = 10.5.sp,
+                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                    modifier = Modifier.padding(top = 2.dp)
+                )
             }
         }
     }

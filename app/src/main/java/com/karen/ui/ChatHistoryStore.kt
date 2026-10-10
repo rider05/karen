@@ -60,10 +60,12 @@ object ChatHistoryStore {
             when (parts[0]) {
                 "U" -> if (parts.size < 2) null else {
                     val names = if (parts.size > 2) dec(parts[2]).split('\n').filter { it.isNotBlank() } else emptyList()
+                    val body = dec(parts[1])
                     ChatItem.User(
                         id = "user_${id}_$i",
-                        text = dec(parts[1]),
-                        attachments = names.map { Attachment(it, 0L, null) }
+                        text = body,
+                        attachments = names.map { Attachment(it, 0L, null) },
+                        tokens = parts.getOrNull(3)?.toIntOrNull() ?: body.length / 4
                     )
                 }
                 "A" -> if (parts.size < 4) null else {
@@ -90,7 +92,7 @@ object ChatHistoryStore {
         val firstUser = messages.filterIsInstance<ChatItem.User>().firstOrNull() ?: return
         val lines = messages.map { item ->
             when (item) {
-                is ChatItem.User -> "U\t${enc(item.text)}\t${enc(item.attachments.joinToString("\n") { it.name })}"
+                is ChatItem.User -> "U\t${enc(item.text)}\t${enc(item.attachments.joinToString("\n") { it.name })}\t${item.tokens}"
                 is ChatItem.Assistant -> "A\t${enc(item.thought ?: "")}\t${enc(item.toolCall ?: "")}\t${enc(item.text)}\t${item.tookMs}\t${item.tokens}\t${if (item.interrupted) 1 else 0}\t${enc(item.model)}"
             }
         }

@@ -18,6 +18,16 @@ struct Handle {
     std::atomic<bool> abort{false};
 };
 
+// Abort hooks: ggml polls these inside llama_decode/process, so Stop lands
+// mid-chunk instead of after minutes of number crunching.
+static bool abort_flag(void * data) {
+    return ((std::atomic<bool> *) data)->load();
+}
+
+static bool load_progress(float, void * data) {
+    return !((std::atomic<bool> *) data)->load();
+}
+
 static std::string utf16_to_utf8(const jchar * w, jsize n) {
     std::string s;
     s.reserve((size_t) n * 3);
@@ -120,17 +130,22 @@ Java_com_karen_ui_KarenLlama_nativeInit(JNIEnv * env, jobject, jstring jpath, ji
     if (!backend_on) { llama_backend_init(); backend_on = true; }
 
     std::string path = jstr(env, jpath);
-    llama_model_params mparams = llama_model_default_params();
-    mparams.n_gpu_layers = 0;
-    llama_model * model = llama_model_load_from_file(path.c_str(), mparams);
-    if (!model) {
-        throw_err(env, "cannot load model file");
-        return 0;
-    }
     Handle * h = new Handle();
-    h->model = model;
+    h->abort.store(false);
     h->n_ctx = n_ctx > 0 ? n_ctx : 2048;
     h->n_threads = n_threads > 0 ? n_threads : 4;
+    llama_model_params mparams = llama_model_default_params();
+    mparams.n_gpu_layers = 0;
+    mparams.progress_callback = load_progress;
+    mparams.progress_callback_user_data = (void *) &h->abort;
+    llama_model * model = llama_model_load_from_file(path.c_str(), mparams);
+    if (!model) {
+        bool cancelled = h->abort.load();
+        delete h;
+        throw_err(env, cancelled ? "cancelled" : "cannot load model file");
+        return 0;
+    }
+    h->model = model;
     return (jlong) h;
 }
 
@@ -183,6 +198,7 @@ Java_com_karen_ui_KarenLlama_nativeComplete(JNIEnv * env, jobject, jlong ptr,
     cparams.n_batch = 512;
     llama_context * ctx = llama_init_from_model(h->model, cparams);
     if (!ctx) { throw_err(env, "cannot create context"); return nullptr; }
+    llama_set_abort_callback(ctx, abort_flag, (void *) &h->abort);
     llama_set_n_threads(ctx, h->n_threads, h->n_threads);
 
     auto sparams = llama_sampler_chain_default_params();
@@ -202,9 +218,11 @@ Java_com_karen_ui_KarenLlama_nativeComplete(JNIEnv * env, jobject, jlong ptr,
     int remaining = n_prompt;
     while (remaining > 0 && !failed) {
         if (h->abort.load()) { failed = true; fail_msg = "cancelled"; break; }
-        int chunk = remaining > 512 ? 512 : remaining;
+        int chunk = remaining > 128 ? 128 : remaining;
         batch_set_tokens(batch, ptoks.data() + pos, chunk, pos);
-        if (llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, batch) != 0) {
+        int rc = llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, batch);
+        if (rc != 0) {
+            if (h->abort.load()) break;
             failed = true; fail_msg = "prompt eval failed"; break;
         }
         pos += chunk;
@@ -221,7 +239,9 @@ Java_com_karen_ui_KarenLlama_nativeComplete(JNIEnv * env, jobject, jlong ptr,
         if (n < 0) { failed = true; fail_msg = "decode failed"; break; }
         out.append(piece, (size_t) n);
         batch_set_tokens(batch, &id, 1, pos);
-        if (llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, batch) != 0) {
+        int rc = llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, batch);
+        if (rc != 0) {
+            if (h->abort.load()) break;
             failed = true; fail_msg = "decode failed"; break;
         }
         ++pos;

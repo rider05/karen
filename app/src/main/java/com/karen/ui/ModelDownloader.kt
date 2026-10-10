@@ -119,6 +119,161 @@ object ModelDownloader {
 
     fun modelFile(ctx: Context, fileName: String): File = File(modelsDir(ctx), fileName)
 
+    // ---- Voice models (whistle.cact, sherpa-onnx files) ----
+    // Separate slot + registry so voice downloads never pollute chat weights.
+
+    /** Downloadable voice model: STT/VAD weight + the engine that runs it. */
+    data class VoiceModel(
+        val name: String,
+        val fileName: String,
+        val sizeLabel: String,
+        val url: String,
+        val engine: String,
+        val note: String
+    )
+
+    val voiceCatalog = listOf(
+        VoiceModel(
+            "Whistle · STT (7 langs)", "whistle.cact", "≈16.9 MB",
+            "https://huggingface.co/Cactus-Compute/whistle/resolve/main/whistle.cact",
+            "Cactus Needle",
+            "16 kHz mono · word timestamps · needs Needle engine (arm64)"
+        ),
+        VoiceModel(
+            "Silero VAD", "silero_vad.onnx", "≈2 MB",
+            "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
+            "sherpa-onnx/ORT",
+            "Voice-activity detection · needs ORT engine"
+        )
+    )
+
+    var activeVoiceName by mutableStateOf<String?>(null)
+        private set
+    var voiceProgress by mutableStateOf(0f)
+        private set
+    var voiceStatus by mutableStateOf("")
+        private set
+
+    private const val V_ID = "voice_dl_id"
+    private const val V_NAME = "voice_dl_name"
+    private const val V_FILE = "voice_dl_file"
+
+    private var voiceDownloadId: Long = -1
+
+    fun voicesDir(ctx: Context): File =
+        (ctx.getExternalFilesDir("voices") ?: File(ctx.filesDir, "voices")).apply { mkdirs() }
+
+    fun voiceFile(ctx: Context, fileName: String): File = File(voicesDir(ctx), fileName)
+
+    fun startVoice(ctx: Context, entry: VoiceModel): Boolean {
+        if (activeName != null || activeVoiceName != null) return false
+        try {
+            val req = DownloadManager.Request(Uri.parse(entry.url))
+                .setTitle("Karen voice: ${entry.name}")
+                .setDescription("Downloading voice model")
+                .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE)
+                .setDestinationInExternalFilesDir(ctx, "voices", entry.fileName)
+                .setAllowedOverMetered(true)
+            val dm = ctx.getSystemService(DownloadManager::class.java) ?: return false
+            val id = dm.enqueue(req)
+            voiceDownloadId = id
+            dlPrefs(ctx).edit()
+                .putLong(V_ID, id).putString(V_NAME, entry.name).putString(V_FILE, entry.fileName)
+                .apply()
+            activeVoiceName = entry.name
+            voiceProgress = 0f
+            voiceStatus = "Starting…"
+            return true
+        } catch (_: Exception) {
+            return false
+        }
+    }
+
+    fun cancelVoice(ctx: Context) {
+        try {
+            val id = if (voiceDownloadId >= 0) voiceDownloadId
+            else dlPrefs(ctx).getLong(V_ID, -1)
+            if (id >= 0) ctx.getSystemService(DownloadManager::class.java)?.remove(id)
+        } catch (_: Exception) {
+        }
+        clearVoice(ctx)
+    }
+
+    private fun clearVoice(ctx: Context) {
+        voiceDownloadId = -1
+        dlPrefs(ctx).edit().remove(V_ID).remove(V_NAME).remove(V_FILE).apply()
+        activeVoiceName = null
+        voiceProgress = 0f
+        voiceStatus = ""
+    }
+
+    /** Poll voice download once. Terminal event at most once per download. */
+    fun refreshVoice(ctx: Context): DownloadEvent {
+        var id = voiceDownloadId
+        if (id < 0) {
+            id = dlPrefs(ctx).getLong(V_ID, -1)
+            if (id >= 0) voiceDownloadId = id
+        }
+        if (id < 0) {
+            if (activeVoiceName != null) {
+                activeVoiceName = null
+                voiceProgress = 0f
+                voiceStatus = ""
+            }
+            return DownloadEvent.None
+        }
+        try {
+            val dm = ctx.getSystemService(DownloadManager::class.java)
+                ?: return DownloadEvent.None
+            dm.query(DownloadManager.Query().setFilterById(id)).use { c ->
+                if (!c.moveToFirst()) {
+                    clearVoice(ctx)
+                    return DownloadEvent.Failed("download vanished")
+                }
+                val st = c.getInt(c.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
+                val done = c.getLong(c.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR))
+                val total = c.getLong(c.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES))
+                if (total > 0) voiceProgress = (done.toDouble() / total).toFloat().coerceIn(0f, 1f)
+                return when (st) {
+                    DownloadManager.STATUS_SUCCESSFUL -> {
+                        val name = dlPrefs(ctx).getString(V_NAME, "voice model") ?: "voice model"
+                        val fileName = dlPrefs(ctx).getString(V_FILE, "") ?: ""
+                        val file = if (fileName.isNotEmpty()) voiceFile(ctx, fileName) else null
+                        clearVoice(ctx)
+                        if (file != null && file.exists() && file.length() > 0) {
+                            val installed = UserPrefs.voiceModels(ctx).toMutableList()
+                            if (name !in installed) {
+                                installed.add(name)
+                                UserPrefs.saveVoiceModels(ctx, installed)
+                            }
+                            DownloadEvent.Completed(name)
+                        } else {
+                            DownloadEvent.Failed("file missing after download")
+                        }
+                    }
+                    DownloadManager.STATUS_FAILED -> {
+                        val reason = c.getInt(c.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON))
+                        clearVoice(ctx)
+                        DownloadEvent.Failed(reasonText(reason))
+                    }
+                    else -> {
+                        val pct = (voiceProgress * 100).toInt()
+                        val sizeTxt = if (total > 0) {
+                            "%.1f/%.1f MB".format(done / 1048576.0, total / 1048576.0)
+                        } else {
+                            "%.1f MB".format(done / 1048576.0)
+                        }
+                        voiceStatus = "Downloading $pct% · $sizeTxt"
+                        DownloadEvent.None
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            clearVoice(ctx)
+            return DownloadEvent.Failed(e.message ?: "query failed")
+        }
+    }
+
     fun start(ctx: Context, name: String, fileName: String, url: String): Boolean {
         if (activeName != null) return false
         try {

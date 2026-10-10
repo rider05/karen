@@ -158,6 +158,50 @@ val LocalKarenColors = compositionLocalOf { OledThemeColors }
 val LocalKarenThemeMode = compositionLocalOf { KarenThemeMode.OLED }
 val LocalKarenType = compositionLocalOf { KarenType() }
 
+/**
+ * Maps Karen tokens onto M3 so every mini-window (AlertDialog, DropdownMenu,
+ * ModalBottomSheet, Checkbox, DatePicker…) follows the active dark/light
+ * theme instead of M3's built-in default scheme.
+ */
+private fun KarenColors.toColorScheme(): androidx.compose.material3.ColorScheme {
+    val primary = accentGreen
+    return if (isDark) {
+        androidx.compose.material3.darkColorScheme(
+            primary = primary,
+            onPrimary = Color.White,
+            secondary = accentBlue,
+            onSecondary = Color.White,
+            background = background,
+            onBackground = textPrimary,
+            surface = surface,
+            onSurface = textPrimary,
+            surfaceVariant = surfaceHover,
+            onSurfaceVariant = textSecondary,
+            outline = border,
+            outlineVariant = border,
+            error = accentRed,
+            onError = Color.White
+        )
+    } else {
+        androidx.compose.material3.lightColorScheme(
+            primary = primary,
+            onPrimary = Color.White,
+            secondary = accentBlue,
+            onSecondary = Color.White,
+            background = background,
+            onBackground = textPrimary,
+            surface = surface,
+            onSurface = textPrimary,
+            surfaceVariant = surfaceHover,
+            onSurfaceVariant = textSecondary,
+            outline = border,
+            outlineVariant = border,
+            error = accentRed,
+            onError = Color.White
+        )
+    }
+}
+
 @Composable
 fun KarenTheme(
     mode: KarenThemeMode = KarenThemeState.currentMode,
@@ -174,6 +218,10 @@ fun KarenTheme(
         LocalKarenThemeMode provides mode,
         LocalKarenType provides KarenType()
     ) {
-        content()
+        androidx.compose.material3.MaterialTheme(
+            colorScheme = colors.toColorScheme()
+        ) {
+            content()
+        }
     }
 }

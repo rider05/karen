@@ -269,7 +269,10 @@ fun ChatGPTTopAppBar(
                     DropdownMenu(
                         expanded = effortMenu,
                         onDismissRequest = { effortMenu = false },
-                        modifier = Modifier.background(colors.cardBackground)
+                        modifier = Modifier
+                            .background(colors.cardBackground, RoundedCornerShape(12.dp))
+                            .border(1.dp, colors.border, RoundedCornerShape(12.dp))
+                            .clip(RoundedCornerShape(12.dp))
                     ) {
                         efforts.forEach { e ->
                             val tint = effortColor(e, colors)
@@ -289,7 +292,10 @@ fun ChatGPTTopAppBar(
                                 onClick = {
                                     onSelectEffort(e)
                                     effortMenu = false
-                                }
+                                },
+                                modifier = Modifier
+                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                                    .clip(RoundedCornerShape(8.dp))
                             )
                         }
                     }
@@ -667,6 +673,112 @@ private fun parseMarkdownBlocks(text: String): List<MdBlock> {
 }
 
 private val INLINE_MD = Regex("\\[([^\\]]+)\\]\\(([^)\\s]+)\\)|\\*\\*(.+?)\\*\\*|~~(.+?)~~|`([^`\\n]+?)`|(?<!\\w)\\*([^*\n]+?)\\*(?!\\w)")
+
+/**
+ * Lightweight syntax coloring for fenced code blocks (no dependencies).
+ * Keywords, strings, comments, numbers, and JSON keys get theme-aware
+ * tints; unknown languages fall back to plain text.
+ */
+private val CODE_KEYWORDS = setOf(
+    "fun", "val", "var", "class", "object", "interface", "if", "else", "when", "for", "while",
+    "return", "import", "package", "null", "true", "false", "this", "super", "try", "catch",
+    "finally", "throw", "in", "is", "as", "break", "continue", "do", "switch", "case", "default",
+    "def", "lambda", "with", "from", "pass", "elif", "except", "raise", "await", "async",
+    "function", "const", "let", "new", "typeof", "void", "delete", "extends", "implements",
+    "public", "private", "protected", "static", "final", "void", "int", "float", "double",
+    "string", "bool", "struct", "enum", "namespace", "using", "template", "typename",
+    "select", "from", "where", "insert", "update", "delete", "create", "table", "join", "on"
+)
+
+private fun highlightCode(lang: String, code: String, colors: KarenColors): AnnotatedString {
+    val builder = AnnotatedString.Builder()
+    val base = androidx.compose.ui.text.SpanStyle(
+        color = colors.textPrimary,
+        fontFamily = FontFamily.Monospace
+    )
+    // Tokenizer: comments, strings, numbers, words — in priority order.
+    val tokenRe = Regex(
+        "(//[^\n]*|#[^\n]*|/\\*[\\s\\S]*?\\*/|<!--[\\s\\S]*?-->)|" + // 1 comment
+            "(\"\"\"[\\s\\S]*?\"\"\"|\"(?:\\\\.|[^\"\\\\\n])*\"|'(?:\\\\.|[^'\\\\\n])*'|`(?:\\\\.|[^`\\\\])*`)|" + // 2 string
+            "(\\b\\d[\\w'.]*\\b)|" + // 3 number
+            "([A-Za-z_][\\w$]*)" // 4 word
+    )
+    var pos = 0
+    val isJson = lang.equals("json", ignoreCase = true)
+    for (m in tokenRe.findAll(code)) {
+        if (m.range.first > pos) {
+            builder.pushStyle(base)
+            builder.append(code.substring(pos, m.range.first))
+            builder.pop()
+        }
+        val comment = m.groupValues[1]
+        val str = m.groupValues[2]
+        val num = m.groupValues[3]
+        val word = m.groupValues[4]
+        when {
+            comment.isNotEmpty() -> {
+                // A lone # is a markdown header, not a code comment — except in
+                // script languages. Keep it simple: color only //, /*, <!--.
+                if (comment.startsWith("#") && lang.lowercase() !in setOf("py", "python", "sh", "bash", "yaml", "yml", "r", "rb", "ruby")) {
+                    builder.pushStyle(base)
+                    builder.append(comment)
+                    builder.pop()
+                } else {
+                    builder.pushStyle(base.copy(color = colors.textMuted, fontStyle = androidx.compose.ui.text.font.FontStyle.Italic))
+                    builder.append(comment)
+                    builder.pop()
+                }
+            }
+            str.isNotEmpty() -> {
+                builder.pushStyle(base.copy(color = colors.accentGreen))
+                builder.append(str)
+                builder.pop()
+            }
+            num.isNotEmpty() -> {
+                builder.pushStyle(base.copy(color = colors.accentAmber))
+                builder.append(num)
+                builder.pop()
+            }
+            word.isNotEmpty() -> {
+                val isKey = isJson && m.range.last + 1 < code.length && code[m.range.last + 1] == ':'
+                when {
+                    isKey -> {
+                        builder.pushStyle(base.copy(color = colors.accentBlue))
+                        builder.append(word)
+                        builder.pop()
+                    }
+                    word in CODE_KEYWORDS -> {
+                        builder.pushStyle(base.copy(color = colors.accentBlue, fontWeight = FontWeight.Bold))
+                        builder.append(word)
+                        builder.pop()
+                    }
+                    word.first().isUpperCase() -> {
+                        builder.pushStyle(base.copy(color = colors.accentAmber))
+                        builder.append(word)
+                        builder.pop()
+                    }
+                    else -> {
+                        builder.pushStyle(base)
+                        builder.append(word)
+                        builder.pop()
+                    }
+                }
+            }
+            else -> {
+                builder.pushStyle(base)
+                builder.append(m.value)
+                builder.pop()
+            }
+        }
+        pos = m.range.last + 1
+    }
+    if (pos < code.length) {
+        builder.pushStyle(base)
+        builder.append(code.substring(pos))
+        builder.pop()
+    }
+    return builder.toAnnotatedString()
+}
 
 private fun inlineAnnotated(
     raw: String,
@@ -1118,8 +1230,7 @@ fun CodeBlockView(
         }
         // Code content
         Text(
-            text = code,
-            color = colors.textPrimary,
+            text = remember(language, code) { highlightCode(language, code, colors) },
             fontSize = 12.sp,
             fontFamily = FontFamily.Monospace,
             lineHeight = 18.sp,
@@ -1137,7 +1248,9 @@ fun MessageActionBar(
     onCopy: () -> Unit = {},
     onRegenerate: () -> Unit = {},
     onSpeak: () -> Unit = {},
-    onShare: () -> Unit = {}
+    onShare: () -> Unit = {},
+    onLike: () -> Unit = {},
+    onDislike: () -> Unit = {}
 ) {
     val colors = LocalKarenColors.current
     val clipboardManager = LocalClipboardManager.current
@@ -1167,7 +1280,10 @@ fun MessageActionBar(
             )
         }
         IconButton(
-            onClick = { thumbsState = if (thumbsState == 1) 0 else 1 },
+            onClick = {
+                thumbsState = if (thumbsState == 1) 0 else 1
+                if (thumbsState == 1) onLike()
+            },
             modifier = Modifier.size(32.dp)
         ) {
             Icon(
@@ -1178,7 +1294,10 @@ fun MessageActionBar(
             )
         }
         IconButton(
-            onClick = { thumbsState = if (thumbsState == 2) 0 else 2 },
+            onClick = {
+                thumbsState = if (thumbsState == 2) 0 else 2
+                if (thumbsState == 2) onDislike()
+            },
             modifier = Modifier.size(32.dp)
         ) {
             Icon(
@@ -1804,7 +1923,7 @@ fun ModelSelectorSheet(
                                     .padding(horizontal = 6.dp, vertical = 2.dp)
                             ) {
                                 Text(
-                                    text = if (isSelected) "Active" else if (isReasoningModel(name)) "Thinks" else "GGUF",
+                                    text = if (isSelected) "Active" else if (isReasoningModel(name)) "Thinks" else ModelDownloader.formatOf(name),
                                     color = if (isSelected || isReasoningModel(name)) colors.accentGreen else colors.textMuted,
                                     fontSize = 10.5.sp,
                                     fontWeight = FontWeight.Bold
@@ -2185,6 +2304,52 @@ private fun DrawerSectionHeader(
  * Slide-out Navigation Drawer matching ChatGPT Mobile
  */
 @Composable
+private fun DrawerConversationRow(
+    convo: ChatConversation,
+    dateFmt: java.text.SimpleDateFormat,
+    onOpenConversation: (String) -> Unit,
+    onCloseDrawer: () -> Unit,
+    onDeleteConversation: (String) -> Unit
+) {
+    val colors = LocalKarenColors.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(Color.Transparent)
+            .clickable {
+                onOpenConversation(convo.id)
+                onCloseDrawer()
+            }
+            .padding(start = 10.dp, top = 8.dp, bottom = 8.dp, end = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                convo.title,
+                color = colors.textSecondary,
+                fontSize = 13.sp,
+                maxLines = 1
+            )
+            Text(
+                dateFmt.format(java.util.Date(convo.updatedAt)),
+                color = colors.textMuted,
+                fontFamily = FontFamily.Monospace,
+                fontSize = 10.sp,
+                maxLines = 1
+            )
+        }
+        IconButton(
+            onClick = { onDeleteConversation(convo.id) },
+            modifier = Modifier.size(30.dp)
+        ) {
+            Icon(Icons.Default.DeleteOutline, contentDescription = "Delete chat", tint = colors.textMuted, modifier = Modifier.size(15.dp))
+        }
+    }
+}
+
+@Composable
 fun ChatGPTDrawerContent(
     currentScreen: String = "Chat",
     onNavigate: (String) -> Unit = {},
@@ -2304,31 +2469,34 @@ fun ChatGPTDrawerContent(
                     collapsed = toolsCollapsed,
                     onToggle = { toolsCollapsed = !toolsCollapsed }
                 )
-                AnimatedVisibility(visible = !toolsCollapsed) {
-                    Column {
-                        DrawerNavItem("Home Dashboard", Icons.Default.Home, currentScreen == "Home") {
-                            onNavigate("Home"); onCloseDrawer()
-                        }
-                        DrawerNavItem("Advanced Voice Mode", Icons.Default.GraphicEq, currentScreen == "Voice") {
-                            onNavigate("Voice"); onCloseDrawer()
-                        }
-                        DrawerNavItem("Dev Workspace / Canvas", Icons.Default.Terminal, currentScreen == "Workspace") {
-                            onNavigate("Workspace"); onCloseDrawer()
-                        }
-                        DrawerNavItem("Knowledge Vault & Files", Icons.Default.Folder, currentScreen == "Files") {
-                            onNavigate("Files"); onCloseDrawer()
-                        }
-                        DrawerNavItem("Memory & Preferences", Icons.Default.Psychology, currentScreen == "Memory") {
-                            onNavigate("Memory"); onCloseDrawer()
-                        }
-                        DrawerNavItem("Local Models (GGUF)", Icons.Default.Memory, currentScreen == "ModelManager") {
-                            onNavigate("ModelManager"); onCloseDrawer()
-                        }
-                        DrawerNavItem("Performance & TTFT", Icons.Default.Speed, currentScreen == "Performance") {
-                            onNavigate("Performance"); onCloseDrawer()
-                        }
-                        DrawerNavItem("Hardware & Governance", Icons.Default.Shield, currentScreen == "Hardware") {
-                            onNavigate("Hardware"); onCloseDrawer()
+                // Collapsed sections still preview their first three entries.
+                Column {
+                    DrawerNavItem("Home Dashboard", Icons.Default.Home, currentScreen == "Home") {
+                        onNavigate("Home"); onCloseDrawer()
+                    }
+                    DrawerNavItem("Advanced Voice Mode", Icons.Default.GraphicEq, currentScreen == "Voice") {
+                        onNavigate("Voice"); onCloseDrawer()
+                    }
+                    DrawerNavItem("Dev Workspace / Canvas", Icons.Default.Terminal, currentScreen == "Workspace") {
+                        onNavigate("Workspace"); onCloseDrawer()
+                    }
+                    AnimatedVisibility(visible = !toolsCollapsed) {
+                        Column {
+                            DrawerNavItem("Knowledge Vault & Files", Icons.Default.Folder, currentScreen == "Files") {
+                                onNavigate("Files"); onCloseDrawer()
+                            }
+                            DrawerNavItem("Memory & Preferences", Icons.Default.Psychology, currentScreen == "Memory") {
+                                onNavigate("Memory"); onCloseDrawer()
+                            }
+                            DrawerNavItem("Local Models (GGUF)", Icons.Default.Memory, currentScreen == "ModelManager") {
+                                onNavigate("ModelManager"); onCloseDrawer()
+                            }
+                            DrawerNavItem("Performance & TTFT", Icons.Default.Speed, currentScreen == "Performance") {
+                                onNavigate("Performance"); onCloseDrawer()
+                            }
+                            DrawerNavItem("Hardware & Governance", Icons.Default.Shield, currentScreen == "Hardware") {
+                                onNavigate("Hardware"); onCloseDrawer()
+                            }
                         }
                     }
                 }
@@ -2338,25 +2506,28 @@ fun ChatGPTDrawerContent(
                     collapsed = managersCollapsed,
                     onToggle = { managersCollapsed = !managersCollapsed }
                 )
-                AnimatedVisibility(visible = !managersCollapsed) {
-                    Column {
-                        DrawerNavItem("Model Import", Icons.Default.FolderOpen, currentScreen == "ModelImport") {
-                            onNavigate("ModelImport"); onCloseDrawer()
-                        }
-                        DrawerNavItem("Model Export", Icons.Default.Upload, currentScreen == "ModelExport") {
-                            onNavigate("ModelExport"); onCloseDrawer()
-                        }
-                        DrawerNavItem("Memory Transfer", Icons.Default.Sync, currentScreen == "MemoryTransfer") {
-                            onNavigate("MemoryTransfer"); onCloseDrawer()
-                        }
-                        DrawerNavItem("Backup Package", Icons.Default.Archive, currentScreen == "BackupPackage") {
-                            onNavigate("BackupPackage"); onCloseDrawer()
-                        }
-                        DrawerNavItem("Karen Storage", Icons.Default.Storage, currentScreen == "StorageManager") {
-                            onNavigate("StorageManager"); onCloseDrawer()
-                        }
-                        DrawerNavItem("Device Migration", Icons.Default.SwapHoriz, currentScreen == "Migration") {
-                            onNavigate("Migration"); onCloseDrawer()
+                // Collapsed sections still preview their first three entries.
+                Column {
+                    DrawerNavItem("Model Import", Icons.Default.FolderOpen, currentScreen == "ModelImport") {
+                        onNavigate("ModelImport"); onCloseDrawer()
+                    }
+                    DrawerNavItem("Model Export", Icons.Default.Upload, currentScreen == "ModelExport") {
+                        onNavigate("ModelExport"); onCloseDrawer()
+                    }
+                    DrawerNavItem("Memory Transfer", Icons.Default.Sync, currentScreen == "MemoryTransfer") {
+                        onNavigate("MemoryTransfer"); onCloseDrawer()
+                    }
+                    AnimatedVisibility(visible = !managersCollapsed) {
+                        Column {
+                            DrawerNavItem("Backup Package", Icons.Default.Archive, currentScreen == "BackupPackage") {
+                                onNavigate("BackupPackage"); onCloseDrawer()
+                            }
+                            DrawerNavItem("Karen Storage", Icons.Default.Storage, currentScreen == "StorageManager") {
+                                onNavigate("StorageManager"); onCloseDrawer()
+                            }
+                            DrawerNavItem("Device Migration", Icons.Default.SwapHoriz, currentScreen == "Migration") {
+                                onNavigate("Migration"); onCloseDrawer()
+                            }
                         }
                     }
                 }
@@ -2370,6 +2541,29 @@ fun ChatGPTDrawerContent(
                     collapsed = historyCollapsed,
                     onToggle = { historyCollapsed = !historyCollapsed }
                 )
+                // Collapsed history still previews the three newest chats.
+                Column {
+                    if (historyCollapsed) {
+                        val flatFmt = java.text.SimpleDateFormat("dd MMM, HH:mm", java.util.Locale.getDefault())
+                        if (visibleConversations.isEmpty()) {
+                            Text(
+                                "No saved chats yet — they appear here after your first message.",
+                                color = colors.textMuted,
+                                fontSize = 12.sp,
+                                modifier = Modifier.padding(vertical = 6.dp)
+                            )
+                        } else {
+                            visibleConversations.take(3).forEach { convo ->
+                                DrawerConversationRow(
+                                    convo = convo,
+                                    dateFmt = flatFmt,
+                                    onOpenConversation = onOpenConversation,
+                                    onCloseDrawer = onCloseDrawer,
+                                    onDeleteConversation = onDeleteConversation
+                                )
+                            }
+                        }
+                    } else {
                 AnimatedVisibility(visible = !historyCollapsed) {
                     Column {
                         if (visibleConversations.isEmpty()) {
@@ -2400,45 +2594,19 @@ fun ChatGPTDrawerContent(
                                 modifier = Modifier.padding(vertical = 6.dp)
                             )
                             items.take(30).forEach { convo ->
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(vertical = 2.dp)
-                                        .clip(RoundedCornerShape(10.dp))
-                                        .background(Color.Transparent)
-                                        .clickable {
-                                            onOpenConversation(convo.id)
-                                            onCloseDrawer()
-                                        }
-                                        .padding(start = 10.dp, top = 8.dp, bottom = 8.dp, end = 4.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Column(Modifier.weight(1f)) {
-                                        Text(
-                                            convo.title,
-                                            color = colors.textSecondary,
-                                            fontSize = 13.sp,
-                                            maxLines = 1
-                                        )
-                                        Text(
-                                            dateFmt.format(java.util.Date(convo.updatedAt)),
-                                            color = colors.textMuted,
-                                            fontFamily = FontFamily.Monospace,
-                                            fontSize = 10.sp,
-                                            maxLines = 1
-                                        )
-                                    }
-                                    IconButton(
-                                        onClick = { onDeleteConversation(convo.id) },
-                                        modifier = Modifier.size(30.dp)
-                                    ) {
-                                        Icon(Icons.Default.DeleteOutline, contentDescription = "Delete chat", tint = colors.textMuted, modifier = Modifier.size(15.dp))
-                                    }
-                                }
+                                DrawerConversationRow(
+                                    convo = convo,
+                                    dateFmt = dateFmt,
+                                    onOpenConversation = onOpenConversation,
+                                    onCloseDrawer = onCloseDrawer,
+                                    onDeleteConversation = onDeleteConversation
+                                )
                             }
                             Spacer(Modifier.height(6.dp))
                         }
                     }
+                }
+                }
                 }
                 }
                 }

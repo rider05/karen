@@ -94,10 +94,11 @@ object UserPrefs {
     }
 
     // Premium Visual Technical Explainer Mode: structured answers with
-    // diagrams, tables, checklists, and labeled code blocks. On by default
-    // (docs/premium_visual_technical_explainer_prompt.md).
+    // diagrams, tables, checklists, and labeled code blocks. Off by default —
+    // normal replies otherwise; applies when toggled on or the prompt is a
+    // study ask (docs/premium_visual_technical_explainer_prompt.md).
     private const val KEY_EXPLAINER = "explainer_mode"
-    fun explainerMode(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_EXPLAINER, true)
+    fun explainerMode(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_EXPLAINER, false)
     fun setExplainerMode(ctx: Context, enabled: Boolean) {
         prefs(ctx).edit().putBoolean(KEY_EXPLAINER, enabled).apply()
     }
@@ -157,6 +158,13 @@ object UserPrefs {
         (prefs(ctx).getInt(KEY_CONTEXT_TOKENS, 4096)).coerceIn(2048, 16384)
     fun setContextTokens(ctx: Context, value: Int) {
         prefs(ctx).edit().putInt(KEY_CONTEXT_TOKENS, value.coerceIn(2048, 16384)).apply()
+    }
+
+    // Lifetime user-message counter (drives StyleMemory's 300-message window).
+    private const val KEY_TOTAL_MSGS = "total_messages"
+    fun totalMessages(ctx: Context): Int = prefs(ctx).getInt(KEY_TOTAL_MSGS, 0)
+    fun bumpTotalMessages(ctx: Context) {
+        prefs(ctx).edit().putInt(KEY_TOTAL_MSGS, totalMessages(ctx) + 1).apply()
     }
 
     // Per-project git remote URL, keyed by project dir (lives beside .karen

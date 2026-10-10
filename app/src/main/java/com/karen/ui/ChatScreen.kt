@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.sp
 import com.karen.rememberVoiceStt
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.withTimeoutOrNull
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.border
@@ -49,12 +50,17 @@ sealed class ChatItem {
         /** Approx. reply tokens (chars/4). 0 = unknown/not finished. */
         val tokens: Int = 0,
         /** True when this reply was cut short by Stop. */
-        val interrupted: Boolean = false
+        val interrupted: Boolean = false,
+        /** Model that wrote this reply (manual pick or Auto route). */
+        val model: String = ""
     ) : ChatItem()
 }
 
 /** A prompt typed while the model was busy, run after the current reply. */
 data class QueuedPrompt(val text: String, val attachments: List<Attachment> = emptyList())
+
+/** Local load+generation budget before falling back to a keyed cloud model. */
+private const val LOCAL_TURN_TIMEOUT_MS = 150_000L
 
 /** An attachment picked from the device, pending to be added to the chat. */
 data class Attachment(val name: String, val sizeBytes: Long, val mime: String? = null)
@@ -97,6 +103,13 @@ fun historyTurnsFor(windowTokens: Int): Int = when {
     windowTokens >= 8192 -> 40
     else -> 20
 }
+
+/**
+ * Cloud turns ignore the local content-window setting (it sizes on-device
+ * RAM, not API context). Providers serve 32k–1M+ tokens; 60 turns keeps
+ * long conversations coherent without unbounded growth.
+ */
+fun cloudHistoryTurns(): Int = 60
 
 fun localTurnsFor(windowTokens: Int): Int = when {
     windowTokens >= 16384 -> 24
@@ -142,6 +155,10 @@ fun ChatScreen(
     // One-time web-search consent: gate suspends the send until the user answers.
     var webConsentGate by remember { mutableStateOf<CompletableDeferred<Boolean>?>(null) }
     var webConsentPreview by remember { mutableStateOf<String?>(null) }
+    // Usage stats dialog + dislike feedback entry.
+    var showUsage by remember { mutableStateOf(false) }
+    var dislikeFor by remember { mutableStateOf<ChatItem.Assistant?>(null) }
+    var dislikeText by remember { mutableStateOf("") }
 
     // System back button: dismiss open sheets first, stop generation, else Home
     androidx.activity.compose.BackHandler {
@@ -180,7 +197,8 @@ fun ChatScreen(
     /** Manual model, or the routed pick when Auto is on. */
     fun effectiveModel(prompt: String): String {
         if (!autoRoute) return selectedModel
-        val locals = UserPrefs.models(context).filter { !isCloudProviderName(it) }
+        val locals = UserPrefs.models(context)
+            .filter { !isCloudProviderName(it) && ModelDownloader.isRunnableWeight(context, it) }
         val keyed = cloudProviders.filter { UserPrefs.apiKey(context, it.id).isNotBlank() }
         val decision = routeModel(prompt, locals, keyed, UserPrefs.autoCloud(context))
         if (decision != null) {
@@ -330,6 +348,20 @@ fun ChatScreen(
         }
     }
 
+    /**
+     * Lists the next queued prompt (typed while busy) so the drain effect
+     * starts its turn. Runs after success AND after interrupt — queued work
+     * is independent of how the previous turn ended.
+     */
+    fun drainQueue() {
+        if (queue.isEmpty()) return
+        val q = queue.removeAt(0)
+        val qid = "user_${System.currentTimeMillis()}"
+        messages.add(ChatItem.User(id = qid, text = q.text, attachments = q.attachments))
+        StyleMemory.bumpMessageCount(context)
+        pendingDrainId = qid
+    }
+
     /** End-of-generation after Stop: keep partial text, drop bare placeholders. */
     suspend fun cancelSettle(id: String) {
         if (!streamingContent) {
@@ -346,6 +378,7 @@ fun ChatScreen(
         streamingId = null
         genLive = null
         scrollToBottomIfNear()
+        drainQueue()
     }
 
     /** End-of-generation on success: stamp stats, archive, then run queued prompts. */
@@ -358,12 +391,7 @@ fun ChatScreen(
         genLive = null
         scrollToBottomIfNear()
         // Queued prompts (typed while busy) run now, one following the other.
-        if (queue.isNotEmpty()) {
-            val q = queue.removeAt(0)
-            val qid = "user_${System.currentTimeMillis()}"
-            messages.add(ChatItem.User(id = qid, text = q.text, attachments = q.attachments))
-            pendingDrainId = qid
-        }
+        drainQueue()
     }
 
     /** Failed turn: show the error inline in the provisional bubble. */
@@ -376,6 +404,104 @@ fun ChatScreen(
         streamingId = null
         genLive = null
         scrollToBottomIfNear()
+    }
+
+    /** Prompt shaping: explainer guide and/or liked-style memory. */
+    fun shapingSuffix(prompt: String): String {
+        val parts = listOf(
+            if (wantsExplainer(prompt, context)) EXPLAINER_STYLE_GUIDE else "",
+            StyleMemory.currentHint(context)
+        ).filter { it.isNotBlank() }
+        return if (parts.isEmpty()) "" else " " + parts.joinToString("\n\n")
+    }
+
+    /** Best keyed cloud for slow-local fallback, or null when offline/unkeyed. */
+    fun pickFallbackCloud(prompt: String): CloudProvider? {
+        if (!device.networkUp) return null
+        val keyed = cloudProviders.filter { UserPrefs.apiKey(context, it.id).isNotBlank() }
+        if (keyed.isEmpty()) return null
+        val intent = detectIntent(prompt.ifBlank { "chat" })
+        return keyed.maxByOrNull { scoreCloud(it.id, intent) }
+    }
+
+    /**
+     * One full cloud turn for an already-listed provisional bubble [aid].
+     * Shared by direct cloud routes and slow-local fallback so the flow
+     * never breaks mid-reply.
+     */
+    suspend fun cloudTurn(
+        cloud: CloudProvider,
+        cloudKey: String,
+        aid: String,
+        userText: String,
+        web: String?,
+        regenerateHint: String?
+    ) {
+        setStreamingText(aid, "Contacting ${cloud.name}…")
+        // Stamp the answering model (no-op on direct routes, correct on fallback).
+        val mi = messages.indexOfFirst { (it as? ChatItem.Assistant)?.id == aid }
+        if (mi >= 0) {
+            (messages[mi] as? ChatItem.Assistant)?.let { messages[mi] = it.copy(model = cloud.name) }
+        }
+        try {
+            // Cloud history uses the provider window, not the local setting.
+            val limit = cloudHistoryTurns()
+            val base = messages.mapNotNull { item ->
+                when (item) {
+                    is ChatItem.User -> "user" to item.text
+                    is ChatItem.Assistant -> if (item.id == aid) null else "assistant" to item.text
+                }
+            }.takeLast(limit)
+            val history = if (web != null) {
+                (base + ("user" to "Use these fresh web results if relevant:\n$web")).takeLast(limit)
+            } else base
+            val instructed = if (regenerateHint != null) {
+                (history + ("user" to regenerateHint)).takeLast(limit)
+            } else history
+            // Prompt shaping (explainer/style memory) without touching history.
+            val shaping = shapingSuffix(userText)
+            val styled = if (shaping.isNotBlank() && instructed.isNotEmpty() && instructed.last().first == "user") {
+                instructed.dropLast(1) + ("user" to instructed.last().second + "\n\n" + shaping.trim())
+            } else instructed
+            // Recursively continue cut-off replies: when the model hits
+            // its output cap it stops mid-answer, so keep asking for
+            // the rest instead of making the user type "continue".
+            val fullReply = StringBuilder()
+            var roundHistory = styled
+            var rounds = 0
+            var cut = true
+            while (cut && rounds < 4 && !cancelGeneration) {
+                if (rounds > 0) {
+                    setStreamingText(aid, "Continuing… (part ${rounds + 1})")
+                }
+                val res = cloud.completeResult(
+                    cloudKey,
+                    roundHistory,
+                    maxTokensFor(effort),
+                    thinkingBudget = if (cloud.reasoning) thinkingBudgetFor(effort) else null,
+                    historyLimit = limit,
+                    model = UserPrefs.apiModel(context, cloud.id).ifBlank { null }
+                )
+                if (cancelGeneration) break
+                fullReply.append(res.text)
+                cut = res.truncated && res.text.isNotBlank()
+                rounds++
+                if (cut && rounds < 4) {
+                    roundHistory = (roundHistory + ("assistant" to res.text) + ("user" to "Continue exactly where you stopped. Output only the continuation — no recap, no repetition.")).takeLast(limit)
+                }
+            }
+            val reply = fullReply.toString()
+            if (cancelGeneration) {
+                cancelSettle(aid)
+            } else {
+                playOut(aid, reply)
+                if (cancelGeneration) cancelSettle(aid) else completeSettle(reply.length)
+            }
+        } catch (e: CloudApiException) {
+            errorSettle(aid, "⚠ ${cloud.name} error (HTTP ${e.status}): ${e.message}")
+        } catch (e: Exception) {
+            errorSettle(aid, "⚠ Could not reach ${cloud.name} — check internet and your API key. (${e.message})")
+        }
     }
 
     /**
@@ -404,7 +530,7 @@ fun ChatScreen(
             streamingContent = false
             genLive = null
             val aid = "asst_${System.currentTimeMillis()}"
-            messages.add(ChatItem.Assistant(id = aid, text = ""))
+            messages.add(ChatItem.Assistant(id = aid, text = "", model = sendModel))
             streamingId = aid
             isGenerating = true
             scrollToBottomIfNear()
@@ -440,70 +566,13 @@ fun ChatScreen(
                 }
             }
             if (cloud != null && cloudKey.isNotBlank()) {
-                setStreamingText(aid, "Contacting ${cloud.name}…")
-                try {
-                    val window = UserPrefs.contextTokens(context)
-                    val limit = historyTurnsFor(window)
-                    val base = messages.mapNotNull { item ->
-                        when (item) {
-                            is ChatItem.User -> "user" to item.text
-                            is ChatItem.Assistant -> if (item.id == aid) null else "assistant" to item.text
-                        }
-                    }.takeLast(limit)
-                    val history = if (web != null) {
-                        (base + ("user" to "Use these fresh web results if relevant:\n$web")).takeLast(limit)
-                    } else base
-                    val instructed = if (regenerateHint != null) {
-                        (history + ("user" to regenerateHint)).takeLast(limit)
-                    } else history
-                    // Explainer Mode: style the answer being generated without
-                    // touching stored history.
-                    val styled = if (UserPrefs.explainerMode(context) && instructed.isNotEmpty() && instructed.last().first == "user") {
-                        instructed.dropLast(1) + ("user" to instructed.last().second + "\n\n" + EXPLAINER_STYLE_GUIDE)
-                    } else instructed
-                    // Recursively continue cut-off replies: when the model hits
-                    // its output cap it stops mid-answer, so keep asking for
-                    // the rest instead of making the user type "continue".
-                    val fullReply = StringBuilder()
-                    var roundHistory = styled
-                    var rounds = 0
-                    var cut = true
-                    while (cut && rounds < 4 && !cancelGeneration) {
-                        if (rounds > 0) {
-                            setStreamingText(aid, "Continuing… (part ${rounds + 1})")
-                        }
-                        val res = cloud.completeResult(
-                            cloudKey,
-                            roundHistory,
-                            maxTokensFor(effort),
-                            thinkingBudget = if (cloud.reasoning) thinkingBudgetFor(effort) else null,
-                            historyLimit = limit,
-                            model = UserPrefs.apiModel(context, cloud.id).ifBlank { null }
-                        )
-                        if (cancelGeneration) break
-                        fullReply.append(res.text)
-                        cut = res.truncated && res.text.isNotBlank()
-                        rounds++
-                        if (cut && rounds < 4) {
-                            roundHistory = (roundHistory + ("assistant" to res.text) + ("user" to "Continue exactly where you stopped. Output only the continuation — no recap, no repetition.")).takeLast(limit)
-                        }
-                    }
-                    val reply = fullReply.toString()
-                    if (cancelGeneration) {
-                        cancelSettle(aid)
-                    } else {
-                        playOut(aid, reply)
-                        if (cancelGeneration) cancelSettle(aid) else completeSettle(reply.length)
-                    }
-                } catch (e: CloudApiException) {
-                    errorSettle(aid, "⚠ ${cloud.name} error (HTTP ${e.status}): ${e.message}")
-                } catch (e: Exception) {
-                    errorSettle(aid, "⚠ Could not reach ${cloud.name} — check internet and your API key. (${e.message})")
-                }
+                cloudTurn(cloud, cloudKey, aid, userText, web, regenerateHint)
             } else if (weightFile != null) {
                 // Real on-device inference through the bundled llama.cpp core.
                 if (!KarenLlama.ready) {
                     errorSettle(aid, "Local runtime failed to load on this device.")
+                } else if (!ModelDownloader.isRunnableWeight(context, sendModel)) {
+                    errorSettle(aid, "$sendModel is ${ModelDownloader.formatOf(sendModel)} — on-device runs GGUF weights only. Convert it to GGUF or pick a cloud model.")
                 } else if (UserPrefs.thermalGuard(context) && device.batteryTempC >= UserPrefs.thermalLimitC(context)) {
                     errorSettle(
                         aid,
@@ -515,48 +584,66 @@ fun ChatScreen(
                     try {
                         val threads = maxOf(2, minOf(6, Runtime.getRuntime().availableProcessors()))
                         val window = UserPrefs.contextTokens(context)
-                        val loaded = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                            KarenLlama.ensureLoaded(weightFile, sendModel, window, threads)
+                        val localLimit = localTurnsFor(window)
+                        val basePairs = messages.mapNotNull { item ->
+                            when (item) {
+                                is ChatItem.User -> "user" to item.text
+                                is ChatItem.Assistant -> if (item.id == aid) null else "assistant" to item.text
+                            }
                         }
-                        if (!loaded) {
+                        val trimmedPairs = if (web != null) {
+                            (basePairs + ("user" to "Use these fresh web results if relevant:\n$web")).takeLast(localLimit)
+                        } else basePairs.takeLast(localLimit)
+                        val instructedPairs = if (regenerateHint != null) {
+                            (trimmedPairs + ("user" to regenerateHint)).takeLast(localLimit)
+                        } else trimmedPairs
+                        val shaping = shapingSuffix(userText)
+                        // Slow-local guard: load+generation share one budget, then
+                        // the turn continues on the best keyed cloud uninterrupted.
+                        data class LocalOut(val loaded: Boolean, val reply: String)
+                        val out = withTimeoutOrNull(LOCAL_TURN_TIMEOUT_MS) {
+                            val l = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                KarenLlama.ensureLoaded(weightFile, sendModel, window, threads)
+                            }
+                            var r = ""
+                            if (l && !cancelGeneration) {
+                                setStreamingText(aid, "Thinking on-device…")
+                                r = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                    KarenLlama.complete(
+                                        "You are Karen, a concise on-device assistant." +
+                                            if (isReasoningModel(sendModel)) reasoningEffortHint(effort) else "" +
+                                            shaping,
+                                        instructedPairs.map { it.first }.toTypedArray(),
+                                        instructedPairs.map { it.second }.toTypedArray(),
+                                        maxTokensFor(effort)
+                                    )
+                                }
+                            }
+                            LocalOut(l, r)
+                        }
+                        if (out == null) {
+                            // Local took too long: switch to API without breaking flow.
+                            if (cancelGeneration) {
+                                cancelSettle(aid)
+                            } else {
+                                val fb = pickFallbackCloud(userText)
+                                if (fb == null) {
+                                    errorSettle(aid, "$sendModel is taking too long and no keyed cloud model is reachable — check internet and Model Manager keys.")
+                                } else {
+                                    android.widget.Toast.makeText(context, "Local slow — continuing on ${fb.name}", android.widget.Toast.LENGTH_SHORT).show()
+                                    cloudTurn(fb, UserPrefs.apiKey(context, fb.id), aid, userText, web, regenerateHint)
+                                }
+                            }
+                        } else if (!out.loaded) {
                             if (cancelGeneration) cancelSettle(aid)
                             else errorSettle(aid, "Could not load $sendModel into RAM.")
                         } else if (cancelGeneration) {
                             cancelSettle(aid)
+                        } else if (out.reply.isNotBlank()) {
+                            playOut(aid, out.reply)
+                            if (cancelGeneration) cancelSettle(aid) else completeSettle(out.reply.length)
                         } else {
-                            setStreamingText(aid, "Thinking on-device…")
-                            val window = UserPrefs.contextTokens(context)
-                            val localLimit = localTurnsFor(window)
-                            val basePairs = messages.mapNotNull { item ->
-                                when (item) {
-                                    is ChatItem.User -> "user" to item.text
-                                    is ChatItem.Assistant -> if (item.id == aid) null else "assistant" to item.text
-                                }
-                            }
-                            val trimmedPairs = if (web != null) {
-                                (basePairs + ("user" to "Use these fresh web results if relevant:\n$web")).takeLast(localLimit)
-                            } else basePairs.takeLast(localLimit)
-                            val instructedPairs = if (regenerateHint != null) {
-                                (trimmedPairs + ("user" to regenerateHint)).takeLast(localLimit)
-                            } else trimmedPairs
-                            val reply = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                                KarenLlama.complete(
-                                    "You are Karen, a concise on-device assistant." +
-                                        if (isReasoningModel(sendModel)) reasoningEffortHint(effort) else "" +
-                                        if (UserPrefs.explainerMode(context)) " $EXPLAINER_STYLE_GUIDE" else "",
-                                    instructedPairs.map { it.first }.toTypedArray(),
-                                    instructedPairs.map { it.second }.toTypedArray(),
-                                    maxTokensFor(effort)
-                                )
-                            }
-                            if (cancelGeneration) {
-                                cancelSettle(aid)
-                            } else if (reply.isNotBlank()) {
-                                playOut(aid, reply)
-                                if (cancelGeneration) cancelSettle(aid) else completeSettle(reply.length)
-                            } else {
-                                errorSettle(aid, "The model returned an empty reply.")
-                            }
+                            errorSettle(aid, "The model returned an empty reply.")
                         }
                     } catch (e: Exception) {
                         errorSettle(aid, "Local model error: ${e.message}")
@@ -589,6 +676,7 @@ fun ChatScreen(
     fun sendNow(userText: String, sentAttachments: List<Attachment>) {
         val newId = System.currentTimeMillis().toString()
         messages.add(ChatItem.User(id = "user_$newId", text = userText.ifBlank { sentAttachments.joinToString(", ") { it.name } }, attachments = sentAttachments))
+        StyleMemory.bumpMessageCount(context)
         // Model answers (fresh sends, edited resends, regenerates) run here.
         runAssistantTurn(userText, sentAttachments)
     }
@@ -675,6 +763,9 @@ fun ChatScreen(
                 moreActions = listOf(
                     Triple("Search in chat", Icons.Default.Search) {
                         android.widget.Toast.makeText(context, "Search in chat", android.widget.Toast.LENGTH_SHORT).show()
+                    },
+                    Triple("Usage stats", Icons.Default.BarChart) {
+                        showUsage = true
                     },
                     Triple("Customize instructions", Icons.Default.Settings) {
                         android.widget.Toast.makeText(context, "Custom instructions", android.widget.Toast.LENGTH_SHORT).show()
@@ -851,6 +942,14 @@ fun ChatScreen(
                                 // Message Action Bar
                                 MessageActionBar(
                                     messageText = item.text,
+                                    onLike = {
+                                        StyleMemory.recordLike(context, item.text, item.model)
+                                        android.widget.Toast.makeText(context, "Liked — I'll answer more like this", android.widget.Toast.LENGTH_SHORT).show()
+                                    },
+                                    onDislike = {
+                                        dislikeFor = item
+                                        dislikeText = ""
+                                    },
                                     onRegenerate = {
                                         if (isGenerating) return@MessageActionBar
                                         val lastUserIdx = messages.indexOfLast { it is ChatItem.User }
@@ -869,11 +968,15 @@ fun ChatScreen(
                                         )
                                     }
                                 )
-                                // Reply timing + token footer, per response.
+                                // Reply timing + token + model footer, per response.
                                 if (item.tookMs > 0) {
+                                    val footer = buildString {
+                                        append("took ${formatDuration(item.tookMs)}")
+                                        if (item.tokens > 0) append(" · ~${item.tokens} tok")
+                                        if (item.model.isNotBlank()) append(" · ${item.model}")
+                                    }
                                     Text(
-                                        text = if (item.tokens > 0) "took ${formatDuration(item.tookMs)} · ~${item.tokens} tok"
-                                            else "took ${formatDuration(item.tookMs)}",
+                                        text = footer,
                                         color = colors.textMuted,
                                         fontSize = 10.5.sp,
                                         fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
@@ -1132,6 +1235,86 @@ fun ChatScreen(
                         webConsentGate = null
                         webConsentPreview = null
                     }) { Text("Don't allow") }
+                }
+            )
+        }
+
+        // Usage stats for this conversation.
+        if (showUsage) {
+            val users = messages.filterIsInstance<ChatItem.User>()
+            val replies = messages.filterIsInstance<ChatItem.Assistant>().filter { it.text.isNotBlank() }
+            val tokens = replies.sumOf { it.tokens }
+            val modelCounts = replies.filter { it.model.isNotBlank() }
+                .groupingBy { it.model }.eachCount()
+            var switches = 0
+            var prev: String? = null
+            replies.forEach {
+                if (it.model.isNotBlank()) {
+                    if (prev != null && prev != it.model) switches++
+                    prev = it.model
+                }
+            }
+            val started = conversationId.toLongOrNull()?.let {
+                java.text.SimpleDateFormat("dd MMM HH:mm", java.util.Locale.getDefault()).format(java.util.Date(it))
+            } ?: "-"
+            AlertDialog(
+                onDismissRequest = { showUsage = false },
+                title = { Text("Usage stats") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        KV("Started", started)
+                        KV("Requests", users.size.toString())
+                        KV("Responses", replies.size.toString())
+                        KV("Tokens used", "≈$tokens tok")
+                        KV("Model switches", switches.toString())
+                        KV("Queued", queue.size.toString())
+                        if (modelCounts.isNotEmpty()) {
+                            Spacer(Modifier.height(4.dp))
+                            Text("Models used", color = colors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                            modelCounts.entries.sortedByDescending { it.value }.forEach { (m, n) ->
+                                KV(m, "×$n")
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { showUsage = false }) { Text("Close") }
+                }
+            )
+        }
+
+        // Dislike feedback: how should Karen answer instead?
+        val badItem = dislikeFor
+        if (badItem != null) {
+            AlertDialog(
+                onDismissRequest = { dislikeFor = null },
+                title = { Text("What went wrong?") },
+                text = {
+                    Column {
+                        Text(
+                            "Tell Karen how you'd like answers instead — saved to style memory for 30 days / 300 messages.",
+                            fontSize = 13.sp
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = dislikeText,
+                            onValueChange = { dislikeText = it },
+                            placeholder = { Text("e.g. shorter answers with examples") },
+                            colors = karenFieldColors(colors),
+                            modifier = Modifier.fillMaxWidth(),
+                            minLines = 2
+                        )
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        StyleMemory.recordDislike(context, dislikeText)
+                        dislikeFor = null
+                        android.widget.Toast.makeText(context, "Saved — I'll adjust my style", android.widget.Toast.LENGTH_SHORT).show()
+                    }) { Text("Save") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { dislikeFor = null }) { Text("Cancel") }
                 }
             )
         }

@@ -75,7 +75,8 @@ object ChatHistoryStore {
                         text = body,
                         tookMs = parts.getOrNull(4)?.toLongOrNull() ?: 0L,
                         tokens = parts.getOrNull(5)?.toIntOrNull() ?: body.length / 4,
-                        interrupted = parts.getOrNull(6) == "1"
+                        interrupted = parts.getOrNull(6) == "1",
+                        model = parts.getOrNull(7)?.let { dec(it) } ?: ""
                     )
                 }
                 else -> null
@@ -90,7 +91,7 @@ object ChatHistoryStore {
         val lines = messages.map { item ->
             when (item) {
                 is ChatItem.User -> "U\t${enc(item.text)}\t${enc(item.attachments.joinToString("\n") { it.name })}"
-                is ChatItem.Assistant -> "A\t${enc(item.thought ?: "")}\t${enc(item.toolCall ?: "")}\t${enc(item.text)}\t${item.tookMs}\t${item.tokens}\t${if (item.interrupted) 1 else 0}"
+                is ChatItem.Assistant -> "A\t${enc(item.thought ?: "")}\t${enc(item.toolCall ?: "")}\t${enc(item.text)}\t${item.tookMs}\t${item.tokens}\t${if (item.interrupted) 1 else 0}\t${enc(item.model)}"
             }
         }
         chatFile(ctx, id).writeText(lines.joinToString("\n"))

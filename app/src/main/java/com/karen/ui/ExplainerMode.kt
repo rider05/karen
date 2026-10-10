@@ -46,6 +46,26 @@ const val EXPLAINER_STYLE_GUIDE =
         "Put code in labeled fenced blocks. Keep paragraphs short and mobile-friendly. Never invent services, " +
         "prices, quotas, or benchmarks; say when information may be outdated."
 
+/**
+ * True for study/learning asks: explicit explain/tutorial/detail requests.
+ * Used to auto-apply Explainer Mode only when asked that way.
+ */
+fun isStudyAsk(prompt: String): Boolean {
+    val t = " ${prompt.lowercase()} "
+    return listOf(
+        "explain", "tutorial", "learn", "study", "in detail", "detailed",
+        "architecture", "diagram", "how does", "how do", "what is", "what are",
+        " why ", "teach", "lesson", "step by step", "professional", "report",
+        "compare", "how it works"
+    ).any { it in t }
+}
+/**
+ * Explainer Mode applies only when asked: Settings toggle on, or the prompt
+ * itself is a study ask (explain/tutorial/in-detail…).
+ */
+fun wantsExplainer(prompt: String, ctx: android.content.Context): Boolean =
+    UserPrefs.explainerMode(ctx) || isStudyAsk(prompt)
+
 /** One box in a flowchart: [shape] is rect, decision, db, circle, subroutine, parallelogram, flag. */
 data class FlowNode(val id: String, val label: String, val shape: String)
 

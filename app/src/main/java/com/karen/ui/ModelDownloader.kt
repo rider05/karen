@@ -103,6 +103,20 @@ object ModelDownloader {
             ?.firstOrNull { it.isFile && it.nameWithoutExtension == displayName && it.length() > 0 }
     }
 
+    /** Display format for an installed weight name. Only GGUF runs on-device. */
+    fun formatOf(displayName: String): String = when (displayName.substringAfterLast('.', "").lowercase()) {
+        "onnx" -> "ONNX"
+        "pth", "pt" -> "PyTorch"
+        else -> "GGUF"
+    }
+
+    /** True when the installed weight can actually run (llama.cpp = GGUF only). */
+    fun isRunnableWeight(ctx: Context, displayName: String): Boolean {
+        if (isCloudProviderName(displayName)) return false
+        val f = weightFileFor(ctx, displayName) ?: return false
+        return f.extension.lowercase() == "gguf"
+    }
+
     fun modelFile(ctx: Context, fileName: String): File = File(modelsDir(ctx), fileName)
 
     fun start(ctx: Context, name: String, fileName: String, url: String): Boolean {

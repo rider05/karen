@@ -645,7 +645,8 @@ fun WorkspaceScreen(
 
     fun routeFor(prompt: String): String {
         if (!autoRoute) return selectedModel
-        val locals = UserPrefs.models(ctx).filter { !isCloudProviderName(it) }
+        val locals = UserPrefs.models(ctx)
+            .filter { !isCloudProviderName(it) && ModelDownloader.isRunnableWeight(ctx, it) }
         val keyed = cloudProviders.filter { UserPrefs.apiKey(ctx, it.id).isNotBlank() }
         val decision = routeModel(prompt, locals, keyed, UserPrefs.autoCloud(ctx))
         if (decision != null) {
@@ -789,7 +790,8 @@ fun WorkspaceScreen(
             // Project structure + file contents so the model continues in place.
             // Scaled by the Settings content window (up to 16k).
             val window = UserPrefs.contextTokens(ctx)
-            val cloudLimit = historyTurnsFor(window)
+            // Cloud turns use the provider window; the setting sizes local RAM only.
+            val cloudLimit = cloudHistoryTurns()
             val localLimit = localTurnsFor(window)
             val modelCtx = withContext(Dispatchers.IO) { projectContextForModel(dir, contextCharsFor(window)) }
             val buildInstruction =
@@ -798,7 +800,7 @@ fun WorkspaceScreen(
                     "///FILE: relative/path\n<complete file content>\n///END (up to 8 files, no fences, no prose inside blocks), " +
                     "then a 1-2 line summary. For discussion-only replies, answer normally with no ///FILE blocks." +
                     if (isReasoningModel(sendModel)) reasoningEffortHint(effort) else "" +
-                    if (UserPrefs.explainerMode(ctx)) " $EXPLAINER_STYLE_GUIDE" else ""
+                    if (wantsExplainer(t, ctx)) " $EXPLAINER_STYLE_GUIDE" else ""
             // 6. Assistant reply — live cloud call, on-device GGUF, else canned.
             val cloud = findCloudProviderByName(sendModel)
             val cloudKey = cloud?.let { UserPrefs.apiKey(ctx, it.id) }.orEmpty()

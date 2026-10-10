@@ -24,6 +24,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.provider.Settings
+import android.content.Intent
+import android.speech.SpeechRecognizer
+import android.speech.tts.TextToSpeech
 import android.widget.Toast
 import com.karen.rememberDeviceTelemetry
 import java.io.File
@@ -94,7 +98,7 @@ fun ModelManagerScreen(
             val stored = UserPrefs.models(ctx)
             val cleaned = stored.filter { !isCloudProviderName(it) }
             if (cleaned.size != stored.size) UserPrefs.saveModels(ctx, cleaned)
-            cleaned.forEach { n -> add(GgufModel(n, "-", "-", "-", "GGUF")) }
+            cleaned.forEach { n -> add(GgufModel(n, "-", "-", "-", ModelDownloader.formatOf(n))) }
         }
     }
 
@@ -115,7 +119,7 @@ fun ModelManagerScreen(
     fun reloadModels() {
         models.clear()
         UserPrefs.models(ctx).filter { !isCloudProviderName(it) }
-            .forEach { n -> models.add(GgufModel(n, "-", "-", "-", "GGUF")) }
+            .forEach { n -> models.add(GgufModel(n, "-", "-", "-", ModelDownloader.formatOf(n))) }
         if (activeModel != null && models.none { it.name == activeModel?.name }) activeModel = null
     }
 
@@ -203,21 +207,25 @@ fun ModelManagerScreen(
             if (i >= 0 && c.moveToFirst()) c.getLong(i) else -1L
         } ?: -1L
 
-    /** Copies the picked file into app storage after a GGUF header check. Null = ok. */
+    /** Copies the picked file into app storage. GGUF is header-checked; ONNX /
+        PyTorch are stored as-is (listed, but on-device runs GGUF only). Null = ok. */
     fun copyImport(uri: Uri, dest: File, total: Long): String? {
+        val runnable = dest.extension.lowercase() == "gguf"
         try {
-            ctx.contentResolver.openInputStream(uri)?.use { input ->
-                val magic = ByteArray(4)
-                var read = 0
-                while (read < 4) {
-                    val n = input.read(magic, read, 4 - read)
-                    if (n < 0) break
-                    read += n
-                }
-                if (read < 4 || String(magic, Charsets.US_ASCII) != "GGUF") {
-                    return "not a GGUF file (bad header)"
-                }
-            } ?: return "cannot open file"
+            if (runnable) {
+                ctx.contentResolver.openInputStream(uri)?.use { input ->
+                    val magic = ByteArray(4)
+                    var read = 0
+                    while (read < 4) {
+                        val n = input.read(magic, read, 4 - read)
+                        if (n < 0) break
+                        read += n
+                    }
+                    if (read < 4 || String(magic, Charsets.US_ASCII) != "GGUF") {
+                        return "not a GGUF file (bad header)"
+                    }
+                } ?: return "cannot open file"
+            }
             var copied = 0L
             ctx.contentResolver.openInputStream(uri)?.use { input ->
                 dest.outputStream().use { out ->
@@ -244,8 +252,9 @@ fun ModelManagerScreen(
         if (uri == null) return@rememberLauncherForActivityResult
         managerScope.launch {
             val name = fileNameOf(uri)
-            if (!name.endsWith(".gguf", ignoreCase = true)) {
-                Toast.makeText(ctx, "Only .gguf files can be imported", Toast.LENGTH_SHORT).show()
+            val ext = name.substringAfterLast('.', "").lowercase()
+            if (ext !in setOf("gguf", "onnx", "pth", "pt")) {
+                Toast.makeText(ctx, "Only .gguf, .onnx, .pth files can be imported", Toast.LENGTH_SHORT).show()
                 return@launch
             }
             if (name in UserPrefs.models(ctx)) {
@@ -266,7 +275,9 @@ fun ModelManagerScreen(
             when {
                 err == null -> {
                     reloadModels()
-                    Toast.makeText(ctx, "Imported $name — select it in the model picker", Toast.LENGTH_SHORT).show()
+                    val note = if (ModelDownloader.formatOf(name) == "GGUF") "select it in the model picker"
+                    else "listed (${ModelDownloader.formatOf(name)} — on-device runs GGUF only)"
+                    Toast.makeText(ctx, "Imported $name — $note", Toast.LENGTH_LONG).show()
                 }
                 err == "CANCELLED" -> {
                     dest.delete()
@@ -338,7 +349,7 @@ fun ModelManagerScreen(
                         icon = Icons.Default.FolderOpen,
                         tint = colors.accentGreen,
                         title = "Import from Storage",
-                        subtitle = "Pick a .gguf from your device",
+                        subtitle = "Pick .gguf, .onnx or .pth from your device",
                         onClick = { importModelLauncher.launch(arrayOf("*/*")) }
                     )
                     Spacer(Modifier.height(8.dp))
@@ -532,7 +543,7 @@ fun ModelManagerScreen(
 
             // Installed GGUF Models
             item {
-                Text("Installed GGUF Weights (${models.size})", color = colors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                Text("Installed Weights (${models.size})", color = colors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(6.dp))
                 if (models.isEmpty()) Text("No data found", color = colors.textMuted, fontSize = 12.sp)
             }
@@ -576,6 +587,61 @@ fun ModelManagerScreen(
                     Spacer(Modifier.height(4.dp))
                     Text("Weight ${m.size} · RAM Floor ${m.ramRequired} · ${m.throughput} · ${m.quant}", color = colors.textMuted, fontSize = 11.5.sp, fontFamily = FontFamily.Monospace)
                 }
+            }
+
+            // Voice Models — zero-MB system engines (no downloads needed).
+            item {
+                Spacer(Modifier.height(6.dp))
+                Text("Voice Models", color = colors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(6.dp))
+                val sttOk = remember { SpeechRecognizer.isRecognitionAvailable(ctx) }
+                var ttsStatus by remember { mutableStateOf("Checking…") }
+                LaunchedEffect(Unit) {
+                    try {
+                        var tts: TextToSpeech? = null
+                        tts = TextToSpeech(ctx) { status ->
+                            ttsStatus = if (status == TextToSpeech.SUCCESS) {
+                                val n = try { tts?.voices?.size ?: 0 } catch (_: Exception) { 0 }
+                                if (n > 0) "$n voices · 0 MB" else "Engine ready · 0 MB"
+                            } else "Unavailable"
+                            try { tts?.shutdown() } catch (_: Exception) {}
+                        }
+                    } catch (_: Exception) {
+                        ttsStatus = "Unavailable"
+                    }
+                }
+                fun openSystem(intent: Intent, fallback: String) {
+                    try {
+                        ctx.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                    } catch (_: Exception) {
+                        Toast.makeText(ctx, fallback, Toast.LENGTH_SHORT).show()
+                    }
+                }
+                ModelSourceRow(
+                    icon = Icons.Default.Mic,
+                    tint = colors.accentGreen,
+                    title = "On-device Speech Recognition",
+                    subtitle = if (sttOk) "Available · system STT · 0 MB — tap for voice input settings" else "Not available on this device",
+                    onClick = {
+                        openSystem(
+                            Intent(Settings.ACTION_VOICE_INPUT_SETTINGS),
+                            "Voice input settings not found"
+                        )
+                    }
+                )
+                Spacer(Modifier.height(8.dp))
+                ModelSourceRow(
+                    icon = Icons.Default.RecordVoiceOver,
+                    tint = colors.accentBlue,
+                    title = "System TTS Voices ($ttsStatus)",
+                    subtitle = "Reads replies aloud · 0 MB — tap for TTS settings & voice data",
+                    onClick = {
+                        openSystem(
+                            Intent("com.android.settings.TTS_SETTINGS"),
+                            "TTS settings not found"
+                        )
+                    }
+                )
             }
 
             // Available to download — tap to fetch real GGUF weights.

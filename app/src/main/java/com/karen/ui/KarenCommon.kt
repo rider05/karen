@@ -170,8 +170,8 @@ fun ChatGPTTopAppBar(
                 .fillMaxWidth()
                 .background(colors.background)
                 .statusBarsPadding()
-                .height(56.dp)
-                .padding(start = 6.dp, end = 6.dp),
+                .height(50.dp)
+                .padding(start = 4.dp, end = 4.dp),
             contentAlignment = Alignment.Center
         ) {
             // Left: navigation affordances
@@ -185,7 +185,7 @@ fun ChatGPTTopAppBar(
                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = "Back",
                             tint = colors.textSecondary,
-                            modifier = Modifier.size(18.dp)
+                            modifier = Modifier.size(22.dp)
                         )
                     }
                 }
@@ -195,7 +195,7 @@ fun ChatGPTTopAppBar(
                         imageVector = Icons.Default.Menu,
                         contentDescription = "Open navigation",
                         tint = colors.textSecondary,
-                        modifier = Modifier.size(20.dp)
+                        modifier = Modifier.size(24.dp)
                     )
                 }
             }
@@ -314,7 +314,7 @@ fun ChatGPTTopAppBar(
                         imageVector = Icons.Default.AddCircle,
                         contentDescription = "New Chat",
                         tint = colors.textSecondary,
-                        modifier = Modifier.size(19.dp)
+                        modifier = Modifier.size(23.dp)
                     )
                 }
                 Box {
@@ -325,7 +325,7 @@ fun ChatGPTTopAppBar(
                             imageVector = Icons.Default.MoreVert,
                             contentDescription = "More options",
                             tint = colors.textSecondary,
-                            modifier = Modifier.size(18.dp)
+                            modifier = Modifier.size(22.dp)
                         )
                     }
                     DropdownMenu(
@@ -578,7 +578,8 @@ private fun parseMarkdownBlocks(text: String): List<MdBlock> {
     val numberedRe = Regex("^(\\d+)[.)]\\s+(.*)$")
     while (i < lines.size) {
         val line = lines[i]
-        val t = line.trim()
+        // Models sometimes emit non-breaking spaces after markers.
+        val t = line.trim().replace('\u00A0', ' ')
         if (t.startsWith("```")) {
             flush()
             val lang = t.removePrefix("```").trim().take(24).ifBlank { "code" }
@@ -1250,7 +1251,8 @@ fun MessageActionBar(
     onSpeak: () -> Unit = {},
     onShare: () -> Unit = {},
     onLike: () -> Unit = {},
-    onDislike: () -> Unit = {}
+    onDislike: () -> Unit = {},
+    isSpeaking: Boolean = false
 ) {
     val colors = LocalKarenColors.current
     val clipboardManager = LocalClipboardManager.current
@@ -1308,7 +1310,7 @@ fun MessageActionBar(
             )
         }
         IconButton(onClick = onSpeak, modifier = Modifier.size(32.dp)) {
-            Icon(Icons.AutoMirrored.Filled.VolumeUp, contentDescription = "Read aloud", tint = colors.textMuted, modifier = Modifier.size(16.dp))
+            Icon(Icons.AutoMirrored.Filled.VolumeUp, contentDescription = if (isSpeaking) "Stop reading aloud" else "Read aloud", tint = if (isSpeaking) colors.accentGreen else colors.textMuted, modifier = Modifier.size(16.dp))
         }
         IconButton(onClick = onRegenerate, modifier = Modifier.size(32.dp)) {
             Icon(Icons.Default.Refresh, contentDescription = "Regenerate", tint = colors.textMuted, modifier = Modifier.size(16.dp))

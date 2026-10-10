@@ -35,18 +35,21 @@ fun VoiceScreen(
     androidx.activity.compose.BackHandler { onClose() }
     val device = rememberDeviceTelemetry()
     var isMuted by remember { mutableStateOf(false) }
-    var isSpeaking by remember { mutableStateOf(false) }
     var userSpokenText by remember { mutableStateOf("") }
     var isVisionActive by remember { mutableStateOf(false) }
+
+    // Real speech output state; stop it when leaving voice mode.
+    val isSpeaking = TtsManager.speaking
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        onDispose { TtsManager.stop() }
+    }
 
     val voiceStt = rememberVoiceStt(
         onResult = { result ->
             userSpokenText = result
-            isSpeaking = true
         },
         onPartialResult = { interim ->
             userSpokenText = interim
-            isSpeaking = false
         }
     )
     val colors = LocalKarenColors.current
@@ -196,7 +199,7 @@ fun VoiceScreen(
                 )
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    text = if (voiceStt.state.isListening) "Listening..." else if (isSpeaking) "Speaking · Piper TTS" else "Ready · Tap to Speak",
+                    text = if (voiceStt.state.isListening) "Listening..." else if (isSpeaking) "Speaking · System TTS" else "Ready · Tap to Speak",
                     color = colors.textSecondary,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.Medium
@@ -304,13 +307,16 @@ fun VoiceScreen(
 
             Spacer(Modifier.height(40.dp))
 
-            // Live Transcript Subtitles Pill
+            // Live Transcript Subtitles Pill — tap to hear it read aloud.
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(20.dp))
                     .background(colors.surface)
                     .border(1.dp, colors.border, RoundedCornerShape(20.dp))
+                    .clickable(enabled = userSpokenText.isNotBlank()) {
+                        TtsManager.toggle(personaCtx, userSpokenText, voicePersona)
+                    }
                     .padding(18.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
@@ -347,7 +353,7 @@ fun VoiceScreen(
                     Spacer(Modifier.height(4.dp))
                 }
                 Text(
-                    text = "Whisper.cpp / Android STT · ${if (device.networkUp) "Network Up" else "0 egress"} · 16kHz beamforming · ${device.deviceModel}",
+                    text = "Android STT · ${if (device.networkUp) "Network Up" else "0 egress"} · 16kHz beamforming · ${device.deviceModel}",
                     color = colors.textMuted,
                     fontSize = 11.sp,
                     fontFamily = FontFamily.Monospace
@@ -441,6 +447,7 @@ fun VoiceScreen(
                     .background(Color(0xFFEF4444))
                     .clickable {
                         voiceStt.stopListening()
+                        TtsManager.stop()
                         onClose()
                     },
                 contentAlignment = Alignment.Center

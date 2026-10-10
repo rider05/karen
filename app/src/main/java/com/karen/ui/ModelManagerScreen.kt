@@ -1069,11 +1069,15 @@ fun ModelManagerScreen(
                             }
                             Spacer(Modifier.height(4.dp))
                             val liveIds = live?.map { it.id }
-                            val liveFree = live?.associate { it.id to it.free } ?: emptyMap()
+                            val liveFree: Map<String, Boolean> = live?.associate { it.id to it.free } ?: emptyMap()
                             val liveCtx = live?.associate { it.id to it.context } ?: emptyMap()
                             val modelChoices = if (liveIds != null) {
                                 val cur = apiModelInput.trim()
-                                (if (cur.isNotBlank() && cur != CUSTOM_MODEL && cur !in liveIds) listOf(cur) + liveIds else liveIds) + CUSTOM_MODEL
+                                // Free tier first, api order kept inside each tier.
+                                val freeFirst = liveIds.sortedWith(
+                                    compareBy<String>({ liveFree[it] != true }, { it })
+                                )
+                                (if (cur.isNotBlank() && cur != CUSTOM_MODEL && cur !in freeFirst) listOf(cur) + freeFirst else freeFirst) + CUSTOM_MODEL
                             } else providerModelChoices(provider, apiModelInput)
                             Box {
                                 Row(
@@ -1104,7 +1108,9 @@ fun ModelManagerScreen(
                                         .clip(RoundedCornerShape(12.dp))
                                 ) {
                                     modelChoices.forEach { choice ->
-                                        val tier = liveFree[choice]
+                                        // Tier flag on every row: true only on live-priced
+                                        // free; everything else bills the key.
+                                        val tier = liveFree[choice] == true
                                         val ctxTag = formatContextWindow(liveCtx[choice] ?: modelContextWindow(choice))
                                         DropdownMenuItem(
                                             text = {
@@ -1125,24 +1131,24 @@ fun ModelManagerScreen(
                                                         )
                                                         Spacer(Modifier.width(8.dp))
                                                     }
-                                                    if (tier != null) {
+                                                    if (choice != CUSTOM_MODEL) {
                                                         Spacer(Modifier.width(8.dp))
                                                         Box(
-                                                            modifier = Modifier
-                                                                .clip(RoundedCornerShape(6.dp))
-                                                                .background(
-                                                                    if (tier) colors.accentGreen.copy(alpha = 0.18f)
-                                                                    else colors.accentAmber.copy(alpha = 0.16f)
-                                                                )
-                                                                .padding(horizontal = 7.dp, vertical = 2.dp)
-                                                        ) {
-                                                            Text(
-                                                                text = if (tier) "FREE" else "PAID",
-                                                                color = if (tier) colors.accentGreen else colors.accentAmber,
-                                                                fontSize = 10.sp,
-                                                                fontWeight = FontWeight.Bold
+                                                        modifier = Modifier
+                                                            .clip(RoundedCornerShape(6.dp))
+                                                            .background(
+                                                                if (tier) colors.accentGreen.copy(alpha = 0.18f)
+                                                                else colors.accentAmber.copy(alpha = 0.16f)
                                                             )
-                                                        }
+                                                            .padding(horizontal = 7.dp, vertical = 2.dp)
+                                                    ) {
+                                                        Text(
+                                                            text = if (tier) "FREE" else "PAID",
+                                                            color = if (tier) colors.accentGreen else colors.accentAmber,
+                                                            fontSize = 10.sp,
+                                                            fontWeight = FontWeight.Bold
+                                                        )
+                                                    }
                                                     }
                                                 }
                                             },

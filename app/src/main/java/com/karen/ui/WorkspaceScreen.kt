@@ -22,6 +22,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -38,6 +39,7 @@ import androidx.compose.ui.unit.sp
 import java.io.File
 import android.util.Base64
 import com.karen.rememberDeviceTelemetry
+import com.karen.rememberVoiceStt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.async
@@ -694,6 +696,12 @@ fun WorkspaceScreen(
     var chatInput by remember { mutableStateOf("") }
     var chatBusy by remember { mutableStateOf(false) }
     var cancelChat by remember { mutableStateOf(false) }
+    // Voice input (dictation) + output (read the last reply aloud).
+    val voiceStt = rememberVoiceStt(
+        onResult = { speechText ->
+            chatInput = if (chatInput.isBlank()) speechText else "$chatInput $speechText"
+        }
+    )
     val chatThreadState = androidx.compose.foundation.lazy.rememberLazyListState()
 
     // Keep the thinking indicator in view while a reply generates.
@@ -1440,6 +1448,44 @@ fun WorkspaceScreen(
                 textStyle = androidx.compose.ui.text.TextStyle(color = colors.textPrimary),
                 colors = karenFieldColors(colors)
             )
+            Spacer(Modifier.width(8.dp))
+            // Voice input (dictation).
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .clip(CircleShape)
+                    .background(colors.surfaceHover)
+                    .clickable { voiceStt.toggle() },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Default.Mic,
+                    contentDescription = if (voiceStt.state.isListening) "Stop dictation" else "Dictate",
+                    tint = if (voiceStt.state.isListening) colors.accentGreen else colors.textMuted,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            // Voice output (read the last reply aloud).
+            val lastAssistant = project.chat.lastOrNull { it.role == "assistant" }?.text.orEmpty()
+            val readingThis = TtsManager.speaking && TtsManager.speakingText == lastAssistant && lastAssistant.isNotBlank()
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .clip(CircleShape)
+                    .background(colors.surfaceHover)
+                    .clickable(enabled = lastAssistant.isNotBlank()) {
+                        TtsManager.toggle(ctx, lastAssistant, UserPrefs.voicePersona(ctx))
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.AutoMirrored.Filled.VolumeUp,
+                    contentDescription = if (readingThis) "Stop reading aloud" else "Read last reply aloud",
+                    tint = if (readingThis) colors.accentGreen else colors.textMuted,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
             Spacer(Modifier.width(8.dp))
             Box(
                 modifier = Modifier

@@ -137,7 +137,7 @@ suspend fun CloudProvider.listModelsLive(apiKey: String): List<LiveModel> =
                         if (!gen) return@mapNotNull null
                         val name = o.optString("name", "").removePrefix("models/").takeIf { s -> s.isNotBlank() }
                             ?: return@mapNotNull null
-                        LiveModel(name, null)
+                        LiveModel(name, false, 0)
                     }
                 } ?: throw CloudApiException(200, "bad model list")
             }
@@ -148,7 +148,7 @@ suspend fun CloudProvider.listModelsLive(apiKey: String): List<LiveModel> =
                 )
                 json.optJSONArray("data")?.let { arr ->
                     (0 until arr.length()).mapNotNull {
-                        arr.optJSONObject(it)?.optString("id")?.takeIf { s -> s.isNotBlank() }?.let { mid -> LiveModel(mid, null) }
+                        arr.optJSONObject(it)?.optString("id")?.takeIf { s -> s.isNotBlank() }?.let { mid -> LiveModel(mid, false, modelContextWindow(mid)) }
                     }
                 } ?: throw CloudApiException(200, "bad model list")
             }
@@ -159,13 +159,13 @@ suspend fun CloudProvider.listModelsLive(apiKey: String): List<LiveModel> =
             out.remove(def)
             out.add(0, def)
         } else {
-            out.add(0, LiveModel(defaultModel, null))
+            out.add(0, LiveModel(defaultModel, false, modelContextWindow(defaultModel)))
         }
         out.distinctBy { it.id }
     }
 
-/** One live model: id, real pricing tier (null when hidden), context tokens. */
-data class LiveModel(val id: String, val free: Boolean?, val context: Int = 0)
+/** One live model: id, real pricing tier, context tokens (0 = unpublished). */
+data class LiveModel(val id: String, val free: Boolean, val context: Int = 0)
 
 private fun getJson(url: java.net.URL, headers: Map<String, String> = emptyMap()): org.json.JSONObject {
     val conn = (url.openConnection() as java.net.HttpURLConnection).apply {

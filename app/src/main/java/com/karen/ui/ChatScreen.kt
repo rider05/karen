@@ -352,13 +352,19 @@ fun ChatScreen(
         genLive = null
     }
 
+    /** Drops model droppings: leading bare null/none lines or null runs. */
+    fun cleanReply(text: String): String =
+        text.replaceFirst(Regex("^((?:\\s*null){2,}\\s*|\\s*(?:null|none|nil)\\s*\\n)+", RegexOption.IGNORE_CASE), "")
+            .trimStart('\n')
+
     /** Typing-effect playback writing straight into the chat-list message. */
     suspend fun playOut(id: String, text: String) {
-        streamingContent = text.isNotEmpty()
+        val clean = cleanReply(text)
+        streamingContent = clean.isNotEmpty()
         var n = 0
-        for (idx in text.indices) {
+        for (idx in clean.indices) {
             if (cancelGeneration) break
-            setStreamingText(id, text.substring(0, idx + 1))
+            setStreamingText(id, clean.substring(0, idx + 1))
             n++
             if (n % 8 == 0) {
                 scrollToBottomIfNear()
@@ -412,9 +418,12 @@ fun ChatScreen(
     }
 
     /** End-of-generation on success: stamp stats, archive, then run queued prompts. */
-    suspend fun completeSettle(finalLen: Int) {
-        streamingId?.let { stampTook(it, finalLen / 4) }
-        setStats(finalLen)
+    suspend fun completeSettle() {
+        val id = streamingId
+        // Length from the played text so stats match exactly what is shown.
+        val len = (messages.firstOrNull { (it as? ChatItem.Assistant)?.id == id } as? ChatItem.Assistant)?.text?.length ?: 0
+        id?.let { stampTook(it, len / 4) }
+        setStats(len)
         persist()
         isGenerating = false
         streamingId = null
@@ -520,12 +529,14 @@ fun ChatScreen(
                     roundHistory = (roundHistory + ("assistant" to res.text) + ("user" to "Continue exactly where you stopped. Output only the continuation — no recap, no repetition.")).takeLast(limit)
                 }
             }
-            val reply = fullReply.toString()
+            val reply = cleanReply(fullReply.toString())
             if (cancelGeneration) {
                 cancelSettle(aid)
-            } else {
+            } else if (reply.isNotBlank()) {
                 playOut(aid, reply)
-                if (cancelGeneration) cancelSettle(aid) else completeSettle(reply.length)
+                if (cancelGeneration) cancelSettle(aid) else completeSettle()
+            } else {
+                errorSettle(aid, "The model returned an empty reply — try again or switch models.")
             }
         } catch (e: CloudApiException) {
             errorSettle(aid, "⚠ ${cloud.name} error (HTTP ${e.status}): ${e.message}")
@@ -670,11 +681,14 @@ fun ChatScreen(
                             else errorSettle(aid, "Could not load $sendModel into RAM.")
                         } else if (cancelGeneration) {
                             cancelSettle(aid)
-                        } else if (out.reply.isNotBlank()) {
-                            playOut(aid, out.reply)
-                            if (cancelGeneration) cancelSettle(aid) else completeSettle(out.reply.length)
                         } else {
-                            errorSettle(aid, "The model returned an empty reply.")
+                            val finalReply = cleanReply(out.reply)
+                            if (finalReply.isNotBlank()) {
+                                playOut(aid, finalReply)
+                                if (cancelGeneration) cancelSettle(aid) else completeSettle()
+                            } else {
+                                errorSettle(aid, "The model returned an empty reply.")
+                            }
                         }
                     } catch (e: Exception) {
                         errorSettle(aid, "Local model error: ${e.message}")
@@ -697,7 +711,7 @@ fun ChatScreen(
                     cancelSettle(aid)
                 } else {
                     playOut(aid, fullText)
-                    if (cancelGeneration) cancelSettle(aid) else completeSettle(fullText.length)
+                    if (cancelGeneration) cancelSettle(aid) else completeSettle()
                 }
             }
         }
@@ -992,6 +1006,10 @@ fun ChatScreen(
                                         dislikeFor = item
                                         dislikeText = ""
                                     },
+                                    onSpeak = {
+                                        TtsManager.toggle(context, item.text, UserPrefs.voicePersona(context))
+                                    },
+                                    isSpeaking = TtsManager.speaking && TtsManager.speakingText == item.text,
                                     onRegenerate = {
                                         if (isGenerating) return@MessageActionBar
                                         val lastUserIdx = messages.indexOfLast { it is ChatItem.User }
@@ -1125,6 +1143,40 @@ fun ChatScreen(
                         )
                     }
                 }
+            }
+        }
+
+        // Jump-to-latest FAB (ChatGPT-style): appears when scrolled up.
+        val showJumpBottom by remember {
+            derivedStateOf { listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 400 }
+        }
+        AnimatedVisibility(
+            visible = showJumpBottom,
+            enter = fadeIn() + scaleIn(),
+            exit = fadeOut() + scaleOut(),
+            modifier = Modifier.align(Alignment.BottomEnd)
+        ) {
+            Box(
+                modifier = Modifier
+                    .navigationBarsPadding()
+                    .padding(end = 16.dp, bottom = 176.dp)
+                    .size(44.dp)
+                    .clip(CircleShape)
+                    .background(colors.surface)
+                    .border(1.dp, colors.border, CircleShape)
+                    .clickable {
+                        coroutineScope.launch {
+                            try { listState.animateScrollToItem(messages.size - 1) } catch (_: Exception) {}
+                        }
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Default.ArrowDownward,
+                    contentDescription = "Jump to latest",
+                    tint = colors.textPrimary,
+                    modifier = Modifier.size(20.dp)
+                )
             }
         }
 

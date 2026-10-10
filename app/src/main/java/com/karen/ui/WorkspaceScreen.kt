@@ -637,8 +637,13 @@ fun WorkspaceScreen(
 
     // System back: dismiss dialog first, then step out of the open project,
     // then route to Home — same in-app behaviour as the chat screen.
-    // Cloud model for project chat — same selection as Chat (locals + keyed APIs).
-    var selectedModel by remember { mutableStateOf(UserPrefs.models(ctx).firstOrNull { !isCloudProviderName(it) } ?: modelCatalog.first().name) }
+    // Cloud model for project chat - same selection as Chat (locals + keyed APIs).
+    var selectedModel by remember {
+        mutableStateOf(
+            UserPrefs.selectedModel(ctx).takeIf { isSelectableModel(ctx, it) }
+                ?: (UserPrefs.models(ctx).firstOrNull { !isCloudProviderName(it) } ?: modelCatalog.first().name)
+        )
+    }
     // Auto routing: best installed/connected model per project message.
     var autoRoute by remember { mutableStateOf(UserPrefs.autoRoute(ctx)) }
     var lastRouted by remember { mutableStateOf<String?>(null) }
@@ -652,6 +657,7 @@ fun WorkspaceScreen(
         if (decision != null) {
             if (decision.modelName != lastRouted) {
                 lastRouted = decision.modelName
+                UserPrefs.pushRecentModel(ctx, decision.modelName)
                 android.widget.Toast.makeText(ctx, "Auto: ${decision.modelName} (${decision.reason})", android.widget.Toast.LENGTH_SHORT).show()
             }
             return decision.modelName
@@ -1466,6 +1472,8 @@ fun WorkspaceScreen(
             selectedModel = selectedModel,
             onSelectModel = {
                 selectedModel = it
+                UserPrefs.setSelectedModel(ctx, it)
+                UserPrefs.pushRecentModel(ctx, it)
                 if (autoRoute) {
                     autoRoute = false
                     UserPrefs.setAutoRoute(ctx, false)

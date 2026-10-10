@@ -1,5 +1,7 @@
 package com.karen.ui
 
+import android.content.Context
+
 /**
  * Task-aware model routing: picks the best available model per message
  * instead of sending everything to one fixed model.
@@ -107,6 +109,15 @@ fun reasoningEffortHint(effort: String): String = when (effort) {
     "Max" -> " Think hard and double-check your reasoning before answering."
     "Extreme" -> " Think as long as needed; explore alternatives and verify before answering."
     else -> ""
+}
+
+/** True when a stored pick is still usable: installed weight or keyed cloud. */
+fun isSelectableModel(ctx: Context, name: String): Boolean {
+    if (name.isBlank()) return false
+    if (isCloudProviderName(name)) {
+        return findCloudProviderByName(name)?.let { UserPrefs.apiKey(ctx, it.id).isNotBlank() } ?: false
+    }
+    return name in UserPrefs.models(ctx) || modelCatalog.any { it.name == name }
 }
 
 /**

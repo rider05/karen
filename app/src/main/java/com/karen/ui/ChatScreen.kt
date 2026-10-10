@@ -174,11 +174,18 @@ fun ChatScreen(
 
     // ---------- File upload / attachments ----------
     val context = LocalContext.current
-    // Default to the first downloaded weight; selection lists installed-only.
-    var selectedModel by remember { mutableStateOf(UserPrefs.models(context).firstOrNull { !isCloudProviderName(it) } ?: modelCatalog.first().name) }
+    // Restore last manual pick when still usable, else first weight.
+    var selectedModel by remember {
+        mutableStateOf(
+            UserPrefs.selectedModel(context).takeIf { isSelectableModel(context, it) }
+                ?: (UserPrefs.models(context).firstOrNull { !isCloudProviderName(it) } ?: modelCatalog.first().name)
+        )
+    }
     // Auto routing: pick the best installed/connected model per message.
     var autoRoute by remember { mutableStateOf(UserPrefs.autoRoute(context)) }
     var lastRouted by remember { mutableStateOf<String?>(null) }
+    // Study mode (explainer style) quick toggle, persisted like Settings.
+    var explainerPref by remember { mutableStateOf(UserPrefs.explainerMode(context)) }
 
     /** Manual model, or the routed pick when Auto is on. */
     fun effectiveModel(prompt: String): String {
@@ -190,6 +197,7 @@ fun ChatScreen(
         if (decision != null) {
             if (decision.modelName != lastRouted) {
                 lastRouted = decision.modelName
+                UserPrefs.pushRecentModel(context, decision.modelName)
                 android.widget.Toast.makeText(context, "Auto: ${decision.modelName} (${decision.reason})", android.widget.Toast.LENGTH_SHORT).show()
             }
             return decision.modelName
@@ -791,6 +799,15 @@ fun ChatScreen(
                     Triple("Usage stats", Icons.Default.BarChart) {
                         showUsage = true
                     },
+                    Triple(if (explainerPref) "Study mode: On" else "Study mode: Off", Icons.Default.School) {
+                        explainerPref = !explainerPref
+                        UserPrefs.setExplainerMode(context, explainerPref)
+                        android.widget.Toast.makeText(
+                            context,
+                            if (explainerPref) "Study mode on — structured answers" else "Study mode off — normal replies",
+                            android.widget.Toast.LENGTH_SHORT
+                        ).show()
+                    },
                     Triple("Customize instructions", Icons.Default.Settings) {
                         android.widget.Toast.makeText(context, "Custom instructions", android.widget.Toast.LENGTH_SHORT).show()
                     },
@@ -1212,6 +1229,8 @@ fun ChatScreen(
                 selectedModel = selectedModel,
                 onSelectModel = {
                     selectedModel = it
+                    UserPrefs.setSelectedModel(context, it)
+                    UserPrefs.pushRecentModel(context, it)
                     if (autoRoute) {
                         autoRoute = false
                         UserPrefs.setAutoRoute(context, false)

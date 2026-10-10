@@ -58,6 +58,36 @@ val providerModels: Map<String, List<String>> = mapOf(
 /** Dropdown marker for free-typed model ids (OpenRouter takes any model id). */
 const val CUSTOM_MODEL = "Custom…"
 
+/** Published context windows (tokens) for known cloud model ids. */
+val modelContextWindows: Map<String, Int> = mapOf(
+    "gpt-4o" to 128000,
+    "gpt-4o-mini" to 128000,
+    "claude-sonnet-4-20250514" to 200000,
+    "claude-3-5-sonnet-20241022" to 200000,
+    "claude-3-5-haiku-20241022" to 200000,
+    "gemini-2.0-flash" to 1000000,
+    "gemini-1.5-flash" to 1000000,
+    "mistral-large-latest" to 128000,
+    "mistral-small-latest" to 32000,
+    "grok-3" to 131072,
+    "grok-3-mini" to 131072,
+    "deepseek-chat" to 64000,
+    "deepseek-reasoner" to 64000,
+    "llama-3.3-70b-versatile" to 128000,
+    "llama-3.1-8b-instant" to 128000
+)
+
+/** Context window for a cloud model id, or 0 when unknown. */
+fun modelContextWindow(modelId: String): Int = modelContextWindows[modelId.trim()] ?: 0
+
+/** Compact context tag: 128K, 1M. Empty when unknown. */
+fun formatContextWindow(tokens: Int): String = when {
+    tokens <= 0 -> ""
+    tokens >= 1000000 -> "${tokens / 1000000}M"
+    tokens >= 1000 -> "${tokens / 1000}K"
+    else -> "$tokens"
+}
+
 /** Dropdown choices for a provider: known models, default first, then Custom. */
 fun providerModelChoices(provider: CloudProvider, current: String): List<String> {
     val known = (providerModels[provider.id] ?: listOf(provider.defaultModel)).toMutableList()
@@ -66,6 +96,90 @@ fun providerModelChoices(provider: CloudProvider, current: String): List<String>
     if (cur.isNotBlank() && cur != CUSTOM_MODEL && cur !in known) known.add(cur)
     known.add(CUSTOM_MODEL)
     return known
+}
+
+/**
+ * Real-time model list for a provider, straight from its API. OpenRouter
+ * needs no key; the rest authenticate with the given key. Returns ids with
+ * the provider default first, or throws on network/API failure (callers fall
+ * back to [providerModelChoices]).
+ */
+suspend fun CloudProvider.listModelsLive(apiKey: String): List<LiveModel> =
+    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        val ids: List<LiveModel> = when {
+            id == "openrouter" -> {
+                val json = getJson(
+                    java.net.URL("$apiBase/models"),
+                    mapOf("HTTP-Referer" to "https://karen.local", "X-Title" to "Karen")
+                )
+                json.optJSONArray("data")?.let { arr ->
+                    (0 until arr.length()).mapNotNull { i ->
+                        val o = arr.optJSONObject(i) ?: return@mapNotNull null
+                        val modelId = o.optString("id", "").takeIf { s -> s.isNotBlank() } ?: return@mapNotNull null
+                        val pricing = o.optJSONObject("pricing")
+                        val free = ((pricing?.optString("prompt", "1")?.toDoubleOrNull() ?: 1.0) == 0.0) &&
+                            ((pricing?.optString("completion", "1")?.toDoubleOrNull() ?: 1.0) == 0.0)
+                        val ctxLen = o.optLong("context_length", 0L).toInt()
+                        LiveModel(modelId, free, if (ctxLen > 0) ctxLen else modelContextWindow(modelId))
+                    }
+                } ?: throw CloudApiException(200, "bad model list")
+            }
+            id == "anthropic" -> throw CloudApiException(404, "Anthropic publishes no list endpoint")
+            protocol == CloudProtocol.GEMINI -> {
+                val json = getJson(
+                    java.net.URL("$apiBase/models?pageSize=100&key=${java.net.URLEncoder.encode(apiKey, "UTF-8")}")
+                )
+                json.optJSONArray("models")?.let { arr ->
+                    (0 until arr.length()).mapNotNull { idx ->
+                        val o = arr.optJSONObject(idx) ?: return@mapNotNull null
+                        val methods = o.optJSONArray("supportedGenerationMethods")
+                        val gen = (0 until (methods?.length() ?: 0)).any { i -> methods?.optString(i) == "generateContent" }
+                        if (!gen) return@mapNotNull null
+                        val name = o.optString("name", "").removePrefix("models/").takeIf { s -> s.isNotBlank() }
+                            ?: return@mapNotNull null
+                        LiveModel(name, null)
+                    }
+                } ?: throw CloudApiException(200, "bad model list")
+            }
+            else -> {
+                val json = getJson(
+                    java.net.URL("$apiBase/models"),
+                    mapOf("Authorization" to "Bearer $apiKey")
+                )
+                json.optJSONArray("data")?.let { arr ->
+                    (0 until arr.length()).mapNotNull {
+                        arr.optJSONObject(it)?.optString("id")?.takeIf { s -> s.isNotBlank() }?.let { mid -> LiveModel(mid, null) }
+                    }
+                } ?: throw CloudApiException(200, "bad model list")
+            }
+        }
+        val out = ids.toMutableList()
+        val def = out.find { it.id == defaultModel }
+        if (def != null) {
+            out.remove(def)
+            out.add(0, def)
+        } else {
+            out.add(0, LiveModel(defaultModel, null))
+        }
+        out.distinctBy { it.id }
+    }
+
+/** One live model: id, real pricing tier (null when hidden), context tokens. */
+data class LiveModel(val id: String, val free: Boolean?, val context: Int = 0)
+
+private fun getJson(url: java.net.URL, headers: Map<String, String> = emptyMap()): org.json.JSONObject {
+    val conn = (url.openConnection() as java.net.HttpURLConnection).apply {
+        requestMethod = "GET"
+        connectTimeout = 10000
+        readTimeout = 15000
+        headers.forEach { (k, v) -> setRequestProperty(k, v) }
+    }
+    val code = conn.responseCode
+    val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+    val text = stream.bufferedReader().use { it.readText() }
+    conn.disconnect()
+    if (code !in 200..299) throw CloudApiException(code, text.take(200))
+    return org.json.JSONObject(text)
 }
 
 /** Thinking-token budget per effort level for reasoning models. */

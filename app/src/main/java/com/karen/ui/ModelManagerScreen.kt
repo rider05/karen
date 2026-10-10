@@ -174,6 +174,9 @@ fun ModelManagerScreen(
     var apiModelInput by remember { mutableStateOf("") }
     var modelMenu by remember { mutableStateOf(false) }
     var modelCustom by remember { mutableStateOf(false) }
+    var liveModels by remember { mutableStateOf<List<LiveModel>?>(null) }
+    var liveLoading by remember { mutableStateOf(false) }
+    var liveError by remember { mutableStateOf(false) }
     var keyVisible by remember { mutableStateOf(false) }
     // Download catalog collapse: 3 cards by default.
     var catalogExpanded by remember { mutableStateOf(false) }
@@ -225,6 +228,32 @@ fun ModelManagerScreen(
     var importStatus by remember { mutableStateOf("") }
     var importCancelled by remember { mutableStateOf(false) }
     val managerScope = rememberCoroutineScope()
+
+    /** Pulls the provider's live model list (typed or stored key). */
+    fun fetchLiveModels() {
+        val p = selectedProvider ?: return
+        val key = apiKeyInput.trim()
+        if (key.isBlank() && p.id != "openrouter") {
+            liveModels = null
+            liveError = false
+            liveLoading = false
+            return
+        }
+        if (liveLoading) return
+        liveLoading = true
+        liveError = false
+        managerScope.launch {
+            try {
+                liveModels = p.listModelsLive(key)
+                liveError = false
+            } catch (_: Exception) {
+                liveModels = null
+                liveError = true
+            } finally {
+                liveLoading = false
+            }
+        }
+    }
 
     fun fileNameOf(uri: Uri): String =
         ctx.contentResolver.query(uri, null, null, null, null)?.use { c ->
@@ -616,7 +645,7 @@ fun ModelManagerScreen(
                         }
                     }
                     Spacer(Modifier.height(4.dp))
-                    Text("Weight ${m.size} · RAM Floor ${m.ramRequired} · ${m.throughput} · ${m.quant}", color = colors.textMuted, fontSize = 11.5.sp, fontFamily = FontFamily.Monospace)
+                    Text("Weight ${m.size} · RAM Floor ${m.ramRequired} · ${m.throughput} · ${m.quant} · ctx ${windowLabel(UserPrefs.contextTokens(ctx))}", color = colors.textMuted, fontSize = 11.5.sp, fontFamily = FontFamily.Monospace)
                 }
             }
 
@@ -783,7 +812,7 @@ fun ModelManagerScreen(
                         Column(Modifier.weight(1f)) {
                             Text(entry.name, color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold)
                             Text(
-                                "${entry.sizeLabel} · ${entry.quant} · RAM ${entry.ram}${if (entry.reasoning) " · Reasons" else ""}",
+                                "${entry.sizeLabel} · ${entry.quant} · RAM ${entry.ram}${if (entry.reasoning) " · Reasons" else ""} · ctx ${windowLabel(UserPrefs.contextTokens(ctx))}",
                                 color = colors.textMuted,
                                 fontSize = 11.5.sp,
                                 fontFamily = FontFamily.Monospace
@@ -950,8 +979,11 @@ fun ModelManagerScreen(
                                             apiModelInput = UserPrefs.apiModel(ctx, p.id).ifBlank { p.defaultModel }
                                             modelCustom = false
                                             modelMenu = false
+                                            liveModels = null
+                                            liveError = false
                                             keyVisible = false
                                             apiStep = 1
+                                            fetchLiveModels()
                                         }
                                         .padding(vertical = 8.dp),
                                     verticalAlignment = Alignment.CenterVertically
@@ -1019,8 +1051,30 @@ fun ModelManagerScreen(
                                 color = colors.accentGreen
                             )
                             Spacer(Modifier.height(10.dp))
-                            Text("Model", color = colors.textMuted, fontSize = 12.sp)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("Model", color = colors.textMuted, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                                if (liveLoading) {
+                                    CircularProgressIndicator(color = colors.accentGreen, strokeWidth = 2.dp, modifier = Modifier.size(14.dp))
+                                } else {
+                                    IconButton(onClick = { fetchLiveModels() }, modifier = Modifier.size(28.dp)) {
+                                        Icon(Icons.Default.Refresh, contentDescription = "Refresh live models", tint = colors.textMuted, modifier = Modifier.size(15.dp))
+                                    }
+                                }
+                            }
+                            val live = liveModels
+                            if (liveError) {
+                                Text("Live list unreachable — showing known models", color = colors.accentAmber, fontSize = 11.sp)
+                            } else if (live != null) {
+                                Text("${live.size} live models", color = colors.accentGreen, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                            }
                             Spacer(Modifier.height(4.dp))
+                            val liveIds = live?.map { it.id }
+                            val liveFree = live?.associate { it.id to it.free } ?: emptyMap()
+                            val liveCtx = live?.associate { it.id to it.context } ?: emptyMap()
+                            val modelChoices = if (liveIds != null) {
+                                val cur = apiModelInput.trim()
+                                (if (cur.isNotBlank() && cur != CUSTOM_MODEL && cur !in liveIds) listOf(cur) + liveIds else liveIds) + CUSTOM_MODEL
+                            } else providerModelChoices(provider, apiModelInput)
                             Box {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
@@ -1049,15 +1103,48 @@ fun ModelManagerScreen(
                                         .border(1.dp, colors.border, RoundedCornerShape(12.dp))
                                         .clip(RoundedCornerShape(12.dp))
                                 ) {
-                                    providerModelChoices(provider, apiModelInput).forEach { choice ->
+                                    modelChoices.forEach { choice ->
+                                        val tier = liveFree[choice]
+                                        val ctxTag = formatContextWindow(liveCtx[choice] ?: modelContextWindow(choice))
                                         DropdownMenuItem(
                                             text = {
-                                                Text(
-                                                    text = choice,
-                                                    color = if (choice == apiModelInput.ifBlank { provider.defaultModel }) colors.accentGreen else colors.textPrimary,
-                                                    fontSize = 13.sp,
-                                                    fontFamily = FontFamily.Monospace
-                                                )
+                                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                                    Text(
+                                                        text = choice,
+                                                        color = if (choice == apiModelInput.ifBlank { provider.defaultModel }) colors.accentGreen else colors.textPrimary,
+                                                        fontSize = 13.sp,
+                                                        fontFamily = FontFamily.Monospace,
+                                                        modifier = Modifier.weight(1f)
+                                                    )
+                                                    if (ctxTag.isNotBlank()) {
+                                                        Text(
+                                                            text = ctxTag,
+                                                            color = colors.textMuted,
+                                                            fontSize = 10.5.sp,
+                                                            fontFamily = FontFamily.Monospace
+                                                        )
+                                                        Spacer(Modifier.width(8.dp))
+                                                    }
+                                                    if (tier != null) {
+                                                        Spacer(Modifier.width(8.dp))
+                                                        Box(
+                                                            modifier = Modifier
+                                                                .clip(RoundedCornerShape(6.dp))
+                                                                .background(
+                                                                    if (tier) colors.accentGreen.copy(alpha = 0.18f)
+                                                                    else colors.accentAmber.copy(alpha = 0.16f)
+                                                                )
+                                                                .padding(horizontal = 7.dp, vertical = 2.dp)
+                                                        ) {
+                                                            Text(
+                                                                text = if (tier) "FREE" else "PAID",
+                                                                color = if (tier) colors.accentGreen else colors.accentAmber,
+                                                                fontSize = 10.sp,
+                                                                fontWeight = FontWeight.Bold
+                                                            )
+                                                        }
+                                                    }
+                                                }
                                             },
                                             onClick = {
                                                 if (choice == CUSTOM_MODEL) {

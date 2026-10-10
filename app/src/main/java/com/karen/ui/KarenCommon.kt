@@ -1878,6 +1878,81 @@ fun ModelSelectorSheet(
                 )
             }
 
+            // Recent — last picks, restored next launch.
+            val recents = remember { UserPrefs.recentModels(sheetCtx).filter { isSelectableModel(sheetCtx, it) } }
+            if (recents.isNotEmpty()) {
+                Text(
+                    text = "Recent",
+                    color = colors.textMuted,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(bottom = 4.dp)
+                )
+                recents.forEach { name ->
+                    val isSelected = selectedModel == name
+                    val isCloud = isCloudProviderName(name)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 6.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(if (isSelected) colors.surfaceHover else Color.Transparent)
+                            .border(
+                                1.dp,
+                                if (isSelected) colors.accentGreen else colors.border,
+                                RoundedCornerShape(12.dp)
+                            )
+                            .clickable {
+                                onSelectModel(name)
+                                onDismiss()
+                            }
+                            .padding(14.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = name,
+                                    color = colors.textPrimary,
+                                    fontSize = 14.5.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(
+                                            if (isSelected) colors.accentGreen.copy(alpha = 0.2f)
+                                            else colors.border.copy(alpha = 0.4f)
+                                        )
+                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                ) {
+                                    Text(
+                                        text = if (isSelected) "Active" else if (isCloud) "Live" else ModelDownloader.formatOf(name),
+                                        color = if (isSelected) colors.accentGreen else colors.textMuted,
+                                        fontSize = 10.5.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                        }
+                        RadioButton(
+                            selected = isSelected,
+                            onClick = {
+                                onSelectModel(name)
+                                onDismiss()
+                            },
+                            colors = RadioButtonDefaults.colors(
+                                selectedColor = colors.accentGreen,
+                                unselectedColor = colors.textMuted
+                            )
+                        )
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+            }
+
             // My Models — only weights actually downloaded on this device.
             Text(
                 text = "My Models · downloaded",
@@ -1944,7 +2019,7 @@ fun ModelSelectorSheet(
                         }
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            text = "On-device · tap to load",
+                            text = "On-device · ${windowLabel(UserPrefs.contextTokens(sheetCtx))} ctx · tap to load",
                             color = colors.textMuted,
                             fontSize = 11.5.sp
                         )
@@ -2024,7 +2099,12 @@ fun ModelSelectorSheet(
                             }
                             Spacer(Modifier.height(4.dp))
                             Text(
-                                text = provider.defaultModel,
+                                text = buildString {
+                                    append(UserPrefs.apiModel(sheetCtx, provider.id).ifBlank { provider.defaultModel })
+                                    formatContextWindow(
+                                        modelContextWindow(UserPrefs.apiModel(sheetCtx, provider.id).ifBlank { provider.defaultModel })
+                                    ).takeIf { it.isNotBlank() }?.let { append(" · $it ctx") }
+                                },
                                 color = colors.textMuted,
                                 fontSize = 11.5.sp,
                                 fontFamily = FontFamily.Monospace

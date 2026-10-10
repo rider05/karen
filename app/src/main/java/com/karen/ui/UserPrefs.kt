@@ -93,6 +93,29 @@ object UserPrefs {
         prefs(ctx).edit().putString(KEY_API_MODEL_PREFIX + providerId, model.trim()).apply()
     }
 
+    // Manual model pick + recently used models (restored next launch).
+    private const val KEY_SELECTED_MODEL = "selected_model"
+    fun selectedModel(ctx: Context): String = prefs(ctx).getString(KEY_SELECTED_MODEL, "") ?: ""
+    fun setSelectedModel(ctx: Context, name: String) {
+        prefs(ctx).edit().putString(KEY_SELECTED_MODEL, name).apply()
+    }
+
+    private const val KEY_RECENT_MODELS = "recent_models"
+    fun recentModels(ctx: Context): List<String> {
+        return (prefs(ctx).getString(KEY_RECENT_MODELS, "") ?: "")
+            .split(";;")
+            .filter { it.isNotBlank() }
+    }
+
+    fun pushRecentModel(ctx: Context, name: String) {
+        if (name.isBlank()) return
+        val cur = recentModels(ctx).toMutableList()
+        cur.remove(name)
+        cur.add(0, name)
+        while (cur.size > 5) cur.removeAt(cur.size - 1)
+        prefs(ctx).edit().putString(KEY_RECENT_MODELS, cur.joinToString(";;")).apply()
+    }
+
     // Premium Visual Technical Explainer Mode: structured answers with
     // diagrams, tables, checklists, and labeled code blocks. Off by default —
     // normal replies otherwise; applies when toggled on or the prompt is a

@@ -653,7 +653,7 @@ fun WorkspaceScreen(
     fun routeFor(prompt: String): String {
         if (!autoRoute) return selectedModel
         val locals = UserPrefs.models(ctx)
-            .filter { !isCloudProviderName(it) && ModelDownloader.isRunnableWeight(ctx, it) }
+            .filter { !isCloudProviderName(it) && !isEmbeddingModel(it) && ModelDownloader.isRunnableWeight(ctx, it) }
         val keyed = cloudProviders.filter { UserPrefs.apiKey(ctx, it.id).isNotBlank() }
         val decision = routeModel(prompt, locals, keyed, UserPrefs.autoCloud(ctx))
         if (decision != null) {
@@ -668,6 +668,9 @@ fun WorkspaceScreen(
     }
     var effort by remember { mutableStateOf(UserPrefs.defaultEffort(ctx)) }
     var showModelSheet by remember { mutableStateOf(false) }
+    // Content-window switcher dialog.
+    var showWindowDialog by remember { mutableStateOf(false) }
+    var contentWindow by remember { mutableStateOf(UserPrefs.contextTokens(ctx)) }
 
     KarenHomeBackHandler(onNavigateToHome = onNavigateToHome) {
         when {
@@ -837,7 +840,8 @@ fun WorkspaceScreen(
                     "///FILE: relative/path\n<complete file content>\n///END (up to 8 files, no fences, no prose inside blocks), " +
                     "then a 1-2 line summary. For discussion-only replies, answer normally with no ///FILE blocks." +
                     if (isReasoningModel(sendModel)) reasoningEffortHint(effort) else "" +
-                    if (wantsExplainer(t, ctx)) " $EXPLAINER_STYLE_GUIDE" else ""
+                    if (wantsExplainer(t, ctx)) " $EXPLAINER_STYLE_GUIDE" else "" +
+                    UserPrefs.customInstructions(ctx).trim().take(500).let { if (it.isBlank()) "" else " User instructions: $it" }
             // 6. Assistant reply — live cloud call, on-device GGUF, else canned.
             val cloud = findCloudProviderByName(sendModel)
             val cloudKey = cloud?.let { UserPrefs.apiKey(ctx, it.id) }.orEmpty()
@@ -995,6 +999,10 @@ fun WorkspaceScreen(
                     }
                 },
                 Triple("New project", Icons.Default.Add) { showNewProject = true },
+                Triple("Content window: ${windowLabel(contentWindow)}", Icons.Default.DataArray) {
+                    contentWindow = UserPrefs.contextTokens(ctx)
+                    showWindowDialog = true
+                },
                 Triple("Export canvas", Icons.Default.Share) { android.widget.Toast.makeText(ctx, "Export canvas", android.widget.Toast.LENGTH_SHORT).show() },
                 Triple("Clear workspace", Icons.Default.Delete) {
                     projects.clear()
@@ -1510,6 +1518,70 @@ fun WorkspaceScreen(
                 }
             }
         }
+    }
+
+    // Model selector (locals + keyed cloud APIs), shared with Chat.
+    if (showWindowDialog) {
+        AlertDialog(
+            onDismissRequest = { showWindowDialog = false },
+            title = { Text("Content window") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    UserPrefs.contextWindowOptions.forEach { tokens ->
+                        val selected = contentWindow == tokens
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable {
+                                    contentWindow = tokens
+                                    UserPrefs.setContextTokens(ctx, tokens)
+                                    showWindowDialog = false
+                                }
+                                .padding(horizontal = 8.dp, vertical = 8.dp)
+                        ) {
+                            RadioButton(
+                                selected = selected,
+                                onClick = {
+                                    contentWindow = tokens
+                                    UserPrefs.setContextTokens(ctx, tokens)
+                                    showWindowDialog = false
+                                },
+                                colors = RadioButtonDefaults.colors(
+                                    selectedColor = colors.accentGreen,
+                                    unselectedColor = colors.textMuted
+                                )
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Column {
+                                Text(
+                                    text = windowLabel(tokens),
+                                    color = if (selected) colors.accentGreen else colors.textPrimary,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                )
+                                Text(
+                                    text = "$tokens tokens history + project context",
+                                    color = colors.textMuted,
+                                    fontSize = 11.5.sp
+                                )
+                            }
+                        }
+                    }
+                    Text(
+                        "On-device models reload with the new size on next run.",
+                        color = colors.textMuted,
+                        fontSize = 11.5.sp,
+                        modifier = Modifier.padding(top = 6.dp)
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showWindowDialog = false }) { Text("Close") }
+            }
+        )
     }
 
     // Model selector (locals + keyed cloud APIs), shared with Chat.

@@ -202,6 +202,15 @@ object UserPrefs {
         prefs(ctx).edit().putInt(KEY_TOTAL_MSGS, totalMessages(ctx) + 1).apply()
     }
 
+    // Custom instructions (⋯ → Customize instructions): remembered and
+    // prepended to every model prompt.
+    private const val KEY_CUSTOM_INSTRUCTIONS = "custom_instructions"
+    fun customInstructions(ctx: Context): String =
+        prefs(ctx).getString(KEY_CUSTOM_INSTRUCTIONS, "") ?: ""
+    fun setCustomInstructions(ctx: Context, value: String) {
+        prefs(ctx).edit().putString(KEY_CUSTOM_INSTRUCTIONS, value.trim().take(500)).apply()
+    }
+
     // Per-project git remote URL, keyed by project dir (lives beside .karen
     // state so it survives app restarts; never logged with credentials).
     private const val KEY_GIT_REMOTE_PREFIX = "git_remote_"

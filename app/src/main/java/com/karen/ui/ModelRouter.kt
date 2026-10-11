@@ -120,6 +120,10 @@ fun isSelectableModel(ctx: Context, name: String): Boolean {
     return name in UserPrefs.models(ctx) || modelCatalog.any { it.name == name }
 }
 
+/** True for embedding-only weights: downloaded, but never chat-routed. */
+fun isEmbeddingModel(name: String): Boolean =
+    modelCatalog.any { it.name == name && it.embedding }
+
 /**
  * Returns the best model for [prompt], or null when nothing usable is
  * installed/connected (caller falls back to manual selection).

@@ -26,8 +26,10 @@ data class CatalogModel(
     val paramsB: Float = 0f,
     /** True for thinking/reasoning models (R1, QwQ, Qwen3-hybrid class). */
     val reasoning: Boolean = false,
-    /** True when the model is a solid code generator for its size. */
-    val code: Boolean = false
+    /** True for solid code generators for its size. */
+    val code: Boolean = false,
+    /** True for embedding-only weights (vault/RAG): never chat-routed. */
+    val embedding: Boolean = false
 )
 
 val modelCatalog = listOf(
@@ -60,6 +62,11 @@ val modelCatalog = listOf(
         "DeepSeek R1 1.5B · Reasoning", "DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf", "≈1.1 GB", "Q4_K_M", "2.5 GB",
         "https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-1.5B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf",
         paramsB = 1.5f, reasoning = true, code = true
+    ),
+    CatalogModel(
+        "EmbeddingGemma 2 BF16", "embeddinggemma-2-BF16.gguf", "≈0.5 GB", "BF16", "1.0 GB",
+        "https://huggingface.co/unsloth/embeddinggemma-2-GGUF/resolve/main/embeddinggemma-2-BF16.gguf",
+        paramsB = 0.5f, embedding = true
     )
 )
 

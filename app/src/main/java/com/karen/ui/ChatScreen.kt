@@ -3,6 +3,7 @@ package com.karen.ui
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -24,7 +25,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.karen.rememberVoiceStt
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.async
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.withTimeoutOrNull
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -62,8 +65,54 @@ data class QueuedPrompt(val text: String, val attachments: List<Attachment> = em
 /** Local load+generation budget before falling back to a keyed cloud model. */
 private const val LOCAL_TURN_TIMEOUT_MS = 150_000L
 
+/**
+ * Local inference runs here — never on Dispatchers.IO. A thread blocked in
+ * JNI ignores coroutine cancellation, so the timeout abandons it on this
+ * pool (cached: the stuck call still finishes and frees its thread) while
+ * the turn continues on a cloud model.
+ */
+private val localInferenceDispatcher =
+    java.util.concurrent.Executors.newCachedThreadPool().asCoroutineDispatcher()
+
 /** An attachment picked from the device, pending to be added to the chat. */
-data class Attachment(val name: String, val sizeBytes: Long, val mime: String? = null)
+data class Attachment(val name: String, val sizeBytes: Long, val mime: String? = null, val path: String? = null)
+
+/** Text extensions whose attachment content is fed to the model. */
+private val ATTACH_TEXT_EXTS = setOf(
+    "txt", "md", "markdown", "json", "csv", "tsv", "log", "xml", "yaml", "yml",
+    "ini", "cfg", "properties", "toml", "kt", "java", "py", "js", "ts", "tsx",
+    "jsx", "c", "h", "cpp", "hpp", "cs", "go", "rs", "rb", "php", "swift",
+    "sql", "sh", "gradle", "html", "css"
+)
+
+/**
+ * Stored text content of an attachment for model context (capped).
+ * Binary/oversize/missing files yield null (name-only, as before).
+ */
+fun attachmentText(a: Attachment, maxChars: Int = 12000): String? {
+    val p = a.path ?: return null
+    try {
+        val f = File(p)
+        if (!f.exists() || f.length() <= 0 || f.length() > 200000) return null
+        val ext = a.name.substringAfterLast('.', "").lowercase()
+        val mime = a.mime ?: ""
+        if (ext !in ATTACH_TEXT_EXTS && !mime.startsWith("text/") && mime != "application/json") return null
+        return f.readText().take(maxChars).ifBlank { null }
+    } catch (_: Exception) {
+        return null
+    }
+}
+
+/**
+ * Stored attachment content appended to a user turn so the conversation
+ * remembers files (text types, capped; others stay name-only).
+ */
+fun attachedContext(item: ChatItem.User): String {
+    val extra = item.attachments.take(3).mapNotNull { a ->
+        attachmentText(a)?.let { "[Attached file ${a.name} content:\n$it]" }
+    }.joinToString("\n\n").takeIf { it.isNotBlank() } ?: return ""
+    return "\n\n$extra"
+}
 
 /** Typing-effect speed per effort level. */
 fun effortDelayMs(effort: String): Long = when (effort) {
@@ -150,7 +199,6 @@ fun ChatScreen(
     var streamingContent by remember { mutableStateOf(false) }
     var cancelGeneration by remember { mutableStateOf(false) }
     var streamStartMs by remember { mutableStateOf(0L) }
-    var genStats by remember { mutableStateOf<String?>(null) }
     var genLive by remember { mutableStateOf<String?>(null) }
     // One-time web-search consent: gate suspends the send until the user answers.
     var webConsentGate by remember { mutableStateOf<CompletableDeferred<Boolean>?>(null) }
@@ -174,6 +222,12 @@ fun ChatScreen(
 
     // ---------- File upload / attachments ----------
     val context = LocalContext.current
+    // Content-window switcher dialog.
+    var showWindowDialog by remember { mutableStateOf(false) }
+    var contentWindow by remember { mutableStateOf(UserPrefs.contextTokens(context)) }
+    // Custom instructions dialog (stored to memory, used in every prompt).
+    var showCustomDialog by remember { mutableStateOf(false) }
+    var customText by remember { mutableStateOf("") }
     // Restore last manual pick when still usable, else first weight.
     var selectedModel by remember {
         mutableStateOf(
@@ -191,7 +245,7 @@ fun ChatScreen(
     fun effectiveModel(prompt: String): String {
         if (!autoRoute) return selectedModel
         val locals = UserPrefs.models(context)
-            .filter { !isCloudProviderName(it) && ModelDownloader.isRunnableWeight(context, it) }
+            .filter { !isCloudProviderName(it) && !isEmbeddingModel(it) && ModelDownloader.isRunnableWeight(context, it) }
         val keyed = cloudProviders.filter { UserPrefs.apiKey(context, it.id).isNotBlank() }
         val decision = routeModel(prompt, locals, keyed, UserPrefs.autoCloud(context))
         if (decision != null) {
@@ -219,10 +273,34 @@ fun ChatScreen(
                     if (cursor.moveToFirst() && sizeIdx >= 0) cursor.getLong(sizeIdx) else 0L
                 } ?: 0L
                 val mime = context.contentResolver.getType(uri)
-                Attachment(name = name, sizeBytes = size, mime = mime)
+                uri to Attachment(name = name, sizeBytes = size, mime = mime)
             } catch (_: Exception) { null }
         }
-        attachments = attachments + picked
+        attachments = attachments + picked.map { it.second }
+        // Persist copies in background so the conversation remembers content.
+        coroutineScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            picked.forEach { (uri, att) ->
+                try {
+                    val dir = File(context.filesDir, "attachments").apply { mkdirs() }
+                    val safe = att.name.replace(Regex("[^A-Za-z0-9._-]"), "_").takeLast(60).ifBlank { "file" }
+                    val dest = File(dir, "${System.currentTimeMillis()}_$safe")
+                    context.contentResolver.openInputStream(uri)?.use { input ->
+                        dest.outputStream().use { out -> input.copyTo(out, 256 * 1024) }
+                    }
+                    if (dest.exists() && dest.length() > 0) {
+                        val idx = attachments.indexOfFirst {
+                            it.path == null && it.name == att.name && it.sizeBytes == att.sizeBytes
+                        }
+                        if (idx >= 0) {
+                            val updated = attachments.toMutableList()
+                            updated[idx] = updated[idx].copy(path = dest.absolutePath)
+                            attachments = updated
+                        }
+                    }
+                } catch (_: Exception) {
+                }
+            }
+        }
     }
 
     val docPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
@@ -317,6 +395,18 @@ fun ChatScreen(
         onHistoryChanged()
     }
 
+    /** Direct temp-chat toggle (header icon + overflow menu share this). */
+    fun toggleTemporaryChat() {
+        if (!temporaryChat) {
+            persist()
+            messages.clear()
+            queue.clear()
+            conversationId = System.currentTimeMillis().toString()
+        }
+        temporaryChat = !temporaryChat
+        android.widget.Toast.makeText(context, if (temporaryChat) "Temporary chat on — not saved" else "Temporary chat off", android.widget.Toast.LENGTH_SHORT).show()
+    }
+
     /** Updates the in-list provisional reply (the reply streams in place). */
     fun setStreamingText(id: String, text: String) {
         val i = messages.indexOfFirst { (it as? ChatItem.Assistant)?.id == id }
@@ -344,18 +434,19 @@ fun ChatScreen(
         } catch (_: Exception) {}
     }
 
-    fun setStats(finalLen: Int) {
-        val elapsed = (System.currentTimeMillis() - streamStartMs) / 1000.0
-        val tok = finalLen / 4
-        val rate = if (elapsed > 0) tok / elapsed else 0.0
-        genStats = "%.1fs · ~%d tok · %.1f tok/s".format(elapsed, tok, rate)
-        genLive = null
-    }
-
     /** Drops model droppings: leading bare null/none lines or null runs. */
     fun cleanReply(text: String): String =
         text.replaceFirst(Regex("^((?:\\s*null){2,}\\s*|\\s*(?:null|none|nil)\\s*\\n)+", RegexOption.IGNORE_CASE), "")
             .trimStart('\n')
+
+    /** Whitespace plus zero-width/format space separators models emit. */
+    fun isInvisibleChar(c: Char): Boolean =
+        c.isWhitespace() || c == '\u200B' || c == '\uFEFF' || c == '\u200E' || c == '\u200F' ||
+            c == '\u2028' || c == '\u2029' || c == '\u00A0' || c == '\u1680' || c == '\u180E' ||
+            c == '\u205F' || c == '\u3000' || (c in '\u2000'..'\u200A')
+
+    /** True when text has anything a human can see (not blank/invisible). */
+    fun hasVisibleContent(s: String): Boolean = s.any { !isInvisibleChar(it) }
 
     /** Typing-effect playback writing straight into the chat-list message. */
     suspend fun playOut(id: String, text: String) {
@@ -423,7 +514,6 @@ fun ChatScreen(
         // Length from the played text so stats match exactly what is shown.
         val len = (messages.firstOrNull { (it as? ChatItem.Assistant)?.id == id } as? ChatItem.Assistant)?.text?.length ?: 0
         id?.let { stampTook(it, len / 4) }
-        setStats(len)
         persist()
         isGenerating = false
         streamingId = null
@@ -445,28 +535,35 @@ fun ChatScreen(
         scrollToBottomIfNear()
     }
 
-    /** Prompt shaping: explainer guide and/or liked-style memory. */
+    /** Prompt shaping: explainer guide, liked-style memory, custom instructions. */
     fun shapingSuffix(prompt: String): String {
+        val custom = UserPrefs.customInstructions(context).trim().take(500)
         val parts = listOf(
             if (wantsExplainer(prompt, context)) EXPLAINER_STYLE_GUIDE else "",
-            StyleMemory.currentHint(context)
+            StyleMemory.currentHint(context),
+            if (custom.isNotBlank()) "User instructions: $custom" else ""
         ).filter { it.isNotBlank() }
         return if (parts.isEmpty()) "" else " " + parts.joinToString("\n\n")
     }
 
-    /** Best keyed cloud for slow-local fallback, or null when offline/unkeyed. */
-    fun pickFallbackCloud(prompt: String): CloudProvider? {
+    /** Top-scoring keyed cloud outside [exclude], with its key. */
+    fun pickCloud(prompt: String, exclude: Set<String> = emptySet()): Pair<CloudProvider, String>? {
         if (!device.networkUp) return null
-        val keyed = cloudProviders.filter { UserPrefs.apiKey(context, it.id).isNotBlank() }
+        val keyed = cloudProviders.filter { it.id !in exclude && UserPrefs.apiKey(context, it.id).isNotBlank() }
         if (keyed.isEmpty()) return null
         val intent = detectIntent(prompt.ifBlank { "chat" })
-        return keyed.maxByOrNull { scoreCloud(it.id, intent) }
+        val best = keyed.maxByOrNull { scoreCloud(it.id, intent) } ?: return null
+        return best to UserPrefs.apiKey(context, best.id)
     }
+
+    /** Best keyed cloud for slow-local fallback, or null when offline/unkeyed. */
+    fun pickFallbackCloud(prompt: String): CloudProvider? = pickCloud(prompt)?.first
 
     /**
      * One full cloud turn for an already-listed provisional bubble [aid].
      * Shared by direct cloud routes and slow-local fallback so the flow
-     * never breaks mid-reply.
+     * never breaks mid-reply. A failing model reroutes to the next keyed
+     * cloud and runs again (each tried once); the queue drains on success.
      */
     suspend fun cloudTurn(
         cloud: CloudProvider,
@@ -476,18 +573,24 @@ fun ChatScreen(
         web: String?,
         regenerateHint: String?
     ) {
-        setStreamingText(aid, "Contacting ${cloud.name}…")
-        // Stamp the answering model (no-op on direct routes, correct on fallback).
-        val mi = messages.indexOfFirst { (it as? ChatItem.Assistant)?.id == aid }
-        if (mi >= 0) {
-            (messages[mi] as? ChatItem.Assistant)?.let { messages[mi] = it.copy(model = cloud.name) }
-        }
-        try {
+        var provider = cloud
+        var key = cloudKey
+        val tried = mutableSetOf<String>()
+        var lastError = ""
+        while (true) {
+            tried.add(provider.id)
+            setStreamingText(aid, "Contacting ${provider.name}…")
+            // Stamp the answering model (correct on fallback and reroutes).
+            val mi = messages.indexOfFirst { (it as? ChatItem.Assistant)?.id == aid }
+            if (mi >= 0) {
+                (messages[mi] as? ChatItem.Assistant)?.let { messages[mi] = it.copy(model = provider.name) }
+            }
+            try {
             // Cloud history uses the provider window, not the local setting.
             val limit = cloudHistoryTurns()
             val base = messages.mapNotNull { item ->
                 when (item) {
-                    is ChatItem.User -> "user" to item.text
+                    is ChatItem.User -> "user" to (item.text + attachedContext(item))
                     is ChatItem.Assistant -> if (item.id == aid) null else "assistant" to item.text
                 }
             }.takeLast(limit)
@@ -513,13 +616,13 @@ fun ChatScreen(
                 if (rounds > 0) {
                     setStreamingText(aid, "Continuing… (part ${rounds + 1})")
                 }
-                val res = cloud.completeResult(
-                    cloudKey,
+                val res = provider.completeResult(
+                    key,
                     roundHistory,
                     maxTokensFor(effort),
-                    thinkingBudget = if (cloud.reasoning) thinkingBudgetFor(effort) else null,
+                    thinkingBudget = if (provider.reasoning) thinkingBudgetFor(effort) else null,
                     historyLimit = limit,
-                    model = UserPrefs.apiModel(context, cloud.id).ifBlank { null }
+                    model = UserPrefs.apiModel(context, provider.id).ifBlank { null }
                 )
                 if (cancelGeneration) break
                 fullReply.append(res.text)
@@ -532,16 +635,35 @@ fun ChatScreen(
             val reply = cleanReply(fullReply.toString())
             if (cancelGeneration) {
                 cancelSettle(aid)
-            } else if (reply.isNotBlank()) {
+                return
+            }
+            if (hasVisibleContent(reply)) {
                 playOut(aid, reply)
                 if (cancelGeneration) cancelSettle(aid) else completeSettle()
-            } else {
-                errorSettle(aid, "The model returned an empty reply — try again or switch models.")
+                return
             }
-        } catch (e: CloudApiException) {
-            errorSettle(aid, "⚠ ${cloud.name} error (HTTP ${e.status}): ${e.message}")
-        } catch (e: Exception) {
-            errorSettle(aid, "⚠ Could not reach ${cloud.name} — check internet and your API key. (${e.message})")
+            lastError = "The model returned an empty reply"
+            } catch (e: CloudApiException) {
+                if (cancelGeneration) {
+                    cancelSettle(aid)
+                    return
+                }
+                lastError = "${provider.name} error (HTTP ${e.status}): ${e.message}"
+            } catch (e: Exception) {
+                if (cancelGeneration) {
+                    cancelSettle(aid)
+                    return
+                }
+                lastError = "Could not reach ${provider.name} — check internet and your API key. (${e.message})"
+            }
+            // Reroute: next keyed cloud takes over the same turn.
+            val next = pickCloud(userText, tried)
+            if (next == null) {
+                errorSettle(aid, "⚠ $lastError")
+                return
+            }
+            provider = next.first
+            key = next.second
         }
     }
 
@@ -570,7 +692,6 @@ fun ChatScreen(
             streamStartMs = System.currentTimeMillis()
             streamingContent = false
             genLive = null
-            genStats = null
             val aid = "asst_${System.currentTimeMillis()}"
             messages.add(ChatItem.Assistant(id = aid, text = "", model = sendModel))
             streamingId = aid
@@ -615,6 +736,8 @@ fun ChatScreen(
                     errorSettle(aid, "Local runtime failed to load on this device.")
                 } else if (!ModelDownloader.isRunnableWeight(context, sendModel)) {
                     errorSettle(aid, "$sendModel is ${ModelDownloader.formatOf(sendModel)} — on-device runs GGUF weights only. Convert it to GGUF or pick a cloud model.")
+                } else if (isEmbeddingModel(sendModel)) {
+                    errorSettle(aid, "$sendModel is an embedding weight for vault search — pick a chat model to talk.")
                 } else if (UserPrefs.thermalGuard(context) && device.batteryTempC >= UserPrefs.thermalLimitC(context)) {
                     errorSettle(
                         aid,
@@ -629,7 +752,7 @@ fun ChatScreen(
                         val localLimit = localTurnsFor(window)
                         val basePairs = messages.mapNotNull { item ->
                             when (item) {
-                                is ChatItem.User -> "user" to item.text
+                                is ChatItem.User -> "user" to (item.text + attachedContext(item))
                                 is ChatItem.Assistant -> if (item.id == aid) null else "assistant" to item.text
                             }
                         }
@@ -640,31 +763,41 @@ fun ChatScreen(
                             (trimmedPairs + ("user" to regenerateHint)).takeLast(localLimit)
                         } else trimmedPairs
                         val shaping = shapingSuffix(userText)
-                        // Slow-local guard: load+generation share one budget, then
-                        // the turn continues on the best keyed cloud uninterrupted.
+                        // Slow-local guard: blocking native calls run as orphans
+                        // on the pool — the timeout abandons the await (a plain
+                        // withContext would join the stuck thread instead).
+                        // Abort flag frees the orphaned thread right after.
+                        val deadline = System.currentTimeMillis() + LOCAL_TURN_TIMEOUT_MS
+                        fun remainingMs(): Long = (deadline - System.currentTimeMillis()).coerceAtLeast(0L)
                         data class LocalOut(val loaded: Boolean, val reply: String)
-                        val out = withTimeoutOrNull(LOCAL_TURN_TIMEOUT_MS) {
-                            val l = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                                KarenLlama.ensureLoaded(weightFile, sendModel, window, threads)
+                        suspend fun awaitAbandoned(block: () -> LocalOut): LocalOut? {
+                            // Child of the turn scope: timeout abandons the await
+                            // while the pooled thread winds down via the abort flag.
+                            val job = async(localInferenceDispatcher) { block() }
+                            return try {
+                                withTimeoutOrNull(remainingMs()) { job.await() }
+                            } finally {
+                                if (!job.isCompleted) KarenLlama.cancel()
                             }
+                        }
+                        val out = awaitAbandoned {
+                            val l = KarenLlama.ensureLoaded(weightFile, sendModel, window, threads)
                             var r = ""
-                            if (l && !cancelGeneration) {
-                                setStreamingText(aid, "Thinking on-device…")
-                                r = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                                    KarenLlama.complete(
-                                        "You are Karen, a concise on-device assistant." +
-                                            if (isReasoningModel(sendModel)) reasoningEffortHint(effort) else "" +
-                                            shaping,
-                                        instructedPairs.map { it.first }.toTypedArray(),
-                                        instructedPairs.map { it.second }.toTypedArray(),
-                                        maxTokensFor(effort)
-                                    )
-                                }
+                            if (l) {
+                                r = KarenLlama.complete(
+                                    "You are Karen, a concise on-device assistant." +
+                                        if (isReasoningModel(sendModel)) reasoningEffortHint(effort) else "" +
+                                        shaping,
+                                    instructedPairs.map { it.first }.toTypedArray(),
+                                    instructedPairs.map { it.second }.toTypedArray(),
+                                    maxTokensFor(effort)
+                                )
                             }
                             LocalOut(l, r)
                         }
                         if (out == null) {
-                            // Local took too long: switch to API without breaking flow.
+                            // Local took too long (abandoned above): switch to
+                            // API without breaking flow.
                             if (cancelGeneration) {
                                 cancelSettle(aid)
                             } else {
@@ -683,7 +816,7 @@ fun ChatScreen(
                             cancelSettle(aid)
                         } else {
                             val finalReply = cleanReply(out.reply)
-                            if (finalReply.isNotBlank()) {
+                            if (hasVisibleContent(finalReply)) {
                                 playOut(aid, finalReply)
                                 if (cancelGeneration) cancelSettle(aid) else completeSettle()
                             } else {
@@ -790,10 +923,13 @@ fun ChatScreen(
                 selectedModel = if (autoRoute) "Auto → " + (lastRouted ?: selectedModel) else selectedModel,
                 onMenuClick = onOpenDrawer,
                 onModelClick = { showModelSheet = true },
-                onBackClick = onNavigateToHome,
                 effort = if (isReasoningModel(if (autoRoute) (lastRouted ?: selectedModel) else selectedModel)) effort else null,
                 efforts = listOf("Low", "Medium", "High", "Max", "Extreme", "XHigh"),
                 onSelectEffort = { effort = it },
+                temporaryChat = temporaryChat,
+                onToggleTemporaryChat = { toggleTemporaryChat() },
+                showTemporaryChat = true,
+                onBackClick = null,
                 onNewChatClick = {
                     resettingNewChat = true
                     coroutineScope.launch {
@@ -813,6 +949,10 @@ fun ChatScreen(
                     Triple("Usage stats", Icons.Default.BarChart) {
                         showUsage = true
                     },
+                    Triple("Content window: ${windowLabel(contentWindow)}", Icons.Default.DataArray) {
+                        contentWindow = UserPrefs.contextTokens(context)
+                        showWindowDialog = true
+                    },
                     Triple(if (explainerPref) "Study mode: On" else "Study mode: Off", Icons.Default.School) {
                         explainerPref = !explainerPref
                         UserPrefs.setExplainerMode(context, explainerPref)
@@ -823,7 +963,8 @@ fun ChatScreen(
                         ).show()
                     },
                     Triple("Customize instructions", Icons.Default.Settings) {
-                        android.widget.Toast.makeText(context, "Custom instructions", android.widget.Toast.LENGTH_SHORT).show()
+                        customText = UserPrefs.customInstructions(context)
+                        showCustomDialog = true
                     },
                     Triple("Share chat link", Icons.Default.Share) {
                         android.widget.Toast.makeText(context, "Chat link copied", android.widget.Toast.LENGTH_SHORT).show()
@@ -836,14 +977,7 @@ fun ChatScreen(
                         android.widget.Toast.makeText(context, "Chat archived to history", android.widget.Toast.LENGTH_SHORT).show()
                     },
                     Triple("Temporary chat", Icons.Default.AutoAwesome) {
-                        if (!temporaryChat) {
-                            persist()
-                            messages.clear()
-                        queue.clear()
-                            conversationId = System.currentTimeMillis().toString()
-                        }
-                        temporaryChat = !temporaryChat
-                        android.widget.Toast.makeText(context, if (temporaryChat) "Temporary chat on — not saved" else "Temporary chat off", android.widget.Toast.LENGTH_SHORT).show()
+                        toggleTemporaryChat()
                     },
                     Triple("Clear conversation", Icons.Default.Delete) {
                         ChatHistoryStore.deleteConversation(context, conversationId)
@@ -881,7 +1015,7 @@ fun ChatScreen(
                     .weight(1f)
                     .fillMaxWidth()
                     .padding(horizontal = 14.dp),
-                contentPadding = PaddingValues(top = 0.dp, bottom = 150.dp),
+                contentPadding = PaddingValues(top = 0.dp, bottom = 200.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 items(messages, key = { when (it) { is ChatItem.User -> it.id; is ChatItem.Assistant -> it.id } }) { item ->
@@ -1094,7 +1228,7 @@ fun ChatScreen(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(120.dp)
+                .height(150.dp)
                 .align(Alignment.BottomCenter)
                 .background(
                     androidx.compose.ui.graphics.Brush.verticalGradient(
@@ -1154,19 +1288,33 @@ fun ChatScreen(
             visible = showJumpBottom,
             enter = fadeIn() + scaleIn(),
             exit = fadeOut() + scaleOut(),
-            modifier = Modifier.align(Alignment.BottomEnd)
+            modifier = Modifier.align(Alignment.BottomCenter)
         ) {
             Box(
                 modifier = Modifier
                     .navigationBarsPadding()
-                    .padding(end = 16.dp, bottom = 176.dp)
+                    .padding(bottom = 116.dp)
                     .size(44.dp)
                     .clip(CircleShape)
                     .background(colors.surface)
                     .border(1.dp, colors.border, CircleShape)
                     .clickable {
                         coroutineScope.launch {
-                            try { listState.animateScrollToItem(messages.size - 1) } catch (_: Exception) {}
+                            try {
+                                val last = messages.size - 1
+                                if (last < 0) return@launch
+                                listState.animateScrollToItem(last)
+                                // Pin to the absolute end (item-top alignment
+                                // alone can leave the footer below the fold).
+                                val info = listState.layoutInfo
+                                val tail = info.visibleItemsInfo.lastOrNull()
+                                if (tail != null) {
+                                    val beyond = (tail.offset + tail.size) - info.viewportEndOffset
+                                    if (beyond > 0) {
+                                        listState.animateScrollBy(beyond.toFloat())
+                                    }
+                                }
+                            } catch (_: Exception) {}
                         }
                     },
                 contentAlignment = Alignment.Center
@@ -1186,8 +1334,17 @@ fun ChatScreen(
                 .navigationBarsPadding()
                 .imePadding()
         ) {
-            // Last-response stats: small readout pinned top-left above the composer.
-            val statsLine = genLive ?: genStats
+            // Boundary above the composer while generating.
+            if (isGenerating) {
+                HorizontalDivider(
+                    color = colors.accentGreen.copy(alpha = 0.35f),
+                    thickness = 1.dp,
+                    modifier = Modifier.padding(bottom = 6.dp)
+                )
+            }
+            // Live generating readout above the composer (hidden when idle —
+            // finished replies keep their own took/tokens/model footer).
+            val statsLine = genLive
             if (statsLine != null) {
                 Row(
                     modifier = Modifier.padding(start = 22.dp, bottom = 6.dp),
@@ -1332,6 +1489,109 @@ fun ChatScreen(
                         webConsentGate = null
                         webConsentPreview = null
                     }) { Text("Don't allow") }
+                }
+            )
+        }
+
+        // Content-window switcher (local RAM size; cloud uses provider window).
+        if (showWindowDialog) {
+            AlertDialog(
+                onDismissRequest = { showWindowDialog = false },
+                title = { Text("Content window") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        UserPrefs.contextWindowOptions.forEach { tokens ->
+                            val selected = contentWindow == tokens
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .clickable {
+                                        contentWindow = tokens
+                                        UserPrefs.setContextTokens(context, tokens)
+                                        showWindowDialog = false
+                                    }
+                                    .padding(horizontal = 8.dp, vertical = 8.dp)
+                            ) {
+                                RadioButton(
+                                    selected = selected,
+                                    onClick = {
+                                        contentWindow = tokens
+                                        UserPrefs.setContextTokens(context, tokens)
+                                        showWindowDialog = false
+                                    },
+                                    colors = RadioButtonDefaults.colors(
+                                        selectedColor = colors.accentGreen,
+                                        unselectedColor = colors.textMuted
+                                    )
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Column {
+                                    Text(
+                                        text = windowLabel(tokens),
+                                        color = if (selected) colors.accentGreen else colors.textPrimary,
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                    )
+                                    Text(
+                                        text = "$tokens tokens history + project context",
+                                        color = colors.textMuted,
+                                        fontSize = 11.5.sp
+                                    )
+                                }
+                            }
+                        }
+                        Text(
+                            "On-device models reload with the new size on next run.",
+                            color = colors.textMuted,
+                            fontSize = 11.5.sp,
+                            modifier = Modifier.padding(top = 6.dp)
+                        )
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { showWindowDialog = false }) { Text("Close") }
+                }
+            )
+        }
+
+        // Custom instructions editor (memory for every prompt).
+        if (showCustomDialog) {
+            AlertDialog(
+                onDismissRequest = { showCustomDialog = false },
+                title = { Text("Custom instructions") },
+                text = {
+                    Column {
+                        Text(
+                            "Remembered on this device and added to every model request.",
+                            fontSize = 13.sp
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = customText,
+                            onValueChange = { customText = it },
+                            placeholder = { Text("e.g. Always answer with examples") },
+                            colors = karenFieldColors(colors),
+                            modifier = Modifier.fillMaxWidth(),
+                            minLines = 3
+                        )
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        UserPrefs.setCustomInstructions(context, customText)
+                        showCustomDialog = false
+                        android.widget.Toast.makeText(context, "Instructions saved to memory", android.widget.Toast.LENGTH_SHORT).show()
+                    }) { Text("Save") }
+                },
+                dismissButton = {
+                    TextButton(onClick = {
+                        UserPrefs.setCustomInstructions(context, "")
+                        customText = ""
+                        showCustomDialog = false
+                    }) { Text("Clear") }
                 }
             )
         }

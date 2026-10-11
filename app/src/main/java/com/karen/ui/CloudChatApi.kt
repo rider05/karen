@@ -58,6 +58,17 @@ val providerModels: Map<String, List<String>> = mapOf(
 /** Dropdown marker for free-typed model ids (OpenRouter takes any model id). */
 const val CUSTOM_MODEL = "Custom…"
 
+/** Session cache of live model lists, so sheets reuse fetched OG values. */
+val liveModelCache = mutableMapOf<String, List<LiveModel>>()
+
+/** OG context for a model id: live cache first, then published specs. */
+fun liveContextOf(providerId: String, modelId: String): Int {
+    liveModelCache[providerId]?.find { it.id == modelId.trim() }?.let {
+        if (it.context > 0) return it.context
+    }
+    return modelContextWindow(modelId)
+}
+
 /** Published context windows (tokens) for known cloud model ids. */
 val modelContextWindows: Map<String, Int> = mapOf(
     "gpt-4o" to 128000,

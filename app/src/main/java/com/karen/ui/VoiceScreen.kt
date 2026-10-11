@@ -60,6 +60,9 @@ fun VoiceScreen(
     var voiceBusy by remember { mutableStateOf(false) }
     var voiceReply by remember { mutableStateOf("") }
     var cancelVoice by remember { mutableStateOf(false) }
+    var autoVoice by remember { mutableStateOf(true) }
+    var autoArmed by remember { mutableStateOf(false) }
+    var wasSpeaking by remember { mutableStateOf(false) }
     val voiceScope = rememberCoroutineScope()
 
     fun runVoiceTurn(prompt: String) {
@@ -109,6 +112,7 @@ fun VoiceScreen(
                 val said = answer?.trim().orEmpty()
                 if (said.isNotBlank()) {
                     voiceReply = said
+                    autoArmed = true
                     TtsManager.speak(personaCtx, said, voicePersona)
                 } else {
                     voiceReply = "I couldn't answer that. Connect a model in Model Manager to chat by voice."
@@ -134,6 +138,20 @@ fun VoiceScreen(
             userSpokenText = interim
         }
     )
+
+    // Hands-free loop: when the spoken reply finishes, listen again.
+    androidx.compose.runtime.LaunchedEffect(TtsManager.speaking) {
+        if (wasSpeaking && !TtsManager.speaking) {
+            if (autoArmed && !cancelVoice && autoVoice && !isMuted && voiceReply.isNotBlank()) {
+                autoArmed = false
+                kotlinx.coroutines.delay(600)
+                voiceStt.startListening()
+            } else {
+                autoArmed = false
+            }
+        }
+        wasSpeaking = TtsManager.speaking
+    }
 
     val infiniteTransition = rememberInfiniteTransition(label = "voice_orb")
 
@@ -301,10 +319,13 @@ fun VoiceScreen(
                     .clickable {
                         if (voiceBusy) {
                             cancelVoice = true
+                            autoArmed = false
+                            voiceStt.stopListening()
                             TtsManager.stop()
                         } else if (voiceStt.state.isListening) {
                             voiceStt.stopListening()
                         } else {
+                            cancelVoice = false
                             voiceStt.startListening()
                         }
                     },
@@ -388,6 +409,17 @@ fun VoiceScreen(
 
             Spacer(Modifier.height(40.dp))
 
+            // Hands-free auto-continue toggle.
+            androidx.compose.material3.TextButton(onClick = { autoVoice = !autoVoice }) {
+                Text(
+                    text = if (autoVoice) "Auto-conversation: On" else "Auto-conversation: Off",
+                    color = if (autoVoice) colors.accentGreen else colors.textMuted,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium
+                )
+            }
+            Spacer(Modifier.height(4.dp))
+
             // Live Transcript Subtitles Pill — tap to hear it read aloud.
             Column(
                 modifier = Modifier
@@ -414,6 +446,7 @@ fun VoiceScreen(
                         voiceStt.state.isListening -> "YOU (LISTENING...)"
                         voiceBusy -> "Thinking…"
                         voiceReply.isNotBlank() -> "“$voiceReply”"
+                        !voiceStt.state.errorMessage.isNullOrBlank() -> "⚠ ${voiceStt.state.errorMessage} — tap orb to retry"
                         userSpokenText.isNotEmpty() -> "“$userSpokenText”"
                         else -> "Tap orb to speak. Karen native STT is ready..."
                     },

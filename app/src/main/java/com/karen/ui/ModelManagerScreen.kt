@@ -177,6 +177,12 @@ fun ModelManagerScreen(
     var liveModels by remember { mutableStateOf<List<LiveModel>?>(null) }
     var liveLoading by remember { mutableStateOf(false) }
     var liveError by remember { mutableStateOf(false) }
+    // Secured key backup: password dialogs + file pickers.
+    var showExportPw by remember { mutableStateOf(false) }
+    var exportPw by remember { mutableStateOf("") }
+    var showImportPw by remember { mutableStateOf(false) }
+    var importPw by remember { mutableStateOf("") }
+    var pendingImportUri by remember { mutableStateOf<Uri?>(null) }
     var keyVisible by remember { mutableStateOf(false) }
     // Download catalog collapse: 3 cards by default.
     var catalogExpanded by remember { mutableStateOf(false) }
@@ -229,6 +235,23 @@ fun ModelManagerScreen(
     var importCancelled by remember { mutableStateOf(false) }
     val managerScope = rememberCoroutineScope()
 
+    val exportKeysLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val pw = exportPw
+        exportPw = ""
+        managerScope.launch {
+            val msg = withContext(Dispatchers.IO) { ApiKeyVault.exportKeys(ctx, uri, pw) }
+            Toast.makeText(ctx, msg, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    val importKeysLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        pendingImportUri = uri
+        importPw = ""
+        showImportPw = true
+    }
+
     /** Pulls the provider's live model list (typed or stored key). */
     fun fetchLiveModels() {
         val p = selectedProvider ?: return
@@ -244,7 +267,9 @@ fun ModelManagerScreen(
         liveError = false
         managerScope.launch {
             try {
-                liveModels = p.listModelsLive(key)
+                val ids = p.listModelsLive(key)
+                liveModels = ids
+                liveModelCache[p.id] = ids
                 liveError = false
             } catch (_: Exception) {
                 liveModels = null
@@ -476,6 +501,35 @@ fun ModelManagerScreen(
                             }
                         }
                     }
+                    Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = {
+                                val n = cloudProviders.count { UserPrefs.apiKey(ctx, it.id).isNotBlank() }
+                                if (n == 0) {
+                                    Toast.makeText(ctx, "No API keys stored to export", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    exportPw = ""
+                                    showExportPw = true
+                                }
+                            },
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Text("Export keys", fontSize = 12.sp)
+                        }
+                        OutlinedButton(
+                            onClick = { importKeysLauncher.launch(arrayOf("*/*")) },
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Text("Import keys", fontSize = 12.sp)
+                        }
+                    }
+                    Text(
+                        "Password-encrypted .kbk file in local storage — works across reinstalls",
+                        color = colors.textMuted,
+                        fontSize = 11.sp,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
                 }
             }
 
@@ -955,6 +1009,84 @@ fun ModelManagerScreen(
 
         // Cloud API connect dialog: step 0 = pick provider, step 1 = enter key.
         // Keys persist in on-device SharedPreferences via UserPrefs.
+        // Export password: picked file is encrypted with this (never stored).
+        if (showExportPw) {
+            AlertDialog(
+                onDismissRequest = { showExportPw = false; exportPw = "" },
+                title = { Text("Backup password") },
+                text = {
+                    Column {
+                        Text("Encrypts every stored API key into one .kbk file.", fontSize = 13.sp)
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = exportPw,
+                            onValueChange = { exportPw = it },
+                            label = { Text("Password (min 4 chars)") },
+                            singleLine = true,
+                            visualTransformation = PasswordVisualTransformation(),
+                            colors = karenFieldColors(colors),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        if (exportPw.length < 4) {
+                            Toast.makeText(ctx, "Password needs at least 4 characters", Toast.LENGTH_SHORT).show()
+                        } else {
+                            showExportPw = false
+                            exportKeysLauncher.launch("karen-api-keys.kbk")
+                        }
+                    }) { Text("Choose file") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showExportPw = false; exportPw = "" }) { Text("Cancel") }
+                }
+            )
+        }
+
+        // Import password: decrypts the picked .kbk file into stored keys.
+        if (showImportPw) {
+            AlertDialog(
+                onDismissRequest = { showImportPw = false; importPw = ""; pendingImportUri = null },
+                title = { Text("Import backup") },
+                text = {
+                    Column {
+                        Text("Enter the password this backup was encrypted with.", fontSize = 13.sp)
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = importPw,
+                            onValueChange = { importPw = it },
+                            label = { Text("Password") },
+                            singleLine = true,
+                            visualTransformation = PasswordVisualTransformation(),
+                            colors = karenFieldColors(colors),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        val uri = pendingImportUri
+                        val pw = importPw
+                        showImportPw = false
+                        importPw = ""
+                        pendingImportUri = null
+                        if (uri != null) {
+                            managerScope.launch {
+                                val msg = withContext(Dispatchers.IO) { ApiKeyVault.importKeys(ctx, uri, pw) }
+                                refreshAll()
+                                Toast.makeText(ctx, msg, Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    }) { Text("Decrypt & Import") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showImportPw = false; importPw = ""; pendingImportUri = null }) { Text("Cancel") }
+                }
+            )
+        }
+
         if (showApiDialog) {
             val provider = selectedProvider
             AlertDialog(
@@ -1111,7 +1243,9 @@ fun ModelManagerScreen(
                                         // Tier flag on every row: true only on live-priced
                                         // free; everything else bills the key.
                                         val tier = liveFree[choice] == true
-                                        val ctxTag = formatContextWindow(liveCtx[choice] ?: modelContextWindow(choice))
+                                        val ctxTag = formatContextWindow(
+                                            liveCtx[choice] ?: liveContextOf(provider.id, choice)
+                                        )
                                         DropdownMenuItem(
                                             text = {
                                                 Row(verticalAlignment = Alignment.CenterVertically) {

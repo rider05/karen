@@ -158,7 +158,10 @@ fun ChatGPTTopAppBar(
     effort: String? = null,
     efforts: List<String> = emptyList(),
     onSelectEffort: (String) -> Unit = {},
-    eyebrow: String = "Dialogue"
+    eyebrow: String = "Dialogue",
+    temporaryChat: Boolean = false,
+    onToggleTemporaryChat: () -> Unit = {},
+    showTemporaryChat: Boolean = false
 ) {
     val colors = LocalKarenColors.current
     var showMoreMenu by remember { mutableStateOf(false) }
@@ -200,10 +203,17 @@ fun ChatGPTTopAppBar(
                 }
             }
 
-            // Center: model + effort selectors
+            // Center: model + effort selectors. Side padding reserves the icon
+            // clusters so long model names can never collide with buttons.
+            // Chat hides the back arrow (system back still returns Home), so
+            // the left reserve shrinks accordingly.
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.align(Alignment.Center)
+                horizontalArrangement = Arrangement.Center,
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .fillMaxWidth()
+                    .padding(start = if (onBackClick == null) 44.dp else 80.dp, end = if (showTemporaryChat) 118.dp else 82.dp)
             ) {
                 // Model / surface status pill
                 Row(
@@ -228,7 +238,8 @@ fun ChatGPTTopAppBar(
                         fontFamily = LocalKarenType.current.mono,
                         fontSize = 10.5.sp,
                         fontWeight = FontWeight.Medium,
-                        maxLines = 1
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                     )
                     Spacer(Modifier.width(2.dp))
                     Icon(
@@ -258,7 +269,13 @@ fun ChatGPTTopAppBar(
                                 .background(effortTint)
                         )
                         Spacer(Modifier.width(5.dp))
-                        Text(effort, color = effortTint, fontSize = 10.5.sp, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            effort,
+                            color = effortTint,
+                            fontSize = 10.5.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1
+                        )
                         Icon(
                             imageVector = Icons.Default.KeyboardArrowDown,
                             contentDescription = "Select effort",
@@ -274,7 +291,7 @@ fun ChatGPTTopAppBar(
                             .border(1.dp, colors.border, RoundedCornerShape(12.dp))
                             .clip(RoundedCornerShape(12.dp))
                     ) {
-                        efforts.forEach { e ->
+                        efforts.forEachIndexed { idx, e ->
                             val tint = effortColor(e, colors)
                             DropdownMenuItem(
                                 text = {
@@ -297,6 +314,15 @@ fun ChatGPTTopAppBar(
                                     .padding(horizontal = 6.dp, vertical = 2.dp)
                                     .clip(RoundedCornerShape(8.dp))
                             )
+                            if (idx != efforts.lastIndex) {
+                                HorizontalDivider(
+                                    modifier = Modifier
+                                        .fillMaxWidth(0.75f)
+                                        .align(Alignment.CenterHorizontally),
+                                    thickness = 1.dp,
+                                    color = colors.border.copy(alpha = 0.55f)
+                                )
+                            }
                         }
                     }
                 }
@@ -309,6 +335,16 @@ fun ChatGPTTopAppBar(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.align(Alignment.CenterEnd)
             ) {
+                if (showTemporaryChat) {
+                    KIconButton(onClick = onToggleTemporaryChat) {
+                        Icon(
+                            imageVector = Icons.Default.AutoAwesome,
+                            contentDescription = "Temporary chat",
+                            tint = if (temporaryChat) colors.accentAmber else colors.textSecondary,
+                            modifier = Modifier.size(21.dp)
+                        )
+                    }
+                }
                 KIconButton(onClick = onNewChatClick) {
                     Icon(
                         imageVector = Icons.Default.AddCircle,
@@ -1931,7 +1967,7 @@ fun ModelSelectorSheet(
                                         .padding(horizontal = 6.dp, vertical = 2.dp)
                                 ) {
                                     Text(
-                                        text = if (isSelected) "Active" else if (isCloud) "Live" else ModelDownloader.formatOf(name),
+                                        text = if (isSelected) "Active" else if (isCloud) "Live" else if (isEmbeddingModel(name)) "Embed" else ModelDownloader.formatOf(name),
                                         color = if (isSelected) colors.accentGreen else colors.textMuted,
                                         fontSize = 10.5.sp,
                                         fontWeight = FontWeight.Bold
@@ -2012,7 +2048,7 @@ fun ModelSelectorSheet(
                                     .padding(horizontal = 6.dp, vertical = 2.dp)
                             ) {
                                 Text(
-                                    text = if (isSelected) "Active" else if (isReasoningModel(name)) "Thinks" else ModelDownloader.formatOf(name),
+                                    text = if (isSelected) "Active" else if (isReasoningModel(name)) "Thinks" else if (isEmbeddingModel(name)) "Embed" else ModelDownloader.formatOf(name),
                                     color = if (isSelected || isReasoningModel(name)) colors.accentGreen else colors.textMuted,
                                     fontSize = 10.5.sp,
                                     fontWeight = FontWeight.Bold
@@ -2102,10 +2138,9 @@ fun ModelSelectorSheet(
                             Spacer(Modifier.height(4.dp))
                             Text(
                                 text = buildString {
-                                    append(UserPrefs.apiModel(sheetCtx, provider.id).ifBlank { provider.defaultModel })
-                                    formatContextWindow(
-                                        modelContextWindow(UserPrefs.apiModel(sheetCtx, provider.id).ifBlank { provider.defaultModel })
-                                    ).takeIf { it.isNotBlank() }?.let { append(" · $it ctx") }
+                                    val effectiveId = UserPrefs.apiModel(sheetCtx, provider.id).ifBlank { provider.defaultModel }
+                                    append(effectiveId)
+                                    formatContextWindow(liveContextOf(provider.id, effectiveId)).takeIf { it.isNotBlank() }?.let { append(" · $it ctx") }
                                 },
                                 color = colors.textMuted,
                                 fontSize = 11.5.sp,

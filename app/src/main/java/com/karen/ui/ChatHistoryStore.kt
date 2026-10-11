@@ -61,11 +61,15 @@ object ChatHistoryStore {
                 "U" -> if (parts.size < 2) null else {
                     val names = if (parts.size > 2) dec(parts[2]).split('\n').filter { it.isNotBlank() } else emptyList()
                     val body = dec(parts[1])
+                    val paths = if (parts.size > 3) dec(parts[3]).split('\n') else emptyList()
                     ChatItem.User(
                         id = "user_${id}_$i",
                         text = body,
-                        attachments = names.map { Attachment(it, 0L, null) },
-                        tokens = parts.getOrNull(3)?.toIntOrNull() ?: body.length / 4
+                        attachments = names.mapIndexed { ni, n ->
+                            val p = paths.getOrNull(ni)?.ifBlank { null }?.takeIf { File(it).exists() }
+                            Attachment(n, 0L, null, p)
+                        },
+                        tokens = parts.getOrNull(4)?.toIntOrNull() ?: body.length / 4
                     )
                 }
                 "A" -> if (parts.size < 4) null else {
@@ -92,7 +96,7 @@ object ChatHistoryStore {
         val firstUser = messages.filterIsInstance<ChatItem.User>().firstOrNull() ?: return
         val lines = messages.map { item ->
             when (item) {
-                is ChatItem.User -> "U\t${enc(item.text)}\t${enc(item.attachments.joinToString("\n") { it.name })}\t${item.tokens}"
+                is ChatItem.User -> "U\t${enc(item.text)}\t${enc(item.attachments.joinToString("\n") { it.name })}\t${enc(item.attachments.joinToString("\n") { it.path ?: "" })}\t${item.tokens}"
                 is ChatItem.Assistant -> "A\t${enc(item.thought ?: "")}\t${enc(item.toolCall ?: "")}\t${enc(item.text)}\t${item.tookMs}\t${item.tokens}\t${if (item.interrupted) 1 else 0}\t${enc(item.model)}"
             }
         }
@@ -108,6 +112,13 @@ object ChatHistoryStore {
     }
 
     fun deleteConversation(ctx: Context, id: String) {
+        // Drop stored attachment copies belonging to this conversation.
+        try {
+            loadMessages(ctx, id).filterIsInstance<ChatItem.User>()
+                .flatMap { it.attachments }.mapNotNull { it.path }
+                .forEach { File(it).delete() }
+        } catch (_: Exception) {
+        }
         chatFile(ctx, id).delete()
         val updated = loadConversations(ctx).filter { it.id != id }
         indexFile(ctx).writeText(

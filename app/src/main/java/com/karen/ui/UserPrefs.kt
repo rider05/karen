@@ -2,6 +2,7 @@ package com.karen.ui
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.karen.WakeWord
 
 /** Lightweight on-device profile store (name, age, usage type). */
 object UserPrefs {
@@ -218,5 +219,29 @@ object UserPrefs {
         prefs(ctx).getString(KEY_GIT_REMOTE_PREFIX + projectDir.hashCode(), "") ?: ""
     fun setGitRemote(ctx: Context, projectDir: String, url: String) {
         prefs(ctx).edit().putString(KEY_GIT_REMOTE_PREFIX + projectDir.hashCode(), url).apply()
+    }
+
+    // Wake word ("Hey Jarvis" default, custom word later). Off by default:
+    // the listener holds the mic open and costs battery.
+    private const val KEY_WAKE_ENABLED = "wake_enabled"
+    fun wakeEnabled(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_WAKE_ENABLED, false)
+    fun setWakeEnabled(ctx: Context, enabled: Boolean) {
+        prefs(ctx).edit().putBoolean(KEY_WAKE_ENABLED, enabled).apply()
+    }
+
+    private const val KEY_WAKE_PHRASE = "wake_phrase"
+    fun wakePhrase(ctx: Context): String =
+        (prefs(ctx).getString(KEY_WAKE_PHRASE, WakeWord.DEFAULT_PHRASE) ?: WakeWord.DEFAULT_PHRASE)
+            .ifBlank { WakeWord.DEFAULT_PHRASE }
+    fun setWakePhrase(ctx: Context, phrase: String) {
+        val clean = phrase.trim().take(40).ifBlank { WakeWord.DEFAULT_PHRASE }
+        prefs(ctx).edit().putString(KEY_WAKE_PHRASE, clean).apply()
+    }
+
+    // Last wake trigger epoch-ms (service writes, UI reads for cold start).
+    private const val KEY_WAKE_TRIGGER_AT = "wake_trigger_at"
+    fun wakeTriggerAt(ctx: Context): Long = prefs(ctx).getLong(KEY_WAKE_TRIGGER_AT, 0L)
+    fun setWakeTriggerAt(ctx: Context, atMs: Long) {
+        prefs(ctx).edit().putLong(KEY_WAKE_TRIGGER_AT, atMs).apply()
     }
 }

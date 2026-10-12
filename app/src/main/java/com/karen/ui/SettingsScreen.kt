@@ -1,5 +1,13 @@
 package com.karen.ui
 
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
+import com.karen.WakeWord
+import com.karen.WakeWordService
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -551,6 +559,53 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                 Spacer(Modifier.height(6.dp))
                 var speakResponses by remember { mutableStateOf(false) }
                 var continuousListening by remember { mutableStateOf(false) }
+                var wakeEnabled by remember { mutableStateOf(UserPrefs.wakeEnabled(context)) }
+                var wakePhrase by remember { mutableStateOf(UserPrefs.wakePhrase(context)) }
+                var wakeDenied by remember { mutableStateOf(false) }
+                val micPermissionLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.RequestPermission()
+                ) { granted ->
+                    if (granted) {
+                        wakeEnabled = true
+                        UserPrefs.setWakeEnabled(context, true)
+                        UserPrefs.setWakePhrase(context, wakePhrase.ifBlank { WakeWord.DEFAULT_PHRASE })
+                        wakeDenied = false
+                        try {
+                            WakeWordService.start(context)
+                        } catch (_: Exception) {
+                        }
+                    } else {
+                        wakeEnabled = false
+                        UserPrefs.setWakeEnabled(context, false)
+                        wakeDenied = true
+                    }
+                }
+                fun applyWake(enabled: Boolean) {
+                    if (enabled) {
+                        val micOk = ContextCompat.checkSelfPermission(
+                            context, Manifest.permission.RECORD_AUDIO
+                        ) == PackageManager.PERMISSION_GRANTED
+                        if (!micOk) {
+                            micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                            return
+                        }
+                        wakeEnabled = true
+                        UserPrefs.setWakeEnabled(context, true)
+                        UserPrefs.setWakePhrase(context, wakePhrase.ifBlank { WakeWord.DEFAULT_PHRASE })
+                        wakeDenied = false
+                        try {
+                            WakeWordService.start(context)
+                        } catch (_: Exception) {
+                        }
+                    } else {
+                        wakeEnabled = false
+                        UserPrefs.setWakeEnabled(context, false)
+                        try {
+                            WakeWordService.stop(context)
+                        } catch (_: Exception) {
+                        }
+                    }
+                }
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -592,6 +647,49 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                         }
                         Switch(checked = continuousListening, onCheckedChange = { continuousListening = it }, colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = colors.accentGreen, uncheckedThumbColor = colors.textMuted, uncheckedTrackColor = colors.surfaceHover))
                     }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(colors.surfaceHover.copy(alpha = 0.55f))
+                            .border(1.dp, colors.border.copy(alpha = 0.6f), RoundedCornerShape(12.dp))
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Wake Word — “Hey Jarvis”", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
+                            Text(
+                                if (WakeWordService.running) "Listening in background · say “$wakePhrase” to open Voice"
+                                else "Opens Voice even when the app is closed",
+                                color = colors.textMuted,
+                                fontSize = 11.5.sp
+                            )
+                        }
+                        Switch(
+                            checked = wakeEnabled,
+                            onCheckedChange = { applyWake(it) },
+                            colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = colors.accentGreen, uncheckedThumbColor = colors.textMuted, uncheckedTrackColor = colors.surfaceHover)
+                        )
+                    }
+                    OutlinedTextField(
+                        value = wakePhrase,
+                        onValueChange = {
+                            wakePhrase = it.take(40)
+                            UserPrefs.setWakePhrase(context, wakePhrase.ifBlank { WakeWord.DEFAULT_PHRASE })
+                        },
+                        label = { Text("Wake phrase (custom word later)", color = colors.textMuted) },
+                        singleLine = true,
+                        textStyle = androidx.compose.ui.text.TextStyle(color = colors.textPrimary),
+                        colors = karenFieldColors(colors),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Text(
+                        if (wakeDenied) "Microphone permission denied — wake word stays off until granted."
+                        else "Battery note: the listener holds the mic open. Off by default; survives reboot when on.",
+                        color = if (wakeDenied) colors.accentRed else colors.textMuted,
+                        fontSize = 11.5.sp
+                    )
                 }
             }
 

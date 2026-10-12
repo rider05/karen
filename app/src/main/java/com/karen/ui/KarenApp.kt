@@ -23,6 +23,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.karen.R
+import com.karen.WakeWordNavigator
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -65,7 +66,7 @@ fun KarenSplashScreen() {
 }
 
 @Composable
-fun KarenApp() {
+fun KarenApp(startScreen: String = "Home") {
     var showSplash by remember { mutableStateOf(true) }
     LaunchedEffect(Unit) {
         delay(1800)
@@ -82,7 +83,7 @@ fun KarenApp() {
         val context = androidx.compose.ui.platform.LocalContext.current
         var onboarded by remember { mutableStateOf(UserPrefs.isOnboarded(context)) }
 
-        var currentScreen by remember { mutableStateOf("Home") }
+        var currentScreen by remember(startScreen) { mutableStateOf(startScreen) }
         var showModelSheet by remember { mutableStateOf(false) }
         var showProfileSheet by remember { mutableStateOf(false) }
         // Chat history plumbing: bump to refresh the drawer list, openChatId to
@@ -90,6 +91,18 @@ fun KarenApp() {
         var historyVersion by remember { mutableStateOf(0) }
         var openChatId by remember { mutableStateOf<String?>(null) }
         var newChatSignal by remember { mutableStateOf(0) }
+
+        // Wake-word trigger while the app is alive: jump to Voice mode.
+        LaunchedEffect(Unit) {
+            var first = true
+            WakeWordNavigator.signal.collect { ts ->
+                if (first) {
+                    first = false
+                    if (ts == 0L) return@collect
+                }
+                if (ts > 0L) currentScreen = "Voice"
+            }
+        }
 
         // Section eyebrow shown under the wordmark, mirroring the design comps.
         val headerEyebrow = when (currentScreen) {

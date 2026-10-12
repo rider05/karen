@@ -1,0 +1,299 @@
+package com.karen
+
+import android.Manifest
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Bundle
+import android.os.Handler
+import android.os.IBinder
+import android.os.Looper
+import android.os.PowerManager
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
+import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
+import com.karen.ui.UserPrefs
+import java.util.Locale
+
+/**
+ * Always-on wake-word listener ("Hey Jarvis" by default).
+ *
+ * Zero new dependencies: loops the platform SpeechRecognizer (with
+ * EXTRA_PREFER_OFFLINE) and scans partial + final transcripts for the
+ * configured phrase. Runs as a microphone-type foreground service so the
+ * mic stays open when the app is backgrounded, killed, or never started
+ * (plus a BOOT_COMPLETED receiver re-arms it after reboot).
+ *
+ * Background-launch limits (Android 10+) forbid startActivity from a
+ * background service, so a trigger does both: a best-effort direct launch
+ * (works foreground / older OS) and a high-priority full-screen
+ * notification the user can tap to open Voice mode.
+ */
+class WakeWordService : Service() {
+
+    companion object {
+        private const val CHANNEL_ID = "wake_word"
+        private const val CHANNEL_ALERT_ID = "wake_word_alert"
+        private const val NOTIF_ID = 1001
+        private const val ALERT_NOTIF_ID = 1002
+
+        @Volatile
+        var running = false
+            private set
+
+        fun start(ctx: Context) {
+            ContextCompat.startForegroundService(ctx, Intent(ctx, WakeWordService::class.java))
+        }
+
+        fun stop(ctx: Context) {
+            ctx.stopService(Intent(ctx, WakeWordService::class.java))
+        }
+    }
+
+    private val handler = Handler(Looper.getMainLooper())
+    private var recognizer: SpeechRecognizer? = null
+    private var restartPending = false
+    private var lastTriggerAt = 0L
+    private var wakePhrase = WakeWord.DEFAULT_PHRASE
+    private var wakeLock: PowerManager.WakeLock? = null
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        running = true
+        wakePhrase = UserPrefs.wakePhrase(this).ifBlank { WakeWord.DEFAULT_PHRASE }
+        ensureChannels()
+        startForeground(NOTIF_ID, ongoingNotification())
+        // Partial wakelock keeps recognition alive with the screen off.
+        // Released in onDestroy; CPU-only (no screen bright).
+        try {
+            val pm = getSystemService(POWER_SERVICE) as PowerManager
+            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Karen:WakeWord").apply {
+                setReferenceCounted(false)
+                acquire(30 * 60 * 1000L)
+            }
+        } catch (_: Exception) {
+        }
+        startListening()
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        wakePhrase = UserPrefs.wakePhrase(this).ifBlank { WakeWord.DEFAULT_PHRASE }
+        ensureChannels()
+        try {
+            startForeground(NOTIF_ID, ongoingNotification())
+        } catch (_: Exception) {
+        }
+        if (recognizer == null && !restartPending) startListening()
+        return START_STICKY
+    }
+
+    override fun onDestroy() {
+        restartPending = false
+        handler.removeCallbacksAndMessages(null)
+        stopRecognizer()
+        try {
+            wakeLock?.release()
+        } catch (_: Exception) {
+        }
+        wakeLock = null
+        running = false
+        super.onDestroy()
+    }
+
+    // ---- recognition loop ----
+
+    private fun hasMicPermission(): Boolean =
+        checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+
+    private fun recognizerIntent(): Intent =
+        Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
+            putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, packageName)
+            // Prefer the on-device pack when installed; falls back to network.
+            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+        }
+
+    private fun startListening() {
+        if (!hasMicPermission()) {
+            stopSelf()
+            return
+        }
+        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+            scheduleRestart(5_000L)
+            return
+        }
+        try {
+            stopRecognizer()
+            val r = SpeechRecognizer.createSpeechRecognizer(applicationContext)
+            r.setRecognitionListener(object : RecognitionListener {
+                override fun onReadyForSpeech(params: Bundle?) {}
+                override fun onBeginningOfSpeech() {}
+                override fun onRmsChanged(rmsdB: Float) {}
+                override fun onBufferReceived(buffer: ByteArray?) {}
+                override fun onEndOfSpeech() {
+                    scheduleRestart(300L)
+                }
+
+                override fun onError(error: Int) {
+                    if (error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) {
+                        stopSelf()
+                        return
+                    }
+                    // Busy/client/timeout/no-match: just loop again.
+                    scheduleRestart(900L)
+                }
+
+                override fun onResults(results: Bundle?) {
+                    val heard = results
+                        ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                        ?.firstOrNull().orEmpty()
+                    if (heard.isNotBlank()) checkPhrase(heard)
+                    scheduleRestart(300L)
+                }
+
+                override fun onPartialResults(partialResults: Bundle?) {
+                    val heard = partialResults
+                        ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                        ?.firstOrNull().orEmpty()
+                    if (heard.isNotBlank()) checkPhrase(heard)
+                }
+
+                override fun onEvent(eventType: Int, params: Bundle?) {}
+            })
+            recognizer = r
+            r.startListening(recognizerIntent())
+        } catch (_: Exception) {
+            scheduleRestart(2_000L)
+        }
+    }
+
+    private fun scheduleRestart(delayMs: Long) {
+        if (restartPending) return
+        restartPending = true
+        handler.postDelayed(
+            {
+                restartPending = false
+                try {
+                    startListening()
+                } catch (_: Exception) {
+                    scheduleRestart(2_000L)
+                }
+            },
+            delayMs
+        )
+    }
+
+    private fun stopRecognizer() {
+        try {
+            recognizer?.cancel()
+        } catch (_: Exception) {
+        }
+        try {
+            recognizer?.destroy()
+        } catch (_: Exception) {
+        }
+        recognizer = null
+    }
+
+    private fun checkPhrase(heard: String) {
+        if (!WakeWord.matches(heard, wakePhrase)) return
+        val now = System.currentTimeMillis()
+        if (now - lastTriggerAt < WakeWord.TRIGGER_COOLDOWN_MS) return
+        lastTriggerAt = now
+        UserPrefs.setWakeTriggerAt(this, now)
+        WakeWordNavigator.requestOpen()
+        openApp()
+    }
+
+    // ---- open the app ----
+
+    private fun openIntent(): Intent =
+        Intent(this, MainActivity::class.java).apply {
+            action = WakeWord.ACTION_WAKE
+            putExtra(WakeWord.EXTRA_OPEN_VOICE, true)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+        }
+
+    private fun openApp() {
+        // Best effort: works when we are foreground or on older Android.
+        // On Android 10+ from background this is blocked — the full-screen
+        // notification below is the guaranteed path (tap to open).
+        try {
+            startActivity(openIntent())
+        } catch (_: Exception) {
+        }
+        showAlertNotification()
+    }
+
+    // ---- notifications ----
+
+    private fun ensureChannels() {
+        try {
+            val nm = getSystemService(NotificationManager::class.java) ?: return
+            nm.createNotificationChannel(
+                NotificationChannel(
+                    CHANNEL_ID,
+                    "Wake word listener",
+                    NotificationManager.IMPORTANCE_LOW
+                ).apply { description = "Keeps the microphone open for the wake phrase" }
+            )
+            nm.createNotificationChannel(
+                NotificationChannel(
+                    CHANNEL_ALERT_ID,
+                    "Wake word detected",
+                    NotificationManager.IMPORTANCE_HIGH
+                ).apply { description = "Tap to open Karen voice mode" }
+            )
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun openPendingIntent(requestCode: Int): PendingIntent =
+        PendingIntent.getActivity(
+            this,
+            requestCode,
+            openIntent(),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+    private fun ongoingNotification(): Notification =
+        NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("Listening for \u201c$wakePhrase\u201d")
+            .setContentText("Say the wake phrase to open Karen voice mode")
+            .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+            .setContentIntent(openPendingIntent(2001))
+            .setOngoing(true)
+            .setSilent(true)
+            .build()
+
+    private fun showAlertNotification() {
+        try {
+            val nm = getSystemService(NotificationManager::class.java) ?: return
+            val fullScreen = openPendingIntent(2002)
+            val alert = NotificationCompat.Builder(this, CHANNEL_ALERT_ID)
+                .setContentTitle("Heard \u201c$wakePhrase\u201d")
+                .setContentText("Tap to open Karen voice mode")
+                .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+                .setContentIntent(fullScreen)
+                .setFullScreenIntent(fullScreen, true)
+                .setAutoCancel(true)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setCategory(NotificationCompat.CATEGORY_CALL)
+                .build()
+            nm.notify(ALERT_NOTIF_ID, alert)
+        } catch (_: Exception) {
+        }
+    }
+}

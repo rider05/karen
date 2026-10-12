@@ -46,13 +46,12 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-data class ProjectChat(val role: String, val text: String, val tookMs: Long = 0L)
+data class ProjectChat(val role: String, val text: String, val tookMs: Long = 0L, val tokEst: Int = 0)
 data class ProjectTask(val text: String, val done: Boolean = false)
 data class ProjectStep(val text: String, val done: Boolean = false)
 data class Project(
     val name: String,
     val dir: String,
-    var sessionMs: Long = 0L,
     val chat: MutableList<ProjectChat> = mutableStateListOf(),
     val tasks: MutableList<ProjectTask> = mutableStateListOf(),
     val steps: MutableList<ProjectStep> = mutableStateListOf(),
@@ -61,6 +60,17 @@ data class Project(
     val terminalLog: MutableList<String> = mutableStateListOf(),
     var filesVersion: Long = 0L
 )
+
+/** Token estimate (chars/4): neither inference path reports real counts. */
+internal fun estTokens(text: String): Int =
+    if (text.isBlank()) 0 else (text.length / 4).coerceAtLeast(1)
+
+/** "took 12s · ~850 tok · 71 tok/s" for a finished turn, null when unknown. */
+internal fun turnStats(tookMs: Long, tokEst: Int): String? {
+    if (tookMs <= 0 || tokEst <= 0) return null
+    val perSec = (tokEst * 1000L / tookMs.coerceAtLeast(1)).toInt()
+    return "took ${formatDuration(tookMs)} · ~$tokEst tok · $perSec tok/s"
+}
 
 /** True when the message asks for something to be built (not just discussed). */
 internal fun projectNeedsScaffold(text: String): Boolean {
@@ -423,7 +433,9 @@ private suspend fun scaffoldWithModel(
     selectedModelName: String,
     windowTokens: Int,
     modelOverride: String? = null,
-    sendStartMs: Long = 0L
+    sendStartMs: Long = 0L,
+    /** When true, skip posting progress messages (caller summarizes). */
+    quiet: Boolean = false
 ): String {
     val perFileCap = (windowTokens / 4).coerceIn(2000, 12000)
     val system = "You are a code projectator for Karen Workspace. Reply using this exact format:\n" +
@@ -500,7 +512,8 @@ private suspend fun scaffoldWithModel(
     fun scaffoldStamp(): Long =
         if (sendStartMs > 0) System.currentTimeMillis() - sendStartMs else 0L
     if (allFiles.isEmpty()) {
-        project.chat.add(ProjectChat("assistant", "The model replied, but produced no parseable files.", tookMs = scaffoldStamp()))
+        val msg = "The model replied, but produced no parseable files."
+        if (!quiet) project.chat.add(ProjectChat("assistant", msg, tookMs = scaffoldStamp(), tokEst = estTokens(msg)))
         return "0 files written"
     }
     val list = allFiles.toList()
@@ -509,7 +522,7 @@ private suspend fun scaffoldWithModel(
     // Validate: confirm every written file is really on disk, non-empty.
     val verdict = validateScaffoldFiles(project, list.map { it.first })
     val verifyNote = if (verdict.ok) " Verified on disk." else " WARNING: ${verdict.detail}."
-    project.chat.add(ProjectChat("assistant", "Scaffolded ${list.size} file(s)$chunkNote.\n${filesSummary(list)}$truncNote$verifyNote", tookMs = scaffoldStamp()))
+    if (!quiet) project.chat.add(ProjectChat("assistant", "Scaffolded ${list.size} file(s)$chunkNote.\n${filesSummary(list)}$truncNote$verifyNote", tookMs = scaffoldStamp(), tokEst = estTokens(reply)))
     return "${list.size} file(s) written$chunkNote$truncNote$verifyNote"
 }
 
@@ -552,7 +565,7 @@ private fun saveProjectState(project: Project) {
     try {
         val dir = stateDir(project)
         File(dir, "chat.txt").writeText(
-            project.chat.takeLast(200).joinToString("\n") { "${it.role}\t${enc(it.text)}\t${it.tookMs}" }
+            project.chat.takeLast(200).joinToString("\n") { "${it.role}\t${enc(it.text)}\t${it.tookMs}\t${it.tokEst}" }
         )
         File(dir, "steps.txt").writeText(
             project.steps.joinToString("\n") { "${if (it.done) 1 else 0}\t${enc(it.text)}" }
@@ -574,7 +587,7 @@ private fun loadProjectState(project: Project): Boolean {
             val items = f.readLines().mapNotNull { line ->
                 val p = line.split('\t')
                 if (p.size < 2 || (p[0] != "user" && p[0] != "assistant")) null
-                else ProjectChat(p[0], dec(p[1]), p.getOrNull(2)?.toLongOrNull() ?: 0L)
+                else ProjectChat(p[0], dec(p[1]), p.getOrNull(2)?.toLongOrNull() ?: 0L, p.getOrNull(3)?.toIntOrNull() ?: 0)
             }
             if (items.isNotEmpty()) {
                 project.chat.clear()
@@ -684,17 +697,6 @@ fun WorkspaceScreen(
         }
     }
 
-    // Session timer for the active project (tick forces recomposition each second)
-    var running by remember { mutableStateOf(false) }
-    var timerTick by remember { mutableStateOf(0L) }
-    LaunchedEffect(running, selected) {
-        while (running && selected != null) {
-            kotlinx.coroutines.delay(1000)
-            selected!!.sessionMs += 1000
-            timerTick += 1000
-        }
-    }
-
     // Project chat input (ChatScreen-style, per project)
     var chatInput by remember { mutableStateOf("") }
     var chatBusy by remember { mutableStateOf(false) }
@@ -727,9 +729,28 @@ fun WorkspaceScreen(
         val sendModel = routeFor(t)
         scope.launch {
             val sendStartMs = System.currentTimeMillis()
+            /** Direct status posts (errors, stops). Success turns post one summary at the end. */
+            var directPost = false
+            val turnNotes = mutableListOf<String>()
+            fun note(s: String) {
+                turnNotes.add(s)
+            }
             /** Assistant replies stamp how long they took to appear. */
             fun addAssistant(text: String) {
-                project.chat.add(ProjectChat("assistant", text, tookMs = System.currentTimeMillis() - sendStartMs))
+                directPost = true
+                project.chat.add(ProjectChat("assistant", text, tookMs = System.currentTimeMillis() - sendStartMs, tokEst = estTokens(text)))
+            }
+            /** One summary of what the turn did + the steps involved. */
+            fun postTurnSummary(toolName: String, modelName: String) {
+                if (turnNotes.isEmpty() || directPost) return
+                val sb = StringBuilder("Ran $toolName via $modelName.")
+                turnNotes.forEach { sb.append("\n• $it") }
+                if (project.steps.isNotEmpty()) {
+                    sb.append("\nSteps involved:")
+                    project.steps.forEachIndexed { i, s -> sb.append("\n${i + 1}. ${s.text}") }
+                }
+                val summary = sb.toString()
+                project.chat.add(ProjectChat("assistant", summary, tookMs = System.currentTimeMillis() - sendStartMs, tokEst = estTokens(summary)))
             }
             // 1. Plan steps derived from the ask (the model restructures on send).
             val steps = buildStepsFor(t)
@@ -745,13 +766,13 @@ fun WorkspaceScreen(
             val tool = routeTool(t)
             // Helper: apply ///FILE blocks from any model reply so follow-up
             // prompts continue the same structure instead of starting over.
-            suspend fun applyModelFiles(reply: String): Boolean {
+            // Returns a summary line for the turn notes (null = no files).
+            suspend fun applyModelFiles(reply: String): String? {
                 val files = parseScaffold(reply)
-                if (files.isEmpty()) return false
+                if (files.isEmpty()) return null
                 val summary = withContext(Dispatchers.IO) { writeScaffoldFiles(project, files) }
                 project.filesVersion = System.currentTimeMillis()
-                addAssistant("Applied to ${project.name}: $summary\n${filesSummary(files)}")
-                return true
+                return "Applied to ${project.name}: $summary\n${filesSummary(files)}"
             }
             // 3. SCAFFOLD tool: the model writes a full multi-file scaffold
             //    into the project. Files land on real paths.
@@ -771,9 +792,10 @@ fun WorkspaceScreen(
                         selectedModelName = sendModel,
                         windowTokens = UserPrefs.contextTokens(ctx),
                         modelOverride = cloudScaffold?.let { UserPrefs.apiModel(ctx, it.id) }.orEmpty().ifBlank { null },
-                        sendStartMs = sendStartMs
+                        sendStartMs = sendStartMs,
+                        quiet = true
                     )
-                    addAssistant(scaffoldMsg)
+                    note("Scaffold: $scaffoldMsg")
                     project.filesVersion = System.currentTimeMillis()
                 }
             }
@@ -789,6 +811,7 @@ fun WorkspaceScreen(
             val lsOut = runShell("ls -Rp | head -n 80", dir)
             project.terminalLog.add("[tool] ls -Rp\n$lsOut")
             // CHECKS tool: run compile & test now and report the verdict.
+            // Full output stays in the Terminal tab; the turn notes get one line.
             if (tool == WorkspaceTool.CHECKS) {
                 val checksOut = compileAndTest(dir)
                 project.terminalLog.add("[tool] compile & test\n$checksOut")
@@ -797,10 +820,7 @@ fun WorkspaceScreen(
                 } else {
                     ToolVerdict(true, "checks clean")
                 }
-                addAssistant(
-                    if (verdict.ok) "Checks clean.\n$checksOut".take(1200)
-                    else "Checks failing: ${verdict.detail}\n$checksOut".take(1200)
-                )
+                note(if (verdict.ok) "Checks: clean." else "Checks: ${verdict.detail}.")
             }
             // Stop checkpoint: abandon the turn without further work.
             if (cancelChat) {
@@ -874,8 +894,7 @@ fun WorkspaceScreen(
                         chatBusy = false
                         return@launch
                     }
-                    project.chat.add(ProjectChat("assistant", reply, tookMs = System.currentTimeMillis() - sendStartMs))
-                    applyModelFiles(reply)
+                    note(applyModelFiles(reply) ?: "Answered directly — no file changes.")
                 } catch (e: CloudApiException) {
                     addAssistant("⚠ ${cloud.name} error (HTTP ${e.status}): ${e.message}")
                 } catch (e: Exception) {
@@ -926,8 +945,7 @@ fun WorkspaceScreen(
                                 return@launch
                             }
                             if (reply.isNotBlank()) {
-                                project.chat.add(ProjectChat("assistant", reply, tookMs = System.currentTimeMillis() - sendStartMs))
-                                applyModelFiles(reply)
+                                note(applyModelFiles(reply) ?: "Answered directly — no file changes.")
                             } else {
                                 addAssistant("The model returned an empty reply.")
                             }
@@ -937,7 +955,7 @@ fun WorkspaceScreen(
                     }
                 }
             } else if (web != null) {
-                addAssistant("Fresh web results:\n$web")
+                note("Used fresh web results in the answer.")
             } else {
                 // No model answered: validate the web tool when it was the routed one.
                 val webVerdict = if (tool == WorkspaceTool.WEB) validateWebResult(web) else null
@@ -948,6 +966,7 @@ fun WorkspaceScreen(
                     "Planned ${steps.size} steps and listed the project tree. See Plan / Code / Terminal.$webNote"
                 )
             }
+            postTurnSummary(tool.name.lowercase(), sendModel)
             saveProjectState(project)
             chatBusy = false
         }
@@ -992,7 +1011,7 @@ fun WorkspaceScreen(
                             modelOverride = cloud?.let { UserPrefs.apiModel(ctx, it.id) }.orEmpty().ifBlank { null },
                             sendStartMs = menuStartMs
                         )
-                        target.chat.add(ProjectChat("assistant", scaffold, tookMs = System.currentTimeMillis() - menuStartMs))
+                        target.chat.add(ProjectChat("assistant", scaffold, tookMs = System.currentTimeMillis() - menuStartMs, tokEst = estTokens(scaffold)))
                         target.filesVersion = System.currentTimeMillis()
                         saveProjectState(target)
                         chatBusy = false
@@ -1028,7 +1047,9 @@ fun WorkspaceScreen(
                     Text("No data found — create a project to start", color = colors.textMuted, fontSize = 12.5.sp)
                 } else {
                     projects.forEach { p ->
-                        val totalSec = p.sessionMs / 1000
+                        val cardStats = p.chat.asReversed()
+                            .firstOrNull { it.role == "assistant" && it.tookMs > 0 }
+                            ?.let { turnStats(it.tookMs, it.tokEst) }
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -1049,7 +1070,9 @@ fun WorkspaceScreen(
                                 Text(p.name, color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold)
                                 Text(p.dir, color = colors.textMuted, fontSize = 10.5.sp, fontFamily = FontFamily.Monospace, maxLines = 1)
                             }
-                            Text(String.format("%02d:%02d:%02d", totalSec / 3600, (totalSec % 3600) / 60, totalSec % 60), color = colors.textMuted, fontSize = 11.5.sp, fontFamily = FontFamily.Monospace)
+                            if (cardStats != null) {
+                                Text(cardStats, color = colors.textMuted, fontSize = 10.5.sp, fontFamily = FontFamily.Monospace)
+                            }
                             Box {
                                 IconButton(
                                     onClick = { cardMenuDir = p.dir },
@@ -1244,9 +1267,10 @@ fun WorkspaceScreen(
         DisposableEffect(project) {
             onDispose { saveProjectState(project) }
         }
-        val totalSec = project.sessionMs / 1000
-
-        // Active project header + session timer (inside the project/repo)
+        // Active project header + last-turn stats (inside the project/repo)
+        val headerStats = project.chat.asReversed()
+            .firstOrNull { it.role == "assistant" && it.tookMs > 0 }
+            ?.let { turnStats(it.tookMs, it.tokEst) }
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1257,7 +1281,7 @@ fun WorkspaceScreen(
                 .padding(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            IconButton(onClick = { selected = null; running = false }) {
+            IconButton(onClick = { selected = null }) {
                 Icon(Icons.Default.ArrowBack, contentDescription = "Projects", tint = colors.textPrimary)
             }
             Column(Modifier.weight(1f)) {
@@ -1265,13 +1289,12 @@ fun WorkspaceScreen(
                 Text(project.dir, color = colors.textMuted, fontSize = 10.5.sp, fontFamily = FontFamily.Monospace, maxLines = 1)
             }
             Text(
-                String.format("%02d:%02d:%02d", totalSec / 3600, (totalSec % 3600) / 60, totalSec % 60),
-                color = if (running) colors.accentGreen else colors.textMuted,
-                fontSize = 14.sp,
+                headerStats ?: "No runs yet",
+                color = if (headerStats != null) colors.accentGreen else colors.textMuted,
+                fontSize = 11.5.sp,
                 fontFamily = FontFamily.Monospace,
                 fontWeight = FontWeight.Bold
             )
-            TextButton(onClick = { running = !running }) { Text(if (running) "Pause" else "Start", color = colors.accentGreen) }
         }
 
         // Chat thread (ChatScreen-style, per project)
@@ -1349,9 +1372,10 @@ fun WorkspaceScreen(
                                 )
                             }
                         }
-                        if (m.tookMs > 0) {
+                        val stats = remember(m.text, m.tookMs, m.tokEst) { turnStats(m.tookMs, m.tokEst) }
+                        if (stats != null) {
                             Text(
-                                text = "took ${formatDuration(m.tookMs)}",
+                                text = stats,
                                 color = colors.textMuted,
                                 fontSize = 10.5.sp,
                                 fontFamily = FontFamily.Monospace,

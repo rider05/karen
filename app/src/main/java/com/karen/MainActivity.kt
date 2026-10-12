@@ -19,6 +19,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         wakeStartScreen = startScreenFor(intent)
+        if (wakeStartScreen == "Voice") WakeWordService.notifyAppOpened(this)
         setContent { KarenApp(startScreen = wakeStartScreen) }
         requestEssentialPermissions()
         // Cold start via wake trigger: keep the listener alive while in use.
@@ -29,6 +30,7 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         if (isWakeIntent(intent)) {
+            WakeWordService.notifyAppOpened(this)
             WakeWordNavigator.requestOpen()
         }
     }

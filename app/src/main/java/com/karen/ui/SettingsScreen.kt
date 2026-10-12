@@ -1,7 +1,10 @@
 package com.karen.ui
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
@@ -562,6 +565,23 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                 var wakeEnabled by remember { mutableStateOf(UserPrefs.wakeEnabled(context)) }
                 var wakePhrase by remember { mutableStateOf(UserPrefs.wakePhrase(context)) }
                 var wakeDenied by remember { mutableStateOf(false) }
+                var overlayOk by remember { mutableStateOf(Settings.canDrawOverlays(context)) }
+                val overlayLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.StartActivityForResult()
+                ) {
+                    overlayOk = try {
+                        Settings.canDrawOverlays(context)
+                    } catch (_: Exception) {
+                        false
+                    }
+                }
+                androidx.compose.runtime.LaunchedEffect(wakeEnabled) {
+                    overlayOk = try {
+                        Settings.canDrawOverlays(context)
+                    } catch (_: Exception) {
+                        false
+                    }
+                }
                 val micPermissionLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestPermission()
                 ) { granted ->
@@ -690,6 +710,41 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                         color = if (wakeDenied) colors.accentRed else colors.textMuted,
                         fontSize = 11.5.sp
                     )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(colors.surfaceHover.copy(alpha = 0.55f))
+                            .border(1.dp, colors.border.copy(alpha = 0.6f), RoundedCornerShape(12.dp))
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Direct open", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
+                            Text(
+                                if (overlayOk) "On — the app opens immediately on the wake phrase"
+                                else "Needs “Display over other apps”, or wake falls back to tap-to-open",
+                                color = colors.textMuted,
+                                fontSize = 11.5.sp
+                            )
+                        }
+                        if (!overlayOk) {
+                            TextButton(onClick = {
+                                try {
+                                    overlayLauncher.launch(
+                                        Intent(
+                                            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                            Uri.parse("package:" + context.packageName)
+                                        )
+                                    )
+                                } catch (_: Exception) {
+                                }
+                            }) {
+                                Text("Allow", color = colors.accentGreen)
+                            }
+                        }
+                    }
                 }
             }
 

@@ -48,12 +48,29 @@ class WakeWordService : Service() {
         var running = false
             private set
 
+        /**
+         * Set by MainActivity when Voice is visibly opened from a wake
+         * trigger. Lets the service skip the fallback tap-to-open
+         * notification when the direct open already worked.
+         */
+        @Volatile
+        var appOpenedAt = 0L
+            private set
+
         fun start(ctx: Context) {
             ContextCompat.startForegroundService(ctx, Intent(ctx, WakeWordService::class.java))
         }
 
         fun stop(ctx: Context) {
             ctx.stopService(Intent(ctx, WakeWordService::class.java))
+        }
+
+        fun notifyAppOpened(ctx: Context) {
+            appOpenedAt = System.currentTimeMillis()
+            try {
+                ctx.getSystemService(NotificationManager::class.java)?.cancel(ALERT_NOTIF_ID)
+            } catch (_: Exception) {
+            }
         }
     }
 
@@ -227,14 +244,24 @@ class WakeWordService : Service() {
         }
 
     private fun openApp() {
-        // Best effort: works when we are foreground or on older Android.
-        // On Android 10+ from background this is blocked — the full-screen
-        // notification below is the guaranteed path (tap to open).
+        // Direct open. This works when Karen is foreground/recent, and —
+        // the key part — from background/killed too when the user granted
+        // "Display over other apps" (SYSTEM_ALERT_WINDOW is a background-
+        // launch exemption on Android 10+). Without that grant the system
+        // silently drops the start, so fall back to tap-to-open.
         try {
             startActivity(openIntent())
         } catch (_: Exception) {
         }
-        showAlertNotification()
+        handler.postDelayed(
+            {
+                try {
+                    if (appOpenedAt < lastTriggerAt) showAlertNotification()
+                } catch (_: Exception) {
+                }
+            },
+            2_000L
+        )
     }
 
     // ---- notifications ----

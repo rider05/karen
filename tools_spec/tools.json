@@ -56,7 +56,7 @@
     }
   },
   "place_call": {
-    "description": "Start a phone call. App asks the user to confirm.",
+    "description": "Start a phone call: matches the contact, asks the user to confirm, then calls directly.",
     "risk_tier": "T2",
     "arguments": {
       "number": {
@@ -202,7 +202,7 @@
     }
   },
   "read_document": {
-    "description": "Read text from a local document.",
+    "description": "Read text from a local document. PDFs transcribe via a vision-capable cloud key (first pages).",
     "risk_tier": "T0",
     "arguments": {
       "path": {

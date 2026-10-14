@@ -482,12 +482,14 @@ fun ChatScreen(
      * Returns the text to display (tool lines stripped) with executor
      * results appended. Results come from the executors, never model prose.
      */
-    suspend fun settleTools(id: String, reply: String): String {
+    suspend fun settleTools(id: String, reply: String): ToolSettle {
         val calls = extractToolCalls(reply)
-        if (calls.isEmpty()) return reply
+        if (calls.isEmpty()) return ToolSettle(reply)
         var visible = stripToolCalls(reply, calls)
         val notes = mutableListOf<String>()
         val pills = mutableListOf<String>()
+        var docText: String? = null
+        var docName: String? = null
         for (call in calls.take(2)) {
             val spec = ToolSpecs.byName(context, call.name)
             if (spec == null) {
@@ -504,18 +506,44 @@ fun ChatScreen(
                     notes.add("⚠ ${spec.name} is disabled (T3) — not run")
                     continue
                 }
+                // place_call: resolve the name against contacts first so the
+                // card confirms a real number; several matches → picker.
+                var resolvedArgs = call.args
+                var options = emptyList<String>()
+                if (spec.name == "place_call" && digitsOf(call.args.optString("number", "")).length < 3) {
+                    val q = call.args.optString("number", "")
+                    val hits = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        queryContacts(context, q, 5)
+                    }
+                    if (hits.isEmpty()) {
+                        notes.add("⚠ place_call: no contacts match \"$q\" — not run")
+                        continue
+                    } else if (hits.size == 1) {
+                        resolvedArgs = org.json.JSONObject(call.args.toString())
+                        resolvedArgs.put("number", digitsOf(hits[0].second))
+                        if (resolvedArgs.optString("display_name", "").isBlank()) {
+                            resolvedArgs.put("display_name", hits[0].first)
+                        }
+                    } else {
+                        options = hits.map { "${it.first} — ${it.second}" }
+                    }
+                }
                 val i = messages.indexOfFirst { (it as? ChatItem.Assistant)?.id == id }
                 if (i >= 0) {
                     val cur = messages[i] as ChatItem.Assistant
                     messages[i] = cur.copy(
                         pendingTool = PendingTool(
                             name = spec.name,
-                            argsJson = call.args.toString(),
-                            summary = summarizeArgs(spec, call.args)
+                            argsJson = resolvedArgs.toString(),
+                            summary = summarizeArgs(spec, resolvedArgs),
+                            options = options
                         )
                     )
                 }
-                notes.add("${spec.name}: waiting for your confirmation below")
+                notes.add(
+                    if (options.isNotEmpty()) "${spec.name}: ${options.size} similar contacts — pick one below"
+                    else "${spec.name}: waiting for your confirmation below"
+                )
                 continue
             }
             val t0 = System.currentTimeMillis()
@@ -527,6 +555,11 @@ fun ChatScreen(
             val ms = System.currentTimeMillis() - t0
             pills.add("${spec.name} · ${ms}ms")
             notes.add((if (res.ok) "✓ " else "⚠ ") + "${spec.name}: ${res.text}")
+            // Document reads feed a grounded follow-up answer below.
+            if (spec.name == "read_document" && res.ok && res.text.length > 200) {
+                docName = res.text.substringBefore(":\n").take(80).ifBlank { spec.name }
+                docText = res.text.substringAfter(":\n", res.text).take(3000)
+            }
         }
         if (notes.isNotEmpty()) {
             visible = (if (visible.isBlank()) "" else visible.trimEnd() + "\n\n") +
@@ -539,7 +572,7 @@ fun ChatScreen(
             }
         }
         persist()
-        return visible
+        return ToolSettle(visible, docText, docName)
     }
 
     /** T2 confirm: runs the parked call and appends its honest result. */
@@ -580,6 +613,34 @@ fun ChatScreen(
         }
         persist()
         android.widget.Toast.makeText(context, "Tool not run", android.widget.Toast.LENGTH_SHORT).show()
+    }
+
+    /** Picks one candidate for a parked call (clears the picker, keeps the card). */
+    fun selectPendingOption(id: String, option: String) {
+        val i = messages.indexOfFirst { (it as? ChatItem.Assistant)?.id == id }
+        if (i < 0) return
+        val cur = messages[i] as ChatItem.Assistant
+        val pt = cur.pendingTool ?: return
+        val num = digitsOf(option)
+        if (num.length < 3) return
+        val args = try {
+            org.json.JSONObject(pt.argsJson)
+        } catch (_: Exception) {
+            org.json.JSONObject()
+        }
+        args.put("number", num)
+        if (args.optString("display_name", "").isBlank()) {
+            args.put("display_name", option.substringBefore("—").trim())
+        }
+        val spec = ToolSpecs.byName(context, pt.name)
+        messages[i] = cur.copy(
+            pendingTool = pt.copy(
+                argsJson = args.toString(),
+                summary = if (spec != null) summarizeArgs(spec, args) else option,
+                options = emptyList()
+            )
+        )
+        persist()
     }
 
     /**
@@ -746,10 +807,35 @@ fun ChatScreen(
                 return
             }
             // Realtime tools: validate + run ///TOOL calls before showing.
-            val withTools = settleTools(aid, reply)
+            val settled = settleTools(aid, reply)
             if (cancelGeneration) {
                 cancelSettle(aid)
                 return
+            }
+            var withTools = settled.visible
+            // Document reads: answer from the extracted text in the same turn.
+            if (settled.docText != null && !cancelGeneration) {
+                setStreamingText(aid, (withTools.trimEnd() + "\n\nReading ${settled.docName}…").trim())
+                try {
+                    val followHistory = (styled + ("user" to
+                        "Use this document text to answer the request. Do not emit ///TOOL lines:\n${settled.docText}")
+                        ).takeLast(limit)
+                    val ans = provider.completeResult(
+                        key,
+                        followHistory,
+                        maxTokensFor(effort),
+                        thinkingBudget = if (provider.reasoning) thinkingBudgetFor(effort) else null,
+                        historyLimit = limit,
+                        model = UserPrefs.apiModel(context, provider.id).ifBlank { null }
+                    ).text.trim()
+                    if (ans.isNotBlank() && !cancelGeneration) {
+                        val clean = stripToolCalls(ans, extractToolCalls(ans)).trim()
+                        if (clean.isNotBlank()) {
+                            withTools = (withTools.trimEnd() + "\n\n" + clean + "\n(Source: ${settled.docName})").trim()
+                        }
+                    }
+                } catch (_: Exception) {
+                }
             }
             if (hasVisibleContent(withTools)) {
                 playOut(aid, withTools)
@@ -894,18 +980,34 @@ fun ChatScreen(
                                 if (!job.isCompleted) KarenLlama.cancel()
                             }
                         }
+                        val streamBuf = StringBuilder()
+                        var lastPostMs = 0L
                         val out = awaitAbandoned {
                             val l = KarenLlama.ensureLoaded(weightFile, sendModel, window, threads)
                             var r = ""
                             if (l) {
-                                r = KarenLlama.complete(
+                                // True token streaming: each predicted piece
+                                // lands in the bubble as it is generated.
+                                r = KarenLlama.completeStream(
                                     "You are Karen, a concise on-device assistant." +
                                         if (isReasoningModel(sendModel)) reasoningEffortHint(effort) else "" +
                                         shaping,
                                     instructedPairs.map { it.first }.toTypedArray(),
                                     instructedPairs.map { it.second }.toTypedArray(),
                                     maxTokensFor(effort)
-                                )
+                                ) { piece ->
+                                    streamBuf.append(piece)
+                                    val now = System.currentTimeMillis()
+                                    if (now - lastPostMs > 60) {
+                                        lastPostMs = now
+                                        val snap = streamBuf.toString()
+                                        coroutineScope.launch {
+                                            streamingContent = true
+                                            setStreamingText(aid, snap)
+                                            scrollToBottomIfNear()
+                                        }
+                                    }
+                                }
                             }
                             LocalOut(l, r)
                         }
@@ -930,9 +1032,38 @@ fun ChatScreen(
                             cancelSettle(aid)
                         } else {
                             val finalReply = cleanReply(out.reply)
-                            val withTools = settleTools(aid, finalReply)
+                            val settled = settleTools(aid, finalReply)
+                            var withTools = settled.visible
+                            if (settled.docText != null && !cancelGeneration) {
+                                setStreamingText(aid, (withTools.trimEnd() + "\n\nReading ${settled.docName}…").trim())
+                                val docPairs = (instructedPairs + ("user" to
+                                    "Use this document text to answer the request. Do not emit ///TOOL lines:\n${settled.docText}")
+                                    ).takeLast(localLimit)
+                                val ans = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                    try {
+                                        KarenLlama.complete(
+                                            "You are Karen, a concise on-device assistant.",
+                                            docPairs.map { it.first }.toTypedArray(),
+                                            docPairs.map { it.second }.toTypedArray(),
+                                            maxTokensFor(effort)
+                                        )
+                                    } catch (_: Exception) {
+                                        ""
+                                    }
+                                }?.trim().orEmpty()
+                                if (ans.isNotBlank() && !cancelGeneration) {
+                                    val clean = stripToolCalls(ans, extractToolCalls(ans)).trim()
+                                    if (clean.isNotBlank()) {
+                                        withTools = (withTools.trimEnd() + "\n\n" + clean + "\n(Source: ${settled.docName})").trim()
+                                    }
+                                }
+                            }
                             if (hasVisibleContent(withTools)) {
-                                playOut(aid, withTools)
+                                // Already streamed live above: sync the final
+                                // text (cleaned + tool notes) instead of
+                                // replaying it with the typing effect.
+                                setStreamingText(aid, withTools)
+                                scrollToBottomIfNear()
                                 if (cancelGeneration) cancelSettle(aid) else completeSettle()
                             } else {
                                 errorSettle(aid, "The model returned an empty reply.")
@@ -1291,12 +1422,55 @@ fun ChatScreen(
 
                                 // Tool Call Chip
                                 if (item.toolCall != null) {
+                                    Spacer(Modifier.height(10.dp))
                                     ToolExecutionPill(toolName = item.toolCall)
                                     Spacer(Modifier.height(8.dp))
                                 }
 
                                 // Action Confirmation Card (T2 tool awaiting approval)
                                 item.pendingTool?.let { pt ->
+                                    if (pt.options.isNotEmpty()) {
+                                        Column(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clip(RoundedCornerShape(12.dp))
+                                                .background(colors.surface)
+                                                .border(1.dp, colors.border, RoundedCornerShape(12.dp))
+                                                .padding(vertical = 4.dp)
+                                        ) {
+                                            Text(
+                                                text = "Which ${pt.name.replace('_', ' ')}?",
+                                                color = colors.textMuted,
+                                                fontSize = 11.5.sp,
+                                                fontWeight = FontWeight.Medium,
+                                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                                            )
+                                            pt.options.forEach { opt ->
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .clickable { selectPendingOption(item.id, opt) }
+                                                        .padding(horizontal = 12.dp, vertical = 7.dp)
+                                                ) {
+                                                    Icon(
+                                                        Icons.Default.Person,
+                                                        contentDescription = null,
+                                                        tint = colors.accentGreen,
+                                                        modifier = Modifier.size(16.dp)
+                                                    )
+                                                    Spacer(Modifier.width(8.dp))
+                                                    Text(
+                                                        text = opt,
+                                                        color = colors.textPrimary,
+                                                        fontSize = 13.sp,
+                                                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                                    )
+                                                }
+                                            }
+                                        }
+                                        Spacer(Modifier.height(8.dp))
+                                    }
                                     ActionConfirmationCard(
                                         title = pt.name,
                                         subtitle = pt.summary,
@@ -1469,9 +1643,24 @@ fun ChatScreen(
             }
         }
 
-        // Jump-to-latest FAB (ChatGPT-style): appears when scrolled up.
+        // Jump-to-latest FAB (ChatGPT-style): visible only when scrolled
+        // up away from the end; hides at the bottom of the chat.
         val showJumpBottom by remember {
-            derivedStateOf { listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 400 }
+            derivedStateOf {
+                val info = listState.layoutInfo
+                val total = info.totalItemsCount
+                if (total == 0) {
+                    false
+                } else {
+                    val last = info.visibleItemsInfo.lastOrNull()
+                    if (last == null) {
+                        true
+                    } else {
+                        val beyond = (last.offset + last.size) - info.viewportEndOffset
+                        last.index < total - 1 || beyond > 8
+                    }
+                }
+            }
         }
         AnimatedVisibility(
             visible = showJumpBottom,

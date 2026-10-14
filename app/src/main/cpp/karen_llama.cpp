@@ -1,5 +1,7 @@
 // JNI bridge: Karen chat <-> llama.cpp core (CPU only, blocking calls).
-// Kotlin runs every call on Dispatchers.IO and renders the typing effect.
+// nativeComplete returns the full reply; nativeCompleteStream delivers each
+// token piece to the listener as it is generated and then returns the full
+// text. Kotlin runs every call on Dispatchers.IO and renders live.
 // Long UTF comments use plain ASCII per repo style.
 
 #include <jni.h>
@@ -122,6 +124,30 @@ static void batch_set_tokens(llama_batch_ext * batch, const llama_token * tokens
     llama_batch_ext_set_output_logits(batch, n - 1, true);
 }
 
+// Length of the longest valid-UTF-8 prefix (tokens can split code points,
+// so only complete sequences are ever emitted to the listener).
+static size_t utf8_valid_prefix(const std::string & s) {
+    size_t i = 0, ok = 0;
+    while (i < s.size()) {
+        unsigned char c = (unsigned char) s[i];
+        size_t extra = 0;
+        if ((c & 0x80) == 0) extra = 0;
+        else if ((c & 0xE0) == 0xC0) extra = 1;
+        else if ((c & 0xF0) == 0xE0) extra = 2;
+        else if ((c & 0xF8) == 0xF0) extra = 3;
+        else break;
+        if (i + extra >= s.size()) break;
+        bool good = true;
+        for (size_t k = 1; k <= extra; ++k) {
+            if ((((unsigned char) s[i + k]) & 0xC0) != 0x80) { good = false; break; }
+        }
+        if (!good) break;
+        i += 1 + extra;
+        ok = i;
+    }
+    return ok;
+}
+
 extern "C" {
 
 JNIEXPORT jlong JNICALL
@@ -238,6 +264,133 @@ Java_com_karen_ui_KarenLlama_nativeComplete(JNIEnv * env, jobject, jlong ptr,
         int n = llama_token_to_piece(vocab, id, piece, sizeof(piece), 0, true);
         if (n < 0) { failed = true; fail_msg = "decode failed"; break; }
         out.append(piece, (size_t) n);
+        batch_set_tokens(batch, &id, 1, pos);
+        int rc = llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, batch);
+        if (rc != 0) {
+            if (h->abort.load()) break;
+            failed = true; fail_msg = "decode failed"; break;
+        }
+        ++pos;
+        ++made;
+    }
+
+    llama_batch_ext_free(batch);
+    llama_sampler_free(smpl);
+    llama_free(ctx);
+
+    if (failed && out.empty()) { throw_err(env, fail_msg); return nullptr; }
+    std::vector<jchar> w = utf8_to_utf16(out);
+    return env->NewString(w.data(), (jsize) w.size());
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_karen_ui_KarenLlama_nativeCompleteStream(JNIEnv * env, jobject, jlong ptr,
+        jstring jsys, jobjectArray jroles, jobjectArray jtexts, jint max_tokens, jobject listener) {
+    Handle * h = (Handle *) ptr;
+    if (!h || !h->model) { throw_err(env, "model not loaded"); return nullptr; }
+    if (!listener) { throw_err(env, "no stream listener"); return nullptr; }
+    jclass lcls = env->GetObjectClass(listener);
+    jmethodID on_token = lcls ? env->GetMethodID(lcls, "onToken", "(Ljava/lang/String;)V") : nullptr;
+    if (!on_token) { throw_err(env, "listener has no onToken"); return nullptr; }
+    h->abort.store(false);
+
+    std::string sys = jstr(env, jsys);
+    jsize turns = jroles ? env->GetArrayLength(jroles) : 0;
+    jsize ntexts = jtexts ? env->GetArrayLength(jtexts) : 0;
+    if (turns <= 0 || turns != ntexts) { throw_err(env, "empty prompt"); return nullptr; }
+
+    std::vector<std::string> owned;
+    owned.reserve((size_t) turns * 2 + 1);
+    std::vector<llama_chat_message> msgs;
+    msgs.reserve((size_t) turns + 1);
+    owned.push_back(sys);
+    msgs.push_back({ "system", owned.back().c_str() });
+    for (jsize i = 0; i < turns; ++i) {
+        jstring jr = (jstring) env->GetObjectArrayElement(jroles, i);
+        jstring jt = (jstring) env->GetObjectArrayElement(jtexts, i);
+        owned.push_back(jstr(env, jr));
+        owned.push_back(jstr(env, jt));
+        env->DeleteLocalRef(jr);
+        env->DeleteLocalRef(jt);
+        const char * role = owned[owned.size() - 2] == "assistant" ? "assistant" : "user";
+        msgs.push_back({ role, owned.back().c_str() });
+    }
+
+    char tmpl[16384];
+    int tlen = llama_chat_apply_template(nullptr, msgs.data(), msgs.size(), true, tmpl, sizeof(tmpl));
+    if (tlen < 0) { throw_err(env, "chat template failed"); return nullptr; }
+    if (tlen >= (int) sizeof(tmpl)) { throw_err(env, "conversation too long, start a new chat"); return nullptr; }
+    std::string prompt(tmpl, (size_t) tlen);
+
+    const llama_vocab * vocab = llama_model_get_vocab(h->model);
+    const int n_prompt = -llama_tokenize(vocab, prompt.c_str(), (int32_t) prompt.size(), nullptr, 0, true, true);
+    if (n_prompt <= 0) { throw_err(env, "cannot tokenize prompt"); return nullptr; }
+    if (n_prompt + max_tokens > h->n_ctx) { throw_err(env, "prompt too long for context, start a new chat"); return nullptr; }
+    std::vector<llama_token> ptoks((size_t) n_prompt);
+    if (llama_tokenize(vocab, prompt.c_str(), (int32_t) prompt.size(), ptoks.data(), n_prompt, true, true) < 0) {
+        throw_err(env, "cannot tokenize prompt"); return nullptr;
+    }
+
+    llama_context_params cparams = llama_context_default_params();
+    cparams.n_ctx = h->n_ctx;
+    cparams.n_batch = 512;
+    llama_context * ctx = llama_init_from_model(h->model, cparams);
+    if (!ctx) { throw_err(env, "cannot create context"); return nullptr; }
+    llama_set_abort_callback(ctx, abort_flag, (void *) &h->abort);
+    llama_set_n_threads(ctx, h->n_threads, h->n_threads);
+
+    auto sparams = llama_sampler_chain_default_params();
+    llama_sampler * smpl = llama_sampler_chain_init(sparams);
+    llama_sampler_chain_add(smpl, llama_sampler_init_temp(0.7f));
+    llama_sampler_chain_add(smpl, llama_sampler_init_top_k(40));
+    llama_sampler_chain_add(smpl, llama_sampler_init_top_p(0.9f, 1));
+    std::random_device rd;
+    llama_sampler_chain_add(smpl, llama_sampler_init_dist(rd()));
+
+    llama_batch_ext * batch = llama_batch_ext_init(ctx);
+    std::string out;
+    size_t delivered = 0;
+    bool failed = false;
+    std::string fail_msg;
+
+    auto emit_new = [&]() {
+        size_t k = utf8_valid_prefix(out);
+        if (k <= delivered) return;
+        std::string chunk = out.substr(delivered, k - delivered);
+        delivered = k;
+        std::vector<jchar> w = utf8_to_utf16(chunk);
+        jstring js = env->NewString(w.data(), (jsize) w.size());
+        if (!js) return;
+        env->CallVoidMethod(listener, on_token, js);
+        env->DeleteLocalRef(js);
+        if (env->ExceptionCheck()) env->ExceptionClear();
+    };
+
+    int pos = 0;
+    int remaining = n_prompt;
+    while (remaining > 0 && !failed) {
+        if (h->abort.load()) { failed = true; fail_msg = "cancelled"; break; }
+        int chunk = remaining > 128 ? 128 : remaining;
+        batch_set_tokens(batch, ptoks.data() + pos, chunk, pos);
+        int rc = llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, batch);
+        if (rc != 0) {
+            if (h->abort.load()) break;
+            failed = true; fail_msg = "prompt eval failed"; break;
+        }
+        pos += chunk;
+        remaining -= chunk;
+    }
+
+    int made = 0;
+    while (!failed && made < max_tokens) {
+        if (h->abort.load()) break;
+        llama_token id = llama_sampler_sample(smpl, ctx, -1);
+        if (llama_vocab_is_eog(vocab, id)) break;
+        char piece[256];
+        int n = llama_token_to_piece(vocab, id, piece, sizeof(piece), 0, true);
+        if (n < 0) { failed = true; fail_msg = "decode failed"; break; }
+        out.append(piece, (size_t) n);
+        emit_new();
         batch_set_tokens(batch, &id, 1, pos);
         int rc = llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, batch);
         if (rc != 0) {

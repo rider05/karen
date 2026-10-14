@@ -5,8 +5,11 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.pdf.PdfRenderer
 import android.media.AudioManager
 import android.net.Uri
+import android.os.ParcelFileDescriptor
 import android.provider.AlarmClock
 import android.provider.CalendarContract
 import android.provider.ContactsContract
@@ -14,6 +17,7 @@ import android.provider.Settings
 import androidx.core.content.FileProvider
 import com.karen.formatSize
 import com.karen.readDeviceTelemetry
+import java.io.ByteArrayOutputStream
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -52,8 +56,17 @@ data class ToolSpec(
 /** A parsed ///TOOL block plus its span (for stripping from chat text). */
 data class ParsedTool(val name: String, val args: JSONObject, val start: Int, val end: Int)
 
+/** settleTools outcome: display text plus optional document context to answer from. */
+data class ToolSettle(val visible: String, val docText: String? = null, val docName: String? = null)
+
 /** A T2 call awaiting user confirmation in the chat bubble. */
-data class PendingTool(val name: String, val argsJson: String, val summary: String)
+data class PendingTool(
+    val name: String,
+    val argsJson: String,
+    val summary: String,
+    /** Disambiguation candidates ("Name — number"); empty when resolved. */
+    val options: List<String> = emptyList()
+)
 
 /** Honest executor outcome. */
 data class ExecResult(val ok: Boolean, val text: String)
@@ -211,6 +224,13 @@ fun directArgs(spec: ToolSpec, rest: String): JSONObject? {
         "remember_fact" -> if (r.isBlank()) null else obj("fact" to r)
         "forget_fact" -> if (r.isBlank()) null else obj("fact" to r)
         "open_app" -> if (r.isBlank()) null else obj("app_name" to r)
+        "place_call" -> {
+            // Digits dial direct (still T2-confirmed); names need AI + matching.
+            val d = r.filter { it.isDigit() }
+            if (r.isNotBlank() && d.length >= 7 && d.length == r.filter { it.isDigit() || it == '+' || it == ' ' || it == '-' }.length) {
+                obj("number" to d)
+            } else null
+        }
         "open_url" -> {
             if (r.isBlank() || ' ' in r) null
             else obj("url" to (if (r.startsWith("http://") || r.startsWith("https://")) r else "https://$r"))
@@ -373,6 +393,107 @@ fun summarizeArgs(spec: ToolSpec, args: JSONObject): String =
             "${a.name}=$s"
         }.ifBlank { "no arguments" }
 
+/**
+ * PDF vision reading: Android has no built-in PDF text or OCR engine, so
+ * pages render on-device (PdfRenderer, no new deps) and a vision-capable
+ * cloud key transcribes them. Needs network + a keyed vision provider.
+ */
+object DocVision {
+    /** Provider ids tried in order (vision-capable). Customs skipped: unknown caps. */
+    private val visionOrder = listOf("gemini", "openai", "groq", "openrouter", "anthropic")
+
+    private fun visionDefault(providerId: String): String? = when (providerId) {
+        "groq" -> "llama-3.2-90b-vision-preview"
+        "openai" -> "gpt-4o"
+        "anthropic" -> "claude-sonnet-4-20250514"
+        "gemini" -> "gemini-2.0-flash"
+        "openrouter" -> "openrouter/auto"
+        else -> null
+    }
+
+    /** Renders up to [maxPages] as JPEG base64 images (IO thread). */
+    suspend fun renderPages(file: File, maxPages: Int = 3): List<VisionImage> =
+        withContext(Dispatchers.IO) {
+            val out = mutableListOf<VisionImage>()
+            var pfd: ParcelFileDescriptor? = null
+            var renderer: PdfRenderer? = null
+            try {
+                pfd = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+                renderer = PdfRenderer(pfd)
+                val n = minOf(renderer.pageCount, maxPages.coerceIn(1, 5))
+                for (i in 0 until n) {
+                    renderer.openPage(i).use { page ->
+                        val scale = 1240f / maxOf(1, page.width)
+                        val w = (page.width * scale).toInt().coerceIn(1, 2000)
+                        val h = (page.height * scale).toInt().coerceIn(1, 2000)
+                        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                        try {
+                            page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                            val bos = ByteArrayOutputStream()
+                            bmp.compress(Bitmap.CompressFormat.JPEG, 70, bos)
+                            val b64 = android.util.Base64.encodeToString(bos.toByteArray(), android.util.Base64.NO_WRAP)
+                            if (b64.isNotBlank()) out.add(VisionImage(b64))
+                        } finally {
+                            try {
+                                bmp.recycle()
+                            } catch (_: Exception) {
+                            }
+                        }
+                    }
+                }
+            } catch (_: Exception) {
+            } finally {
+                try {
+                    renderer?.close()
+                } catch (_: Exception) {
+                }
+                try {
+                    pfd?.close()
+                } catch (_: Exception) {
+                }
+            }
+            out
+        }
+
+    /**
+     * Transcribes [file]'s first pages. Returns (text, pagesRead) or null
+     * when unusable (caller reports honestly: no key, offline, bad PDF).
+     */
+    suspend fun transcribePdf(ctx: Context, file: File, maxPages: Int = 3): Pair<String, Int>? {
+        val pages = renderPages(file, maxPages)
+        if (pages.isEmpty()) return null
+        val keyed = visionOrder.mapNotNull { id ->
+            (cloudProviders + UserPrefs.customProviders(ctx)).find { it.id == id }
+                ?.takeIf { UserPrefs.apiKey(ctx, it.id).isNotBlank() }
+        }
+        if (keyed.isEmpty()) return null
+        val prompt = "Transcribe exactly the visible text in these document pages, top to bottom, " +
+            "page by page. No summary, no commentary — transcription only. " +
+            "If a page has no readable text, write [no text on page N]."
+        for (provider in keyed) {
+            val key = UserPrefs.apiKey(ctx, provider.id)
+            val userModel = UserPrefs.apiModel(ctx, provider.id).ifBlank { null }
+            val candidates = listOfNotNull(userModel, visionDefault(provider.id)).distinct()
+            for (model in candidates) {
+                try {
+                    val text = provider.complete(
+                        key,
+                        listOf("user" to prompt),
+                        2048,
+                        thinkingBudget = null,
+                        historyLimit = 2,
+                        model = model,
+                        images = pages
+                    ).trim()
+                    if (text.isNotBlank()) return text to pages.size
+                } catch (_: Exception) {
+                }
+            }
+        }
+        return null
+    }
+}
+
 /** Explicit user facts (remember_fact / forget_fact). */
 object FactStore {
     private const val PREFS = "karen_phone_facts"
@@ -490,7 +611,7 @@ private fun fmtNum(d: Double): String = when {
     }
 }
 
-private fun queryContacts(ctx: Context, q: String, limit: Int = 5): List<Pair<String, String>> {
+internal fun queryContacts(ctx: Context, q: String, limit: Int = 5): List<Pair<String, String>> {
     val out = mutableListOf<Pair<String, String>>()
     try {
         ctx.contentResolver.query(
@@ -514,7 +635,7 @@ private fun queryContacts(ctx: Context, q: String, limit: Int = 5): List<Pair<St
     return out
 }
 
-private fun digitsOf(s: String): String = s.filter { it.isDigit() }
+internal fun digitsOf(s: String): String = s.filter { it.isDigit() }
 
 private fun startIntent(ctx: Context, intent: Intent): Boolean {
     return try {
@@ -621,17 +742,38 @@ suspend fun executePhoneTool(ctx: Context, spec: ToolSpec, args: JSONObject): Ex
         }
         "place_call" -> {
             var number = digitsOf(argStr(args, "number"))
-            val display = argStr(args, "display_name")
+            var display = argStr(args, "display_name")
             if (number.length < 3) {
-                val hits = withContext(Dispatchers.IO) { queryContacts(ctx, argStr(args, "number"), 1) }
-                number = digitsOf(hits.firstOrNull()?.second ?: "")
+                val hits = withContext(Dispatchers.IO) { queryContacts(ctx, argStr(args, "number"), 5) }
+                if (hits.isEmpty()) {
+                    return ExecResult(false, "no contacts match \"${argStr(args, "number")}\"")
+                } else if (hits.size > 1) {
+                    return ExecResult(
+                        false,
+                        "which one? " + hits.joinToString("; ") { "${it.first} (${it.second})" }
+                    )
+                }
+                number = digitsOf(hits[0].second)
+                if (display.isBlank()) display = hits[0].first
             }
             if (number.length < 3) {
                 ExecResult(false, "no phone number to dial")
-            } else if (startIntent(ctx, Intent(Intent.ACTION_DIAL, Uri.parse("tel:$number")))) {
-                ExecResult(true, "dialer opened${if (display.isNotBlank()) " for $display" else ""} ($number) — tap call to place it")
             } else {
-                ExecResult(false, "could not open the dialer")
+                // Confirmed in-app already: call directly when allowed,
+                // otherwise open the dialer as the safe fallback.
+                val canDirect = androidx.core.content.ContextCompat.checkSelfPermission(
+                    ctx, android.Manifest.permission.CALL_PHONE
+                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                val action = if (canDirect) Intent.ACTION_CALL else Intent.ACTION_DIAL
+                if (startIntent(ctx, Intent(action, Uri.parse("tel:$number")))) {
+                    ExecResult(
+                        true,
+                        if (canDirect) "calling ${display.ifBlank { number }} ($number)"
+                        else "dialer opened${if (display.isNotBlank()) " for $display" else ""} ($number) — tap call to place it"
+                    )
+                } else {
+                    ExecResult(false, "could not start the call")
+                }
             }
         }
         "compose_message" -> {
@@ -794,7 +936,19 @@ suspend fun executePhoneTool(ctx: Context, spec: ToolSpec, args: JSONObject): Ex
             if (file == null || !file.exists()) {
                 ExecResult(false, "no vault document matches \"$target\"")
             } else if (file.extension.lowercase() == "pdf") {
-                ExecResult(false, "${file.name} is a PDF — open it instead of reading (no PDF text engine on-device)")
+                // No on-device PDF text engine: render pages, transcribe
+                // with a vision-capable cloud key (needs network + key).
+                val got = DocVision.transcribePdf(ctx, file, 3)
+                if (got == null) {
+                    ExecResult(
+                        false,
+                        "${file.name} is a PDF I couldn't read — connect a cloud key " +
+                            "(Gemini/OpenAI/Groq) to transcribe it, or open it in a viewer"
+                    )
+                } else {
+                    val (text, pages) = got
+                    ExecResult(true, "${file.name} (pages 1-$pages):\n${text.take(3000)}")
+                }
             } else {
                 val text = withContext(Dispatchers.IO) { readPreview(file, 4000) }
                 if (text.isNullOrBlank()) ExecResult(false, "could not read ${file.name} as text")

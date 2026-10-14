@@ -59,6 +59,23 @@ object KarenLlama {
         return nativeComplete(handle, system, roles, texts, maxTokens) ?: ""
     }
 
+    /** Token-streaming generate: [listener] fires per piece on the calling thread. */
+    fun interface StreamListener {
+        fun onToken(piece: String)
+    }
+
+    @Synchronized
+    fun completeStream(
+        system: String,
+        roles: Array<String>,
+        texts: Array<String>,
+        maxTokens: Int,
+        listener: StreamListener
+    ): String {
+        check(handle != 0L) { "model not loaded" }
+        return nativeCompleteStream(handle, system, roles, texts, maxTokens, listener) ?: ""
+    }
+
     fun cancel() {
         if (handle != 0L) {
             try {
@@ -88,6 +105,15 @@ object KarenLlama {
         roles: Array<String>,
         texts: Array<String>,
         maxTokens: Int
+    ): String?
+
+    private external fun nativeCompleteStream(
+        handle: Long,
+        system: String,
+        roles: Array<String>,
+        texts: Array<String>,
+        maxTokens: Int,
+        listener: StreamListener
     ): String?
 
     private external fun nativeCancel(handle: Long)

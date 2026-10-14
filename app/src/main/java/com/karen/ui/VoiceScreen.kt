@@ -132,12 +132,19 @@ fun VoiceScreen(
                         }
                         if (ok && !cancelVoice) {
                             full = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                                KarenLlama.complete(
+                                KarenLlama.completeStream(
                                     "You are Karen, a voice assistant. $VOICE_REPLY_STYLE",
                                     arrayOf("user"),
                                     arrayOf(text),
                                     maxTokensFor("Low")
-                                )
+                                ) { piece ->
+                                    if (!cancelVoice) {
+                                        full += piece
+                                        val snap = full
+                                        voiceScope.launch { voiceReply = snap }
+                                        TtsManager.pushStream(snap)
+                                    }
+                                }
                             }?.trim().orEmpty()
                             if (!cancelVoice) voiceReply = full
                         }

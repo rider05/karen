@@ -220,6 +220,9 @@ class CloudApiException(val status: Int, message: String) : Exception(message)
 /** Result of a cloud call: text plus whether the model was cut off by its output cap. */
 data class CloudResult(val text: String, val truncated: Boolean)
 
+/** One page image for vision-capable requests (JPEG base64). */
+data class VisionImage(val base64: String, val mime: String = "image/jpeg")
+
 /** Effective model id: per-key override from Model Manager, else the default. */
 fun CloudProvider.modelOrDefault(override: String?): String =
     if (override.isNullOrBlank()) defaultModel else override.trim()
@@ -233,8 +236,10 @@ suspend fun CloudProvider.complete(
     /** How many trailing turns fit the configured content window. */
     historyLimit: Int = 20,
     /** Model id override (per stored key); null/blank uses [defaultModel]. */
-    model: String? = null
-): String = completeResult(apiKey, history, maxTokens, thinkingBudget, historyLimit, model).text
+    model: String? = null,
+    /** Page/document images attached to the last user message. */
+    images: List<VisionImage> = emptyList()
+): String = completeResult(apiKey, history, maxTokens, thinkingBudget, historyLimit, model, images).text
 
 suspend fun CloudProvider.completeResult(
     apiKey: String,
@@ -242,7 +247,8 @@ suspend fun CloudProvider.completeResult(
     maxTokens: Int,
     thinkingBudget: Int? = null,
     historyLimit: Int = 20,
-    model: String? = null
+    model: String? = null,
+    images: List<VisionImage> = emptyList()
 ): CloudResult = withContext(Dispatchers.IO) {
     val trimmed = history.takeLast(historyLimit.coerceIn(4, 80))
     val effectiveModel = modelOrDefault(model)
@@ -251,12 +257,7 @@ suspend fun CloudProvider.completeResult(
             fun body(tokenField: String) = JSONObject()
                 .put("model", effectiveModel)
                 .put(tokenField, maxTokens)
-                .put(
-                    "messages",
-                    JSONArray(trimmed.map { (role, text) ->
-                        JSONObject().put("role", role).put("content", text)
-                    })
-                )
+                .put("messages", openAiMessages(trimmed, images))
                 .apply {
                     // Effort becomes thinking depth on reasoning-capable routes.
                     if (id == "openrouter" && thinkingBudget != null) {
@@ -288,12 +289,7 @@ suspend fun CloudProvider.completeResult(
             val body = JSONObject()
                 .put("model", effectiveModel)
                 .put("max_tokens", total)
-                .put(
-                    "messages",
-                    JSONArray(trimmed.map { (role, text) ->
-                        JSONObject().put("role", role).put("content", text)
-                    })
-                )
+                .put("messages", anthropicMessages(trimmed, images))
                 .apply {
                     if (thinkingBudget != null) {
                         put(
@@ -331,14 +327,7 @@ suspend fun CloudProvider.completeResult(
             }
         }
         CloudProtocol.GEMINI -> {
-            val body = JSONObject().put(
-                "contents",
-                JSONArray(trimmed.map { (role, text) ->
-                    JSONObject()
-                        .put("role", if (role == "assistant") "model" else "user")
-                        .put("parts", JSONArray().put(JSONObject().put("text", text)))
-                })
-            )
+            val body = JSONObject().put("contents", geminiContents(trimmed, images))
             val json = post(
                 URL("$apiBase/models/$effectiveModel:generateContent"),
                 mapOf(
@@ -592,6 +581,64 @@ private fun extractOpenAiText(json: JSONObject): String {
     }
     throw CloudApiException(200, "model returned no text — try a non-reasoning model")
 }
+
+/** OpenAI-style messages; page images attach to the last user message. */
+private fun openAiMessages(trimmed: List<Pair<String, String>>, images: List<VisionImage>): JSONArray =
+    JSONArray(trimmed.mapIndexed { idx, (role, text) ->
+        if (idx == trimmed.lastIndex && role == "user" && images.isNotEmpty()) {
+            val parts = JSONArray().put(JSONObject().put("type", "text").put("text", text))
+            images.forEach { img ->
+                parts.put(
+                    JSONObject().put("type", "image_url")
+                        .put("image_url", JSONObject().put("url", "data:${img.mime};base64,${img.base64}"))
+                )
+            }
+            JSONObject().put("role", role).put("content", parts)
+        } else {
+            JSONObject().put("role", role).put("content", text)
+        }
+    })
+
+/** Anthropic messages; page images attach to the last user message. */
+private fun anthropicMessages(trimmed: List<Pair<String, String>>, images: List<VisionImage>): JSONArray =
+    JSONArray(trimmed.mapIndexed { idx, (role, text) ->
+        if (idx == trimmed.lastIndex && role == "user" && images.isNotEmpty()) {
+            val blocks = JSONArray().put(JSONObject().put("type", "text").put("text", text))
+            images.forEach { img ->
+                blocks.put(
+                    JSONObject().put("type", "image")
+                        .put(
+                            "source",
+                            JSONObject().put("type", "base64")
+                                .put("media_type", img.mime)
+                                .put("data", img.base64)
+                        )
+                )
+            }
+            JSONObject().put("role", role).put("content", blocks)
+        } else {
+            JSONObject().put("role", role).put("content", text)
+        }
+    })
+
+/** Gemini contents; page images attach to the last user message. */
+private fun geminiContents(trimmed: List<Pair<String, String>>, images: List<VisionImage>): JSONArray =
+    JSONArray(trimmed.mapIndexed { idx, (role, text) ->
+        val parts = JSONArray().put(JSONObject().put("text", text))
+        if (idx == trimmed.lastIndex && role == "user" && images.isNotEmpty()) {
+            images.forEach { img ->
+                parts.put(
+                    JSONObject().put(
+                        "inline_data",
+                        JSONObject().put("mime_type", img.mime).put("data", img.base64)
+                    )
+                )
+            }
+        }
+        JSONObject()
+            .put("role", if (role == "assistant") "model" else "user")
+            .put("parts", parts)
+    })
 
 private fun post(url: URL, headers: Map<String, String>, body: JSONObject): JSONObject {
     val conn = (url.openConnection() as HttpURLConnection).apply {

@@ -22,6 +22,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -968,6 +969,124 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                             }
                         }
                     }
+                }
+            }
+
+            item {
+                Text("Updates", color = colors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(6.dp))
+                var updateStatus by remember { mutableStateOf("Installed: ${AppUpdate.currentVersion(context)}") }
+                var checking by remember { mutableStateOf(false) }
+                var downloading by remember { mutableStateOf(false) }
+                var progress by remember { mutableStateOf(0f) }
+                var pendingSha by remember { mutableStateOf<String?>(null) }
+                var pendingDate by remember { mutableStateOf("") }
+                val updateScope = rememberCoroutineScope()
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(colors.surface)
+                        .border(1.dp, colors.border, RoundedCornerShape(14.dp))
+                        .padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(updateStatus, color = colors.textPrimary, fontSize = 13.sp)
+                    if (downloading) {
+                        LinearProgressIndicator(
+                            progress = { progress.coerceIn(0f, 1f) },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(6.dp)
+                                .clip(RoundedCornerShape(3.dp)),
+                            color = colors.accentGreen,
+                            trackColor = colors.surfaceHover
+                        )
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = {
+                                if (checking || downloading) return@OutlinedButton
+                                checking = true
+                                updateStatus = "Checking ${AppUpdate.REPO}…"
+                                updateScope.launch {
+                                    try {
+                                        when (val res = AppUpdate.check(context)) {
+                                            is AppUpdate.Check.UpToDate -> {
+                                                pendingSha = null
+                                                updateStatus = "Up to date — installed matches ${AppUpdate.APK_PATH}"
+                                            }
+                                            is AppUpdate.Check.UpdateAvailable -> {
+                                                pendingSha = res.sha
+                                                pendingDate = res.date
+                                                updateStatus = if (AppUpdate.storedSha(context).isBlank()) {
+                                                    "Installed version unknown — latest is ${res.sha.take(7)} (${
+                                                        res.date.ifBlank { "unknown date" }
+                                                    }). Download to sync."
+                                                } else {
+                                                    "Update available: ${res.sha.take(7)} (${
+                                                        res.date.ifBlank { "unknown date" }
+                                                    })"
+                                                }
+                                            }
+                                            is AppUpdate.Check.Failed -> {
+                                                pendingSha = null
+                                                updateStatus = "Check failed: ${res.reason}"
+                                            }
+                                        }
+                                    } finally {
+                                        checking = false
+                                    }
+                                }
+                            },
+                            shape = RoundedCornerShape(10.dp),
+                            enabled = !checking && !downloading
+                        ) {
+                            Text(if (checking) "Checking…" else "Check for update", fontSize = 12.sp)
+                        }
+                        val sha = pendingSha
+                        if (sha != null) {
+                            Button(
+                                onClick = {
+                                    if (checking || downloading) return@Button
+                                    downloading = true
+                                    progress = 0f
+                                    updateStatus = "Downloading ${AppUpdate.APK_PATH}…"
+                                    updateScope.launch {
+                                        try {
+                                            val errors = mutableListOf<String>()
+                                            val file = AppUpdate.download(context, sha, { p -> progress = p }, errors)
+                                            if (file != null) {
+                                                pendingSha = null
+                                                updateStatus = "Downloaded — opening installer…"
+                                                if (!AppUpdate.install(context, file)) {
+                                                    updateStatus = "Installer blocked — allow installs, then retry"
+                                                }
+                                            } else {
+                                                updateStatus = "Download failed: ${errors.firstOrNull() ?: "unknown error"}"
+                                            }
+                                        } finally {
+                                            downloading = false
+                                        }
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = colors.accentGreen,
+                                    contentColor = Color.White
+                                ),
+                                shape = RoundedCornerShape(10.dp),
+                                enabled = !checking && !downloading
+                            ) {
+                                Text("Download & install", fontSize = 12.sp)
+                            }
+                        }
+                    }
+                    Text(
+                        "Source: github.com/${AppUpdate.REPO}/blob/main/${AppUpdate.APK_PATH}",
+                        color = colors.textMuted,
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
                 }
             }
 

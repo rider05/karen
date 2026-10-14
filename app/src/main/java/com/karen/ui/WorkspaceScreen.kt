@@ -684,9 +684,11 @@ fun WorkspaceScreen(
     // Content-window switcher dialog.
     var showWindowDialog by remember { mutableStateOf(false) }
     var contentWindow by remember { mutableStateOf(UserPrefs.contextTokens(ctx)) }
+    var confirmNewSession by remember { mutableStateOf(false) }
 
     KarenHomeBackHandler(onNavigateToHome = onNavigateToHome) {
         when {
+            confirmNewSession -> { confirmNewSession = false; true }
             showModelSheet -> { showModelSheet = false; true }
             showNewProject -> { showNewProject = false; true }
             renamingDir != null -> { renamingDir = null; true }
@@ -701,6 +703,15 @@ fun WorkspaceScreen(
     var chatInput by remember { mutableStateOf("") }
     var chatBusy by remember { mutableStateOf(false) }
     var cancelChat by remember { mutableStateOf(false) }
+
+    /** Fresh chat + terminal for a project. Files on disk are untouched. */
+    fun startNewSession(project: Project) {
+        project.chat.clear()
+        project.terminalLog.clear()
+        chatInput = ""
+        saveProjectState(project)
+        android.widget.Toast.makeText(ctx, "New session started in ${project.name}", android.widget.Toast.LENGTH_SHORT).show()
+    }
     // Voice input (dictation) + output (read the last reply aloud).
     val voiceStt = rememberVoiceStt(
         onResult = { speechText ->
@@ -1295,6 +1306,33 @@ fun WorkspaceScreen(
                 fontSize = 11.5.sp,
                 fontFamily = FontFamily.Monospace,
                 fontWeight = FontWeight.Bold
+            )
+            TextButton(
+                onClick = { confirmNewSession = true },
+                enabled = !chatBusy,
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+            ) {
+                Text("New session", color = if (chatBusy) colors.textMuted else colors.accentGreen, fontSize = 11.5.sp, fontWeight = FontWeight.Medium)
+            }
+        }
+
+        if (confirmNewSession && selected === project) {
+            AlertDialog(
+                onDismissRequest = { confirmNewSession = false },
+                containerColor = colors.surface,
+                titleContentColor = colors.textPrimary,
+                textContentColor = colors.textSecondary,
+                title = { Text("New session?") },
+                text = { Text("Clears this project's chat and terminal. Files on disk stay untouched.") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        confirmNewSession = false
+                        startNewSession(project)
+                    }) { Text("Start fresh", color = colors.accentGreen) }
+                },
+                dismissButton = {
+                    TextButton(onClick = { confirmNewSession = false }) { Text("Keep") }
+                }
             )
         }
 

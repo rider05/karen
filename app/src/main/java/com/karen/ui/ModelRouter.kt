@@ -114,8 +114,9 @@ fun reasoningEffortHint(effort: String): String = when (effort) {
 /** True when a stored pick is still usable: installed weight or keyed cloud. */
 fun isSelectableModel(ctx: Context, name: String): Boolean {
     if (name.isBlank()) return false
-    if (isCloudProviderName(name)) {
-        return findCloudProviderByName(name)?.let { UserPrefs.apiKey(ctx, it.id).isNotBlank() } ?: false
+    val customs = UserPrefs.customProviders(ctx)
+    if (isCloudProviderName(name, customs)) {
+        return findCloudProviderByName(name, customs)?.let { UserPrefs.apiKey(ctx, it.id).isNotBlank() } ?: false
     }
     return name in UserPrefs.models(ctx) || modelCatalog.any { it.name == name }
 }

@@ -1,5 +1,6 @@
 package com.karen.ui
 
+import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -202,12 +203,16 @@ fun thinkingBudgetFor(effort: String): Int = when (effort) {
     else -> 2000
 }
 
-fun findCloudProviderByName(name: String): CloudProvider? =
-    cloudProviders.find { it.name == name }
+fun findCloudProviderByName(name: String, extra: List<CloudProvider> = emptyList()): CloudProvider? =
+    (cloudProviders + extra).find { it.name == name }
 
 /** True for cloud entries that must never appear in installed-weights lists. */
-fun isCloudProviderName(name: String): Boolean =
-    cloudProviders.any { it.name == name }
+fun isCloudProviderName(name: String, extra: List<CloudProvider> = emptyList()): Boolean =
+    (cloudProviders + extra).any { it.name == name }
+
+/** Built-ins plus user-added custom API providers. */
+fun allCloudProviders(ctx: Context): List<CloudProvider> =
+    cloudProviders + UserPrefs.customProviders(ctx)
 
 /** Carries the HTTP status so the chat can show actionable key/quota errors. */
 class CloudApiException(val status: Int, message: String) : Exception(message)

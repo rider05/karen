@@ -75,10 +75,11 @@ fun VoiceScreen(
             try {
                 val locals = UserPrefs.models(personaCtx)
                     .filter { !isCloudProviderName(it) && ModelDownloader.isRunnableWeight(personaCtx, it) }
-                val keyed = cloudProviders.filter { UserPrefs.apiKey(personaCtx, it.id).isNotBlank() }
+                val keyed = allCloudProviders(personaCtx).filter { UserPrefs.apiKey(personaCtx, it.id).isNotBlank() }
                 val pick = routeModel(text, locals, keyed, UserPrefs.autoCloud(personaCtx))?.modelName
                     ?: UserPrefs.selectedModel(personaCtx).takeIf { isSelectableModel(personaCtx, it) }
-                val cloud = pick?.let { findCloudProviderByName(it) }
+                val customs = UserPrefs.customProviders(personaCtx)
+                val cloud = pick?.let { findCloudProviderByName(it, customs) }
                 val key = cloud?.let { UserPrefs.apiKey(personaCtx, it.id) }.orEmpty()
                 val answer = if (cloud != null && key.isNotBlank()) {
                     cloud.complete(

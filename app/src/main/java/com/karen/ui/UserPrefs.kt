@@ -85,7 +85,6 @@ object UserPrefs {
     fun clearApiKey(ctx: Context, providerId: String) {
         prefs(ctx).edit().remove(KEY_API_PREFIX + providerId).apply()
     }
-
     // Per-provider model override for stored cloud keys (blank = provider default).
     private const val KEY_API_MODEL_PREFIX = "api_model_"
     fun apiModel(ctx: Context, providerId: String): String =
@@ -243,5 +242,59 @@ object UserPrefs {
     fun wakeTriggerAt(ctx: Context): Long = prefs(ctx).getLong(KEY_WAKE_TRIGGER_AT, 0L)
     fun setWakeTriggerAt(ctx: Context, atMs: Long) {
         prefs(ctx).edit().putLong(KEY_WAKE_TRIGGER_AT, atMs).apply()
+    }
+
+    // User-added custom API providers (OpenAI-compatible endpoints).
+    // One pref string: entries split by ";;", fields by "||" as
+    // id||name||baseUrl||model. Always OpenAI protocol.
+    private const val KEY_CUSTOM_PROVIDERS = "custom_providers"
+    fun customProviders(ctx: Context): List<CloudProvider> {
+        return (prefs(ctx).getString(KEY_CUSTOM_PROVIDERS, "") ?: "")
+            .split(";;")
+            .filter { it.isNotBlank() }
+            .mapNotNull { entry ->
+                val f = entry.split("||")
+                if (f.size < 4 || f[0].isBlank() || f[1].isBlank() || f[2].isBlank()) null
+                else CloudProvider(
+                    id = f[0],
+                    name = f[1],
+                    keyUrl = "",
+                    note = "Custom OpenAI-compatible endpoint",
+                    apiBase = f[2],
+                    defaultModel = f[3].ifBlank { "custom-model" },
+                    protocol = CloudProtocol.OPENAI
+                )
+            }
+    }
+
+    private fun cleanField(s: String): String =
+        s.replace(";;", "").replace("||", "").trim()
+
+    fun saveCustomProvider(ctx: Context, name: String, baseUrl: String, model: String): CloudProvider {
+        val provider = CloudProvider(
+            id = "custom_" + System.currentTimeMillis(),
+            name = cleanField(name).take(40),
+            keyUrl = "",
+            note = "Custom OpenAI-compatible endpoint",
+            apiBase = cleanField(baseUrl).trimEnd('/'),
+            defaultModel = cleanField(model).take(120).ifBlank { "custom-model" },
+            protocol = CloudProtocol.OPENAI
+        )
+        val cur = customProviders(ctx).toMutableList()
+        cur.removeAll { it.id == provider.id }
+        cur.add(provider)
+        prefs(ctx).edit().putString(
+            KEY_CUSTOM_PROVIDERS,
+            cur.joinToString(";;") { "${it.id}||${it.name}||${it.apiBase}||${it.defaultModel}" }
+        ).apply()
+        return provider
+    }
+
+    fun deleteCustomProvider(ctx: Context, id: String) {
+        val cur = customProviders(ctx).filter { it.id != id }
+        prefs(ctx).edit().putString(
+            KEY_CUSTOM_PROVIDERS,
+            cur.joinToString(";;") { "${it.id}||${it.name}||${it.apiBase}||${it.defaultModel}" }
+        ).apply()
     }
 }

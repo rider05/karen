@@ -2081,7 +2081,7 @@ fun ModelSelectorSheet(
 
             // Live third-party APIs — only providers with a stored key appear here.
             val keyedProviders = remember {
-                cloudProviders.filter { UserPrefs.apiKey(sheetCtx, it.id).isNotBlank() }
+                allCloudProviders(sheetCtx).filter { UserPrefs.apiKey(sheetCtx, it.id).isNotBlank() }
             }
             if (keyedProviders.isNotEmpty()) {
                 Text(

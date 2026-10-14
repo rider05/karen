@@ -139,7 +139,7 @@ object ApiKeyVault {
     fun exportKeys(ctx: Context, uri: Uri, password: String): String {
         return try {
         if (password.length < 4) return "Password needs at least 4 characters"
-        val entries = cloudProviders.mapNotNull { p ->
+        val entries = (cloudProviders + UserPrefs.customProviders(ctx)).mapNotNull { p ->
             val key = UserPrefs.apiKey(ctx, p.id)
             if (key.isBlank()) null else p.id to (key to UserPrefs.apiModel(ctx, p.id))
         }.toMap()
@@ -182,7 +182,7 @@ object ApiKeyVault {
         if (entries.isEmpty()) return "No keys found in file"
         var n = 0
         entries.forEach { (id, pair) ->
-            if (cloudProviders.any { it.id == id }) {
+            if ((cloudProviders + UserPrefs.customProviders(ctx)).any { it.id == id }) {
                 UserPrefs.saveApiKey(ctx, id, pair.first)
                 UserPrefs.setApiModel(ctx, id, pair.second)
                 n++

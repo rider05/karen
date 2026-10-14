@@ -103,15 +103,20 @@ object StyleMemory {
                 .filter { it.isNotBlank() }
                 .groupingBy { it }.eachCount()
                 .filter { it.value * 2 >= likes.size }.keys
-            sb.append("User liked ${top ?: "medium"} answers")
-            if ("code" in flags) sb.append(" with code examples")
-            if ("tables" in flags) sb.append(" with tables")
-            if ("lists" in flags) sb.append(" with lists")
+            sb.append("prefer ${top ?: "medium"}-length answers")
+            if ("code" in flags) sb.append(", with code examples where they fit")
+            if ("tables" in flags) sb.append(", with tables where they fit")
+            if ("lists" in flags) sb.append(", with lists where they fit")
             sb.append(". ")
         }
         dislikes.takeLast(2).forEach { d ->
             sb.append("User feedback: ${d.substringAfter("|").take(120)}. ")
         }
-        return "Style memory: ${sb.toString().trim()}".take(300)
+        // Framed as silent background guidance: past phrasing ("User liked…")
+        // made models echo it back ("I've noted your preference…").
+        // Length-matching stops "Hello" from getting a full capability pitch.
+        return "Background style guidance (apply silently — never mention, acknowledge, or restate it): ${sb.toString().trim()} " +
+            "Match reply length to the message: greetings and small talk get one or two short sentences; " +
+            "full detail only for substantive questions.".take(420)
     }
 }

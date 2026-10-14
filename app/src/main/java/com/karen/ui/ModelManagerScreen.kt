@@ -109,11 +109,13 @@ fun ModelManagerScreen(
     // Restored from persisted keys so connections survive screen revisits.
     val connectedApis = remember {
         mutableStateListOf<String>().apply {
-            cloudProviders
+            allCloudProviders(ctx)
                 .filter { UserPrefs.apiKey(ctx, it.id).isNotBlank() }
                 .forEach { add(it.name) }
         }
     }
+    /** Built-ins plus user-added custom API providers (recomputed each pass). */
+    fun allProviders(): List<CloudProvider> = allCloudProviders(ctx)
 
     /** Re-reads installed weights from prefs (after downloads/imports). */
     fun reloadModels() {
@@ -146,7 +148,7 @@ fun ModelManagerScreen(
     fun refreshAll() {
         reloadModels()
         connectedApis.clear()
-        cloudProviders
+        allCloudProviders(ctx)
             .filter { UserPrefs.apiKey(ctx, it.id).isNotBlank() }
             .forEach { connectedApis.add(it.name) }
         when (val ev = ModelDownloader.refresh(ctx)) {
@@ -177,6 +179,10 @@ fun ModelManagerScreen(
     var liveModels by remember { mutableStateOf<List<LiveModel>?>(null) }
     var liveLoading by remember { mutableStateOf(false) }
     var liveError by remember { mutableStateOf(false) }
+    // Custom API form (dialog step 2): name, base URL, model, key.
+    var customName by remember { mutableStateOf("") }
+    var customBase by remember { mutableStateOf("") }
+    var customModel by remember { mutableStateOf("") }
     // Secured key backup: password dialogs + file pickers.
     var showExportPw by remember { mutableStateOf(false) }
     var exportPw by remember { mutableStateOf("") }
@@ -481,31 +487,47 @@ fun ModelManagerScreen(
                         Spacer(Modifier.height(10.dp))
                         Text("Connected APIs", color = colors.textMuted, fontSize = 10.5.sp, fontWeight = FontWeight.SemiBold)
                         Spacer(Modifier.height(6.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            connectedApis.forEach { api ->
-                                val providerId = cloudProviders.find { it.name == api }?.id
-                                val hasKey = providerId != null && UserPrefs.apiKey(ctx, providerId).isNotBlank()
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(colors.accentBlue.copy(alpha = 0.12f))
-                                        .padding(horizontal = 8.dp, vertical = 4.dp)
-                                ) {
-                                    if (hasKey) {
-                                        Icon(Icons.Default.Lock, contentDescription = "Key stored", tint = colors.accentGreen, modifier = Modifier.size(11.dp))
-                                        Spacer(Modifier.width(4.dp))
+                        val providerByName = allProviders().associateBy { it.name }
+                        connectedApis.chunked(3).forEach { rowApis ->
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                rowApis.forEach { api ->
+                                    val providerId = providerByName[api]?.id
+                                    val hasKey = providerId != null && UserPrefs.apiKey(ctx, providerId).isNotBlank()
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(colors.accentBlue.copy(alpha = 0.12f))
+                                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                                    ) {
+                                        if (hasKey) {
+                                            Icon(Icons.Default.Lock, contentDescription = "Key stored", tint = colors.accentGreen, modifier = Modifier.size(11.dp))
+                                            Spacer(Modifier.width(4.dp))
+                                        }
+                                        Text(
+                                            api,
+                                            color = colors.accentBlue,
+                                            fontSize = 10.5.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            maxLines = 1,
+                                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                        )
                                     }
-                                    Text(api, color = colors.accentBlue, fontSize = 11.sp, fontWeight = FontWeight.Medium)
                                 }
+                                repeat(3 - rowApis.size) { Spacer(Modifier.weight(1f)) }
                             }
+                            Spacer(Modifier.height(6.dp))
                         }
                     }
                     Spacer(Modifier.height(8.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedButton(
                             onClick = {
-                                val n = cloudProviders.count { UserPrefs.apiKey(ctx, it.id).isNotBlank() }
+                                val n = allProviders().count { UserPrefs.apiKey(ctx, it.id).isNotBlank() }
                                 if (n == 0) {
                                     Toast.makeText(ctx, "No API keys stored to export", Toast.LENGTH_SHORT).show()
                                 } else {
@@ -1094,13 +1116,13 @@ fun ModelManagerScreen(
                 containerColor = colors.surface,
                 titleContentColor = colors.textPrimary,
                 textContentColor = colors.textSecondary,
-                title = { Text(if (apiStep == 0) "Connect Cloud API" else (provider?.name ?: "API key")) },
+                title = { Text(if (apiStep == 0) "Connect Cloud API" else if (apiStep == 2) "Custom API" else (provider?.name ?: "API key")) },
                 text = {
                     Column {
                         if (apiStep == 0) {
                             Text("Select a provider, then paste its API key (stored only on this device):", fontSize = 13.sp)
                             Spacer(Modifier.height(10.dp))
-                            cloudProviders.forEach { p ->
+                            allProviders().forEach { p ->
                                 val keySet = UserPrefs.apiKey(ctx, p.id).isNotBlank()
                                 Row(
                                     modifier = Modifier
@@ -1139,6 +1161,92 @@ fun ModelManagerScreen(
                                     Icon(Icons.Default.ChevronRight, contentDescription = null, tint = colors.textMuted, modifier = Modifier.size(16.dp))
                                 }
                             }
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        selectedProvider = null
+                                        customName = ""
+                                        customBase = ""
+                                        customModel = ""
+                                        apiKeyInput = ""
+                                        apiStep = 2
+                                    }
+                                    .padding(vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Default.Add, contentDescription = null, tint = colors.accentGreen, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(10.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text("Custom API…", color = colors.textPrimary, fontSize = 13.5.sp)
+                                    Text(
+                                        "Any OpenAI-compatible endpoint (Ollama, vLLM, proxy)",
+                                        color = colors.textMuted,
+                                        fontSize = 11.sp
+                                    )
+                                }
+                                Icon(Icons.Default.ChevronRight, contentDescription = null, tint = colors.textMuted, modifier = Modifier.size(16.dp))
+                            }
+                        } else if (apiStep == 2) {
+                            Text("Add any OpenAI-compatible endpoint. Base URL, model id, and key are stored only on this device.", fontSize = 13.sp)
+                            Spacer(Modifier.height(10.dp))
+                            OutlinedTextField(
+                                value = customName,
+                                onValueChange = { customName = it.take(40) },
+                                label = { Text("Name") },
+                                placeholder = { Text("My Server") },
+                                singleLine = true,
+                                textStyle = androidx.compose.ui.text.TextStyle(color = colors.textPrimary),
+                                colors = karenFieldColors(colors),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            OutlinedTextField(
+                                value = customBase,
+                                onValueChange = { customBase = it.trim().take(200) },
+                                label = { Text("Base URL") },
+                                placeholder = { Text("https://my-host:8000/v1") },
+                                singleLine = true,
+                                textStyle = androidx.compose.ui.text.TextStyle(
+                                    color = colors.textPrimary,
+                                    fontFamily = FontFamily.Monospace
+                                ),
+                                colors = karenFieldColors(colors),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            OutlinedTextField(
+                                value = customModel,
+                                onValueChange = { customModel = it.trim().take(120) },
+                                label = { Text("Model id") },
+                                placeholder = { Text("llama-3.3-70b-versatile") },
+                                singleLine = true,
+                                textStyle = androidx.compose.ui.text.TextStyle(
+                                    color = colors.textPrimary,
+                                    fontFamily = FontFamily.Monospace
+                                ),
+                                colors = karenFieldColors(colors),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            OutlinedTextField(
+                                value = apiKeyInput,
+                                onValueChange = { apiKeyInput = it },
+                                label = { Text("API key") },
+                                placeholder = { Text("sk-…") },
+                                singleLine = true,
+                                colors = karenFieldColors(colors),
+                                visualTransformation = if (keyVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                                trailingIcon = {
+                                    IconButton(onClick = { keyVisible = !keyVisible }) {
+                                        Icon(
+                                            if (keyVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                            contentDescription = if (keyVisible) "Hide key" else "Show key"
+                                        )
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            )
                         } else if (provider != null) {
                             val stored = UserPrefs.apiKey(ctx, provider.id)
                             Text(
@@ -1146,36 +1254,38 @@ fun ModelManagerScreen(
                                 fontSize = 13.sp
                             )
                             Spacer(Modifier.height(10.dp))
-                            val keyPage = remember(provider.keyUrl) {
-                                val url = if (provider.keyUrl.startsWith("http")) provider.keyUrl
-                                else "https://${provider.keyUrl}"
-                                androidx.compose.ui.text.AnnotatedString.Builder("Get a key: ${provider.keyUrl}").apply {
-                                    val start = "Get a key: ".length
-                                    addStyle(
-                                        androidx.compose.ui.text.SpanStyle(
-                                            color = colors.accentBlue,
-                                            textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline,
-                                            fontFamily = FontFamily.Monospace
-                                        ),
-                                        start,
-                                        length
-                                    )
-                                    addStringAnnotation("url", url, start, length)
-                                }.toAnnotatedString()
-                            }
-                            ClickableText(
-                                text = keyPage,
-                                style = androidx.compose.ui.text.TextStyle(
-                                    color = colors.textSecondary,
-                                    fontSize = 12.sp,
-                                    fontFamily = FontFamily.Monospace
-                                ),
-                                onClick = { offset ->
-                                    keyPage.getStringAnnotations("url", offset, offset)
-                                        .firstOrNull()?.let { runCatching { uriHandler.openUri(it.item) } }
+                            if (provider.keyUrl.isNotBlank()) {
+                                val keyPage = remember(provider.keyUrl) {
+                                    val url = if (provider.keyUrl.startsWith("http")) provider.keyUrl
+                                    else "https://${provider.keyUrl}"
+                                    androidx.compose.ui.text.AnnotatedString.Builder("Get a key: ${provider.keyUrl}").apply {
+                                        val start = "Get a key: ".length
+                                        addStyle(
+                                            androidx.compose.ui.text.SpanStyle(
+                                                color = colors.accentBlue,
+                                                textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline,
+                                                fontFamily = FontFamily.Monospace
+                                            ),
+                                            start,
+                                            length
+                                        )
+                                        addStringAnnotation("url", url, start, length)
+                                    }.toAnnotatedString()
                                 }
-                            )
-                            Spacer(Modifier.height(4.dp))
+                                ClickableText(
+                                    text = keyPage,
+                                    style = androidx.compose.ui.text.TextStyle(
+                                        color = colors.textSecondary,
+                                        fontSize = 12.sp,
+                                        fontFamily = FontFamily.Monospace
+                                    ),
+                                    onClick = { offset ->
+                                        keyPage.getStringAnnotations("url", offset, offset)
+                                            .firstOrNull()?.let { runCatching { uriHandler.openUri(it.item) } }
+                                    }
+                                )
+                                Spacer(Modifier.height(4.dp))
+                            }
                             Text(
                                 "Calls: ${apiModelInput.ifBlank { provider.defaultModel }} (live)",
                                 fontSize = 12.sp,
@@ -1366,11 +1476,14 @@ fun ModelManagerScreen(
                                     UserPrefs.clearApiKey(ctx, provider.id)
                                     UserPrefs.setApiModel(ctx, provider.id, "")
                                     connectedApis.remove(provider.name)
+                                    if (provider.id.startsWith("custom_")) {
+                                        UserPrefs.deleteCustomProvider(ctx, provider.id)
+                                    }
                                     apiKeyInput = ""
                                     apiModelInput = ""
                                     showApiDialog = false
                                     apiStep = 0
-                                    android.widget.Toast.makeText(ctx, "${provider.name} key removed", android.widget.Toast.LENGTH_SHORT).show()
+                                    android.widget.Toast.makeText(ctx, "${provider.name} removed", android.widget.Toast.LENGTH_SHORT).show()
                                 }) { Text("Remove", color = colors.accentRed) }
                             }
                             TextButton(onClick = {
@@ -1389,6 +1502,36 @@ fun ModelManagerScreen(
                                 }
                             }) { Text("Save & Connect") }
                         }
+                    } else if (apiStep == 2) {
+                        TextButton(onClick = {
+                            val name = customName.trim()
+                            val base = customBase.trim().trimEnd('/')
+                            val model = customModel.trim()
+                            val key = apiKeyInput.trim()
+                            if (name.isBlank() || base.isBlank() || model.isBlank() || key.isBlank()) {
+                                android.widget.Toast.makeText(ctx, "Fill name, base URL, model, and key", android.widget.Toast.LENGTH_SHORT).show()
+                            } else if (!base.startsWith("http://") && !base.startsWith("https://")) {
+                                android.widget.Toast.makeText(ctx, "Base URL must start with http(s)://", android.widget.Toast.LENGTH_SHORT).show()
+                            } else {
+                                var finalName = name
+                                var n = 2
+                                val taken = allProviders().map { it.name }.toMutableSet()
+                                while (finalName in taken) {
+                                    finalName = "$name ($n)"
+                                    n++
+                                }
+                                val created = UserPrefs.saveCustomProvider(ctx, finalName, base, model)
+                                UserPrefs.saveApiKey(ctx, created.id, key)
+                                UserPrefs.setApiModel(ctx, created.id, model)
+                                if (created.name !in connectedApis) {
+                                    connectedApis.add(created.name)
+                                }
+                                apiKeyInput = ""
+                                showApiDialog = false
+                                apiStep = 0
+                                android.widget.Toast.makeText(ctx, "${created.name} connected", android.widget.Toast.LENGTH_SHORT).show()
+                            }
+                        }) { Text("Save & Connect") }
                     }
                 }
             )

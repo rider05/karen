@@ -246,7 +246,7 @@ fun ChatScreen(
         if (!autoRoute) return selectedModel
         val locals = UserPrefs.models(context)
             .filter { !isCloudProviderName(it) && !isEmbeddingModel(it) && ModelDownloader.isRunnableWeight(context, it) }
-        val keyed = cloudProviders.filter { UserPrefs.apiKey(context, it.id).isNotBlank() }
+        val keyed = allCloudProviders(context).filter { UserPrefs.apiKey(context, it.id).isNotBlank() }
         val decision = routeModel(prompt, locals, keyed, UserPrefs.autoCloud(context))
         if (decision != null) {
             if (decision.modelName != lastRouted) {
@@ -549,7 +549,7 @@ fun ChatScreen(
     /** Top-scoring keyed cloud outside [exclude], with its key. */
     fun pickCloud(prompt: String, exclude: Set<String> = emptySet()): Pair<CloudProvider, String>? {
         if (!device.networkUp) return null
-        val keyed = cloudProviders.filter { it.id !in exclude && UserPrefs.apiKey(context, it.id).isNotBlank() }
+        val keyed = allCloudProviders(context).filter { it.id !in exclude && UserPrefs.apiKey(context, it.id).isNotBlank() }
         if (keyed.isEmpty()) return null
         val intent = detectIntent(prompt.ifBlank { "chat" })
         val best = keyed.maxByOrNull { scoreCloud(it.id, intent) } ?: return null
@@ -683,7 +683,7 @@ fun ChatScreen(
         // real on-device inference for downloaded weights, else the mock.
         // Auto routing swaps in the best model for this prompt.
         val sendModel = effectiveModel(userText.ifBlank { "chat" })
-        val cloud = findCloudProviderByName(sendModel)
+        val cloud = findCloudProviderByName(sendModel, UserPrefs.customProviders(context))
         val cloudKey = cloud?.let { UserPrefs.apiKey(context, it.id) }.orEmpty()
         val weightFile = if (cloud == null) ModelDownloader.weightFileFor(context, sendModel) else null
 

@@ -667,7 +667,7 @@ fun WorkspaceScreen(
         if (!autoRoute) return selectedModel
         val locals = UserPrefs.models(ctx)
             .filter { !isCloudProviderName(it) && !isEmbeddingModel(it) && ModelDownloader.isRunnableWeight(ctx, it) }
-        val keyed = cloudProviders.filter { UserPrefs.apiKey(ctx, it.id).isNotBlank() }
+        val keyed = allCloudProviders(ctx).filter { UserPrefs.apiKey(ctx, it.id).isNotBlank() }
         val decision = routeModel(prompt, locals, keyed, UserPrefs.autoCloud(ctx))
         if (decision != null) {
             if (decision.modelName != lastRouted) {
@@ -777,13 +777,14 @@ fun WorkspaceScreen(
             // 3. SCAFFOLD tool: the model writes a full multi-file scaffold
             //    into the project. Files land on real paths.
             if (tool == WorkspaceTool.SCAFFOLD) {
-                val canCloud = findCloudProviderByName(sendModel)?.let { p ->
+                val customs = UserPrefs.customProviders(ctx)
+                val canCloud = findCloudProviderByName(sendModel, customs)?.let { p ->
                     UserPrefs.apiKey(ctx, p.id).isNotBlank()
                 } ?: false
                 val canLocal = ModelDownloader.weightFileFor(ctx, sendModel) != null && KarenLlama.ready
                 if (canCloud || canLocal) {
                     val threads = maxOf(2, minOf(6, Runtime.getRuntime().availableProcessors()))
-                    val cloudScaffold = findCloudProviderByName(sendModel)
+                    val cloudScaffold = findCloudProviderByName(sendModel, customs)
                     val cwCloudKey = cloudScaffold?.let { UserPrefs.apiKey(ctx, it.id) }.orEmpty()
                     val scaffoldMsg = scaffoldWithModel(
                         project, t, cloudScaffold, cwCloudKey,
@@ -863,7 +864,7 @@ fun WorkspaceScreen(
                     if (wantsExplainer(t, ctx)) " $EXPLAINER_STYLE_GUIDE" else "" +
                     UserPrefs.customInstructions(ctx).trim().take(500).let { if (it.isBlank()) "" else " User instructions: $it" }
             // 6. Assistant reply — live cloud call, on-device GGUF, else canned.
-            val cloud = findCloudProviderByName(sendModel)
+            val cloud = findCloudProviderByName(sendModel, UserPrefs.customProviders(ctx))
             val cloudKey = cloud?.let { UserPrefs.apiKey(ctx, it.id) }.orEmpty()
             val weightFile = if (cloud == null) ModelDownloader.weightFileFor(ctx, sendModel) else null
             if (cloud != null && cloudKey.isNotBlank()) {
@@ -998,7 +999,7 @@ fun WorkspaceScreen(
                         chatBusy = true
                         val menuStartMs = System.currentTimeMillis()
                         val threads = maxOf(2, minOf(6, Runtime.getRuntime().availableProcessors()))
-                        val cloud = findCloudProviderByName(selectedModel)
+                        val cloud = findCloudProviderByName(selectedModel, UserPrefs.customProviders(ctx))
                         val cloudKey = cloud?.let { UserPrefs.apiKey(ctx, it.id) }.orEmpty()
                         val scaffold = scaffoldWithModel(
                             target,

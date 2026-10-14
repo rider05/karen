@@ -168,6 +168,101 @@ object ToolSpecs {
     }
 }
 
+/** Matches a leading "/tool rest" command. Null when not a slash call. */
+fun matchSlash(ctx: Context, text: String): Pair<ToolSpec, String>? {
+    val m = Regex("^/([A-Za-z_][A-Za-z0-9_]*)\\s*([\\s\\S]*)$")
+        .matchEntire(text.trim()) ?: return null
+    val spec = ToolSpecs.byName(ctx, m.groupValues[1]) ?: return null
+    return spec to m.groupValues[2].trim()
+}
+
+/** Expands "/tool args" into an explicit model instruction (AI path). */
+fun expandSlash(ctx: Context, raw: String): String {
+    val (spec, rest) = matchSlash(ctx, raw) ?: return raw
+    val req = spec.args.filter { it.required }.joinToString(", ") { it.name }
+    return "Use the \"${spec.name}\" tool now (${spec.desc}" +
+        (if (req.isNotBlank()) ". Required arguments: $req" else "") + ")." +
+        if (rest.isNotBlank()) " Request: $rest"
+        else " Proceed with sensible defaults, or ask for the missing detail."
+}
+
+/**
+ * Deterministic arg mapping for slash fast-path routing.
+ * Returns args when the tool can run with no model round-trip,
+ * null when AI is needed (multi-arg or ambiguous).
+ */
+fun directArgs(spec: ToolSpec, rest: String): JSONObject? {
+    val r = rest.trim()
+    fun obj(vararg ps: Pair<String, Any>): JSONObject =
+        JSONObject().apply { ps.forEach { (k, v) -> put(k, v) } }
+    return when (spec.name) {
+        "get_time" -> obj().apply { if (r.isNotBlank()) put("timezone", r) }
+        "clipboard_read" -> obj()
+        "get_device_info" -> obj().apply {
+            val f = r.lowercase()
+            if (f in listOf("battery", "storage", "memory", "network")) put("field", f)
+        }
+        "calculator" -> if (r.isBlank()) null else obj("expression" to r)
+        "search_local_files" -> if (r.isBlank()) null else obj("query" to r)
+        "open_document" -> if (r.isBlank()) null else obj("query" to r)
+        "read_document" -> if (r.isBlank()) null else obj("path" to r)
+        "find_contact" -> if (r.isBlank()) null else obj("name" to r)
+        "clipboard_write" -> if (r.isBlank()) null else obj("text" to r)
+        "remember_fact" -> if (r.isBlank()) null else obj("fact" to r)
+        "forget_fact" -> if (r.isBlank()) null else obj("fact" to r)
+        "open_app" -> if (r.isBlank()) null else obj("app_name" to r)
+        "open_url" -> {
+            if (r.isBlank() || ' ' in r) null
+            else obj("url" to (if (r.startsWith("http://") || r.startsWith("https://")) r else "https://$r"))
+        }
+        "open_settings_page" -> {
+            val p = r.lowercase().replace(" ", "_")
+            if (p in listOf("wifi", "bluetooth", "display", "sound", "battery", "storage", "apps", "location", "notifications", "airplane_mode")) {
+                obj("page" to p)
+            } else null
+        }
+        "media_control" -> {
+            val a = r.lowercase().replace(" ", "_")
+            if (a in listOf("play", "pause", "next", "previous", "volume_up", "volume_down", "mute")) {
+                obj("action" to a)
+            } else null
+        }
+        "set_timer" -> parseTimerArg(r)
+        "set_alarm" -> parseAlarmArg(r)
+        else -> null
+    }
+}
+
+private fun parseTimerArg(r: String): JSONObject? {
+    val m = Regex("(\\d+)\\s*(hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)?")
+        .find(r.lowercase()) ?: return null
+    val n = m.groupValues[1].toLongOrNull() ?: return null
+    if (n <= 0) return null
+    val mult = when (m.groupValues[2].firstOrNull()) {
+        'h' -> 3600
+        'm' -> 60
+        else -> 1
+    }
+    val secs = n * mult
+    if (secs > 86400) return null
+    val label = r.replace(m.value, "").trim().take(60)
+    return JSONObject().put("seconds", secs).apply {
+        if (label.isNotBlank()) put("label", label)
+    }
+}
+
+private fun parseAlarmArg(r: String): JSONObject? {
+    val m = Regex("^(\\d{1,2})(?::(\\d{2}))?\\s*(am|pm)?$")
+        .matchEntire(r.lowercase().trim()) ?: return null
+    var h = m.groupValues[1].toIntOrNull() ?: return null
+    val min = m.groupValues[2].ifBlank { "0" }.toIntOrNull() ?: return null
+    when (m.groupValues[3]) {
+        "am" -> if (h == 12) h = 0
+        "pm" -> if (h < 12) h += 12
+    }
+    if (h !in 0..23 || min !in 0..59) return null
+    return JSONObject().put("hour", h).put("minute", min)
+}
 /** Pulls ///TOOL JSON blocks out of model text (brace-matched, max 3). */
 fun extractToolCalls(text: String): List<ParsedTool> {
     val out = mutableListOf<ParsedTool>()

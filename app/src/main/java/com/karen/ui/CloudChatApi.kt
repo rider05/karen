@@ -363,6 +363,199 @@ suspend fun CloudProvider.completeResult(
 }
 
 /**
+ * Streaming chat completion for realtime voice: tokens are delivered to
+ * [onToken] as they arrive (SSE) while the full text is returned at the
+ * end. Reasoning/thinking deltas are skipped — voice speaks answers only.
+ */
+suspend fun CloudProvider.completeStreaming(
+    apiKey: String,
+    history: List<Pair<String, String>>,
+    maxTokens: Int,
+    thinkingBudget: Int? = null,
+    historyLimit: Int = 20,
+    model: String? = null,
+    onToken: (String) -> Unit = {},
+    isCancelled: () -> Boolean = { false }
+): String = withContext(Dispatchers.IO) {
+    val trimmed = history.takeLast(historyLimit.coerceIn(4, 80))
+    val effectiveModel = modelOrDefault(model)
+    val full = StringBuilder()
+    fun emit(piece: String) {
+        if (piece.isNotEmpty()) {
+            full.append(piece)
+            onToken(piece)
+        }
+    }
+    when (protocol) {
+        CloudProtocol.OPENAI -> {
+            fun body(tokenField: String) = JSONObject()
+                .put("model", effectiveModel)
+                .put(tokenField, maxTokens)
+                .put("stream", true)
+                .put(
+                    "messages",
+                    JSONArray(trimmed.map { (role, text) ->
+                        JSONObject().put("role", role).put("content", text)
+                    })
+                )
+                .apply {
+                    if (id == "openrouter" && thinkingBudget != null) {
+                        put("reasoning", JSONObject().put("max_tokens", thinkingBudget))
+                    }
+                }
+            val headers = mutableMapOf(
+                "Authorization" to "Bearer $apiKey",
+                "Content-Type" to "application/json",
+                "Accept" to "text/event-stream"
+            )
+            if (id == "openrouter") {
+                headers["HTTP-Referer"] = "https://karen.local"
+                headers["X-Title"] = "Karen"
+            }
+            fun runOnce(tokenField: String) {
+                postStreamLines(URL("$apiBase/chat/completions"), headers, body(tokenField), isCancelled) { line ->
+                    if (!line.startsWith("data:")) return@postStreamLines
+                    val payload = line.removePrefix("data:").trim()
+                    if (payload.isBlank() || payload == "[DONE]") return@postStreamLines
+                    try {
+                        val delta = JSONObject(payload)
+                            .optJSONArray("choices")
+                            ?.optJSONObject(0)
+                            ?.optJSONObject("delta") ?: return@postStreamLines
+                        val content = delta.opt("content")
+                        if (content is String) emit(content)
+                    } catch (_: Exception) {
+                    }
+                }
+            }
+            try {
+                runOnce("max_tokens")
+            } catch (e: CloudApiException) {
+                if (e.status == 400 && e.message.orEmpty().contains("max_completion_tokens")) {
+                    runOnce("max_completion_tokens")
+                } else throw e
+            }
+        }
+        CloudProtocol.ANTHROPIC -> {
+            val total = if (thinkingBudget != null) maxOf(maxTokens, thinkingBudget + 1024) else maxTokens
+            val body = JSONObject()
+                .put("model", effectiveModel)
+                .put("max_tokens", total)
+                .put("stream", true)
+                .put(
+                    "messages",
+                    JSONArray(trimmed.map { (role, text) ->
+                        JSONObject().put("role", role).put("content", text)
+                    })
+                )
+            postStreamLines(
+                URL("$apiBase/messages"),
+                mapOf(
+                    "x-api-key" to apiKey,
+                    "anthropic-version" to "2023-06-01",
+                    "Content-Type" to "application/json",
+                    "Accept" to "text/event-stream"
+                ),
+                body,
+                isCancelled
+            ) { line ->
+                if (!line.startsWith("data:")) return@postStreamLines
+                val payload = line.removePrefix("data:").trim()
+                if (payload.isBlank()) return@postStreamLines
+                try {
+                    val data = JSONObject(payload)
+                    if (data.optString("type") == "content_block_delta") {
+                        val text = data.optJSONObject("delta")?.optString("text", "").orEmpty()
+                        emit(text)
+                    }
+                } catch (_: Exception) {
+                }
+            }
+        }
+        CloudProtocol.GEMINI -> {
+            val body = JSONObject().put(
+                "contents",
+                JSONArray(trimmed.map { (role, text) ->
+                    JSONObject()
+                        .put("role", if (role == "assistant") "model" else "user")
+                        .put("parts", JSONArray().put(JSONObject().put("text", text)))
+                })
+            )
+            var lastChunk = ""
+            postStreamLines(
+                URL("$apiBase/models/$effectiveModel:streamGenerateContent?alt=sse&key=${java.net.URLEncoder.encode(apiKey, "UTF-8")}"),
+                mapOf("Content-Type" to "application/json", "Accept" to "text/event-stream"),
+                body,
+                isCancelled
+            ) { line ->
+                if (!line.startsWith("data:")) return@postStreamLines
+                val payload = line.removePrefix("data:").trim()
+                if (payload.isBlank()) return@postStreamLines
+                try {
+                    val text = JSONObject(payload)
+                        .optJSONArray("candidates")
+                        ?.optJSONObject(0)
+                        ?.optJSONObject("content")
+                        ?.optJSONArray("parts")
+                        ?.optJSONObject(0)
+                        ?.optString("text", "").orEmpty()
+                    // Chunks repeat cumulative text: only speak what is new.
+                    if (text.isNotEmpty()) {
+                        if (text.startsWith(lastChunk)) emit(text.removePrefix(lastChunk))
+                        else emit(text)
+                        lastChunk = text
+                    }
+                } catch (_: Exception) {
+                }
+            }
+        }
+    }
+    full.toString()
+}
+
+/** POSTs a JSON body and streams SSE `data:` lines until disconnect/cancel. */
+private fun postStreamLines(
+    url: URL,
+    headers: Map<String, String>,
+    body: JSONObject,
+    isCancelled: () -> Boolean,
+    onLine: (String) -> Unit
+) {
+    val conn = (url.openConnection() as HttpURLConnection).apply {
+        requestMethod = "POST"
+        connectTimeout = 15000
+        readTimeout = 90000
+        doOutput = true
+        headers.forEach { (k, v) -> setRequestProperty(k, v) }
+    }
+    conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+    val code = conn.responseCode
+    if (code !in 200..299) {
+        val err = try {
+            conn.errorStream?.bufferedReader()?.use { it.readText() }
+        } catch (_: Exception) {
+            null
+        } ?: ""
+        conn.disconnect()
+        throw CloudApiException(code, err.take(300))
+    }
+    try {
+        conn.inputStream.bufferedReader().use { reader ->
+            while (!isCancelled()) {
+                val line = try {
+                    reader.readLine()
+                } catch (_: Exception) {
+                    break
+                } ?: break
+                onLine(line)
+            }
+        }
+    } finally {
+        conn.disconnect()
+    }
+}
+
+/**
  * True when an OpenAI-style reply stopped because it hit the output cap
  * (`finish_reason == "length"`) rather than ending naturally.
  */

@@ -81,15 +81,47 @@ fun VoiceScreen(
                 val customs = UserPrefs.customProviders(personaCtx)
                 val cloud = pick?.let { findCloudProviderByName(it, customs) }
                 val key = cloud?.let { UserPrefs.apiKey(personaCtx, it.id) }.orEmpty()
-                val answer = if (cloud != null && key.isNotBlank()) {
-                    cloud.complete(
-                        key,
-                        listOf("user" to "$VOICE_REPLY_STYLE\n\n$text"),
-                        maxTokensFor("Low"),
-                        thinkingBudget = null,
-                        historyLimit = 4,
-                        model = UserPrefs.apiModel(personaCtx, cloud.id).ifBlank { null }
-                    )
+                // Realtime: stream tokens straight into sentence TTS so speech
+                // starts on the first sentence instead of the full reply.
+                var full = ""
+                TtsManager.startStream(personaCtx, voicePersona)
+                fun onPiece(piece: String) {
+                    if (cancelVoice) return
+                    full += piece
+                    voiceReply = full
+                    TtsManager.pushStream(full)
+                }
+                if (cloud != null && key.isNotBlank()) {
+                    try {
+                        cloud.completeStreaming(
+                            key,
+                            listOf("user" to "$VOICE_REPLY_STYLE\n\n$text"),
+                            maxTokensFor("Low"),
+                            thinkingBudget = null,
+                            historyLimit = 4,
+                            model = UserPrefs.apiModel(personaCtx, cloud.id).ifBlank { null },
+                            onToken = ::onPiece,
+                            isCancelled = { cancelVoice }
+                        )
+                    } catch (_: Exception) {
+                        // Streaming blocked: fall back to one shot.
+                        val once = try {
+                            cloud.complete(
+                                key,
+                                listOf("user" to "$VOICE_REPLY_STYLE\n\n$text"),
+                                maxTokensFor("Low"),
+                                thinkingBudget = null,
+                                historyLimit = 4,
+                                model = UserPrefs.apiModel(personaCtx, cloud.id).ifBlank { null }
+                            )
+                        } catch (_: Exception) {
+                            ""
+                        }
+                        if (!cancelVoice && once.isNotBlank()) {
+                            full = once
+                            voiceReply = full
+                        }
+                    }
                 } else {
                     val modelName = pick
                     val wf = if (cloud == null && modelName != null) ModelDownloader.weightFileFor(personaCtx, modelName) else null
@@ -98,29 +130,33 @@ fun VoiceScreen(
                         val ok = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                             KarenLlama.ensureLoaded(wf, modelName, 2048, threads)
                         }
-                        if (!ok || cancelVoice) null
-                        else kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                            KarenLlama.complete(
-                                "You are Karen, a voice assistant. $VOICE_REPLY_STYLE",
-                                arrayOf("user"),
-                                arrayOf(text),
-                                maxTokensFor("Low")
-                            )
+                        if (ok && !cancelVoice) {
+                            full = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                KarenLlama.complete(
+                                    "You are Karen, a voice assistant. $VOICE_REPLY_STYLE",
+                                    arrayOf("user"),
+                                    arrayOf(text),
+                                    maxTokensFor("Low")
+                                )
+                            }?.trim().orEmpty()
+                            if (!cancelVoice) voiceReply = full
                         }
-                    } else null
+                    }
                 }
+                if (!cancelVoice) TtsManager.endStream(full) else TtsManager.stop()
                 if (cancelVoice) return@launch
-                val said = answer?.trim().orEmpty()
+                val said = full.trim()
                 if (said.isNotBlank()) {
                     voiceReply = said
                     autoArmed = true
-                    TtsManager.speak(personaCtx, said, voicePersona)
                 } else {
+                    TtsManager.stop()
                     voiceReply = "I couldn't answer that. Connect a model in Model Manager to chat by voice."
                     TtsManager.speak(personaCtx, voiceReply, voicePersona)
                 }
             } catch (e: Exception) {
                 if (!cancelVoice) {
+                    TtsManager.stop()
                     voiceReply = "Sorry, something went wrong."
                     TtsManager.speak(personaCtx, voiceReply, voicePersona)
                 }
@@ -145,13 +181,103 @@ fun VoiceScreen(
         if (wasSpeaking && !TtsManager.speaking) {
             if (autoArmed && !cancelVoice && autoVoice && !isMuted && voiceReply.isNotBlank()) {
                 autoArmed = false
-                kotlinx.coroutines.delay(600)
+                kotlinx.coroutines.delay(150)
                 voiceStt.startListening()
             } else {
                 autoArmed = false
             }
         }
         wasSpeaking = TtsManager.speaking
+    }
+
+    /** Barge-in: user talks over Karen → stop everything, listen to them. */
+    fun interruptVoice() {
+        if (!TtsManager.speaking && !voiceBusy) return
+        cancelVoice = true
+        autoArmed = false
+        try {
+            voiceStt.cancel()
+        } catch (_: Exception) {
+        }
+        TtsManager.stop()
+        try {
+            KarenLlama.cancel()
+        } catch (_: Exception) {
+        }
+        voiceBusy = false
+        voiceReply = ""
+        voiceStt.startListening()
+    }
+
+    // Warm the TTS engine and start listening on entry (Gemini-style).
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        TtsManager.warmup(personaCtx)
+        kotlinx.coroutines.delay(350)
+        if (!voiceBusy && !TtsManager.speaking && !isMuted) voiceStt.startListening()
+    }
+
+    // Barge-in watch: sustained loud mic input while speaking interrupts.
+    // No echo cancellation on-device, so the bar is set high and needs
+    // ~0.8s of continuous voice — TTS echo alone should not trip it.
+    androidx.compose.runtime.LaunchedEffect(TtsManager.speaking) {
+        if (!TtsManager.speaking) return@LaunchedEffect
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            var rec: android.media.AudioRecord? = null
+            try {
+                if (androidx.core.content.ContextCompat.checkSelfPermission(
+                        personaCtx,
+                        android.Manifest.permission.RECORD_AUDIO
+                    ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+                ) return@withContext
+                val sr = 16000
+                val minBuf = android.media.AudioRecord.getMinBufferSize(
+                    sr,
+                    android.media.AudioFormat.CHANNEL_IN_MONO,
+                    android.media.AudioFormat.ENCODING_PCM_16BIT
+                )
+                if (minBuf <= 0) return@withContext
+                rec = android.media.AudioRecord(
+                    android.media.MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                    sr,
+                    android.media.AudioFormat.CHANNEL_IN_MONO,
+                    android.media.AudioFormat.ENCODING_PCM_16BIT,
+                    minBuf * 2
+                )
+                if (rec.state != android.media.AudioRecord.STATE_INITIALIZED) return@withContext
+                rec.startRecording()
+                kotlinx.coroutines.delay(500)
+                val buf = ShortArray(1600)
+                var loud = 0
+                while (TtsManager.speaking && !cancelVoice) {
+                    val n = rec.read(buf, 0, buf.size)
+                    if (n > 0) {
+                        var sum = 0L
+                        for (i in 0 until n) {
+                            val v = buf[i].toInt()
+                            sum += (v * v).toLong()
+                        }
+                        val rms = kotlin.math.sqrt(sum.toDouble() / n)
+                        if (rms > 2000) loud++ else loud = 0
+                        if (loud >= 8) break
+                    }
+                }
+                if (loud >= 8 && TtsManager.speaking && !cancelVoice) {
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        interruptVoice()
+                    }
+                }
+            } catch (_: Exception) {
+            } finally {
+                try {
+                    rec?.stop()
+                } catch (_: Exception) {
+                }
+                try {
+                    rec?.release()
+                } catch (_: Exception) {
+                }
+            }
+        }
     }
 
     val infiniteTransition = rememberInfiniteTransition(label = "voice_orb")

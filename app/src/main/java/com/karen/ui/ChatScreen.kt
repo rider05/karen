@@ -965,10 +965,79 @@ fun ChatScreen(
         }
     }
 
-    /** Lists a user message and starts the assistant turn for it. */
-    fun sendNow(userText: String, sentAttachments: List<Attachment>) {
+    /**
+     * Slash fast path: deterministic tool routing with no model round-trip.
+     * Unambiguous calls (zero args, one text arg, parseable timer/alarm)
+     * run straight through validation + policy; anything needing judgment
+     * returns false so the AI route (and API if needed) handles it.
+     */
+    fun tryDirectToolTurn(rawText: String): Boolean {
+        val (spec, rest) = matchSlash(context, rawText) ?: return false
+        val dargs = directArgs(spec, rest) ?: return false
         val newId = System.currentTimeMillis().toString()
-        val body = userText.ifBlank { sentAttachments.joinToString(", ") { it.name } }
+        messages.add(ChatItem.User(id = "user_$newId", text = rawText, tokens = rawText.length / 4))
+        StyleMemory.bumpMessageCount(context)
+        val aid = "asst_$newId"
+        streamStartMs = System.currentTimeMillis()
+        val err = validateToolCall(spec, dargs)
+        if (err != null) {
+            messages.add(ChatItem.Assistant(id = aid, text = "⚠ ${spec.name}: $err — not run", model = "tools"))
+            stampTook(aid)
+            persist()
+            coroutineScope.launch { scrollToBottomIfNear() }
+            return true
+        }
+        if (spec.tier == "T3") {
+            messages.add(ChatItem.Assistant(id = aid, text = "⚠ ${spec.name} is disabled (T3) — not run", model = "tools"))
+            stampTook(aid)
+            persist()
+            coroutineScope.launch { scrollToBottomIfNear() }
+            return true
+        }
+        if (spec.tier == "T2") {
+            val summary = summarizeArgs(spec, dargs)
+            messages.add(
+                ChatItem.Assistant(
+                    id = aid,
+                    text = "${spec.name}: $summary",
+                    model = "tools",
+                    pendingTool = PendingTool(spec.name, dargs.toString(), summary)
+                )
+            )
+            stampTook(aid)
+            persist()
+            coroutineScope.launch { scrollToBottomIfNear() }
+            return true
+        }
+        messages.add(ChatItem.Assistant(id = aid, text = "Running ${spec.name}…", model = "tools"))
+        isGenerating = true
+        coroutineScope.launch {
+            val t0 = System.currentTimeMillis()
+            val res = try {
+                executePhoneTool(context, spec, dargs)
+            } catch (e: Exception) {
+                ExecResult(false, "failed (${e.message})")
+            }
+            val i = messages.indexOfFirst { (it as? ChatItem.Assistant)?.id == aid }
+            if (i >= 0) {
+                val line = (if (res.ok) "✓ " else "⚠ ") + "${spec.name}: ${res.text}"
+                messages[i] = (messages[i] as ChatItem.Assistant).copy(
+                    text = line,
+                    toolCall = "${spec.name} · ${System.currentTimeMillis() - t0}ms"
+                )
+            }
+            isGenerating = false
+            stampTook(aid)
+            persist()
+            scrollToBottomIfNear()
+        }
+        return true
+    }
+
+    /** Lists a user message and starts the assistant turn for it. */
+    fun sendNow(userText: String, sentAttachments: List<Attachment>, displayText: String = userText) {
+        val newId = System.currentTimeMillis().toString()
+        val body = displayText.ifBlank { sentAttachments.joinToString(", ") { it.name } }
         messages.add(ChatItem.User(id = "user_$newId", text = body, attachments = sentAttachments, tokens = body.length / 4))
         StyleMemory.bumpMessageCount(context)
         // Model answers (fresh sends, edited resends, regenerates) run here.
@@ -1614,27 +1683,15 @@ fun ChatScreen(
                 onValueChange = { input = it },
                 onSend = {
                 val rawText = input.trim()
-                // "/tool args" expands to an explicit tool instruction.
-                val m = Regex("^/([A-Za-z_][A-Za-z0-9_]*)\\s*(.*)$", RegexOption.DOT_MATCHES_ALL)
-                    .matchEntire(rawText)
-                val userText = if (m != null) {
-                    val spec = ToolSpecs.byName(context, m.groupValues[1])
-                    if (spec == null) rawText
-                    else {
-                        val rest = m.groupValues[2].trim()
-                        val req = spec.args.filter { it.required }.joinToString(", ") { it.name }
-                        "Use the \"${spec.name}\" tool now (${spec.desc}" +
-                            (if (req.isNotBlank()) ". Required arguments: $req" else "") + ")." +
-                            if (rest.isNotBlank()) " Request: $rest"
-                            else " Proceed with sensible defaults, or ask for the missing detail."
-                    }
-                } else rawText
-                if (userText.isNotBlank() || attachments.isNotEmpty()) {
+                if (rawText.isNotBlank() || attachments.isNotEmpty()) {
                     input = ""
                     val sentAttachments = attachments
                     attachments = emptyList()
-                    // Model answers (fresh sends, edited resends, regenerates) run here.
-                    sendNow(userText, sentAttachments)
+                    // Deterministic tool routing first (no model, no API);
+                    // anything needing judgment falls through to the AI route.
+                    if (!(sentAttachments.isEmpty() && tryDirectToolTurn(rawText))) {
+                        sendNow(expandSlash(context, rawText), sentAttachments, displayText = rawText)
+                    }
                 }
             },
             onAttachClick = { showAttachmentSheet = true },

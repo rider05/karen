@@ -24,6 +24,15 @@ object TtsManager {
     private var ready = false
     private var pending: Triple<Context, String, String>? = null
 
+    // Realtime stream state: sentences speak as they complete.
+    private var streamPending = 0
+    private var streamClosed = true
+    private var streamSpokenLen = 0
+    private var streamLatest = ""
+    private var streamPersona = "Juniper"
+    private var streamCtx: Context? = null
+    private var streamDone: (() -> Unit)? = null
+
     private val mainHandler by lazy { android.os.Handler(android.os.Looper.getMainLooper()) }
 
     private fun onMain(fn: () -> Unit) {
@@ -38,6 +47,21 @@ object TtsManager {
         "Breeze" -> 1.05f to 1.12f
         "Ember" -> 0.85f to 0.9f
         else -> 1.0f to 1.0f // Juniper
+    }
+
+    private fun applyProsody(engine: TextToSpeech, ctx: Context, persona: String) {
+        val (pitch, rate) = personaProsody(persona)
+        try {
+            val locale = Locale.getDefault()
+            if (engine.isLanguageAvailable(locale) >= TextToSpeech.LANG_AVAILABLE) {
+                engine.language = locale
+            } else {
+                engine.language = Locale.US
+            }
+        } catch (_: Exception) {
+        }
+        engine.setPitch(pitch)
+        engine.setSpeechRate(rate)
     }
 
     private fun ensure(ctx: Context, onReady: () -> Unit) {
@@ -72,23 +96,38 @@ object TtsManager {
 
                 override fun onDone(utteranceId: String?) {
                     onMain {
-                        speaking = false
-                        speakingText = null
+                        if (utteranceId?.startsWith("karen_stream_") == true) {
+                            streamPending = (streamPending - 1).coerceAtLeast(0)
+                            checkStreamDone()
+                        } else {
+                            speaking = false
+                            speakingText = null
+                        }
                     }
                 }
 
                 @Deprecated("Deprecated in Java")
                 override fun onError(utteranceId: String?) {
                     onMain {
-                        speaking = false
-                        speakingText = null
+                        if (utteranceId?.startsWith("karen_stream_") == true) {
+                            streamPending = (streamPending - 1).coerceAtLeast(0)
+                            checkStreamDone()
+                        } else {
+                            speaking = false
+                            speakingText = null
+                        }
                     }
                 }
 
                 override fun onError(utteranceId: String?, errorCode: Int) {
                     onMain {
-                        speaking = false
-                        speakingText = null
+                        if (utteranceId?.startsWith("karen_stream_") == true) {
+                            streamPending = (streamPending - 1).coerceAtLeast(0)
+                            checkStreamDone()
+                        } else {
+                            speaking = false
+                            speakingText = null
+                        }
                     }
                 }
             })
@@ -106,18 +145,7 @@ object TtsManager {
         }
         ensure(ctx) {
             val engine = tts ?: return@ensure
-            val (pitch, rate) = personaProsody(persona)
-            try {
-                val locale = Locale.getDefault()
-                if (engine.isLanguageAvailable(locale) >= TextToSpeech.LANG_AVAILABLE) {
-                    engine.language = locale
-                } else {
-                    engine.language = Locale.US
-                }
-            } catch (_: Exception) {
-            }
-            engine.setPitch(pitch)
-            engine.setSpeechRate(rate)
+            applyProsody(engine, ctx, persona)
             speakingText = clean
             speaking = true
             engine.speak(clean.take(2000), TextToSpeech.QUEUE_FLUSH, null, UUID.randomUUID().toString())
@@ -126,6 +154,99 @@ object TtsManager {
         if (!ready) {
             pending = Triple(ctx.applicationContext, clean, persona)
             speakingText = clean
+        }
+    }
+
+    /** Pre-warms the engine so the first streamed sentence has no init lag. */
+    fun warmup(ctx: Context) {
+        ensure(ctx) {
+            if (!streamClosed && streamCtx != null) pumpStream()
+        }
+    }
+
+    // ---- Realtime sentence streaming ----
+
+    /** Starts a stream: completed sentences speak as tokens arrive. */
+    fun startStream(ctx: Context, persona: String = "Juniper", onDone: (() -> Unit)? = null) {
+        stop()
+        streamCtx = ctx.applicationContext
+        streamPersona = persona
+        streamPending = 0
+        streamSpokenLen = 0
+        streamLatest = ""
+        streamClosed = false
+        streamDone = onDone
+        speaking = true
+        ensure(ctx) {
+            pumpStream()
+        }
+    }
+
+    /** Feeds the latest full text; newly completed sentences are spoken. */
+    fun pushStream(fullText: String) {
+        streamLatest = fullText
+        onMain { pumpStream() }
+    }
+
+    /** Speaks whatever is left and closes the stream. */
+    fun endStream(fullText: String) {
+        streamLatest = fullText
+        streamClosed = true
+        onMain {
+            pumpStream()
+            val rest = streamLatest.substring(streamSpokenLen.coerceIn(0, streamLatest.length)).trim()
+            val ctx = streamCtx
+            if (rest.isNotBlank() && ctx != null) {
+                if (ready) speakChunkNow(ctx, rest)
+                else speak(ctx, rest, streamPersona)
+            } else {
+                checkStreamDone()
+            }
+            streamSpokenLen = streamLatest.length
+        }
+    }
+
+    private fun pumpStream() {
+        val ctx = streamCtx ?: return
+        if (!ready || streamClosed) return
+        val text = streamLatest
+        var end = -1
+        var idx = streamSpokenLen.coerceIn(0, text.length)
+        while (idx < text.length) {
+            val c = text[idx]
+            val boundary = c == '!' || c == '?' || c == '\n' ||
+                (c == '.' && (idx + 1 >= text.length || text[idx + 1].isWhitespace()))
+            if (boundary && idx + 1 - streamSpokenLen >= 12) end = idx + 1
+            idx++
+        }
+        if (end > streamSpokenLen) {
+            val chunk = text.substring(streamSpokenLen, end).trim()
+            streamSpokenLen = end
+            if (chunk.isNotBlank()) speakChunkNow(ctx, chunk)
+        }
+    }
+
+    private fun speakChunkNow(ctx: Context, chunk: String) {
+        val engine = tts ?: return
+        try {
+            applyProsody(engine, ctx, streamPersona)
+            speakingText = chunk
+            speaking = true
+            val id = "karen_stream_${streamPending}"
+            streamPending++
+            engine.speak(chunk.take(1200), TextToSpeech.QUEUE_ADD, null, id)
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun checkStreamDone() {
+        if (streamClosed && streamPending <= 0) {
+            speaking = false
+            speakingText = null
+            streamCtx = null
+            val cb = streamDone
+            streamDone = null
+            cb?.invoke()
         }
     }
 
@@ -140,6 +261,12 @@ object TtsManager {
         } catch (_: Exception) {
         }
         pending = null
+        streamPending = 0
+        streamClosed = true
+        streamSpokenLen = 0
+        streamLatest = ""
+        streamCtx = null
+        streamDone = null
         speaking = false
         speakingText = null
     }

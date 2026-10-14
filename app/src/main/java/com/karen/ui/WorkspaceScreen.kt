@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.foundation.shape.CircleShape
@@ -219,6 +220,37 @@ private fun stripWrappingFence(content: String): String {
 }
 
 private val SCAFFOLD_DIR_RENAME = mapOf("lib/main/java" to "src/main/java")
+
+/**
+ * Reply prose for chat: file blocks and fenced code stay in the Code tab,
+ * so the thread shows the summary/thinking only. Empty when code-only.
+ */
+internal fun stripCodeForChat(text: String): String {
+    var out = text
+    // 1. ///FILE blocks (to ///END, the next header, or end of text).
+    val matches = SCAFFOLD_HEADER.findAll(out).toList()
+    if (matches.isNotEmpty()) {
+        val sb = StringBuilder()
+        var pos = 0
+        matches.forEachIndexed { idx, m ->
+            sb.append(out.substring(pos, m.range.first))
+            val nextStart = matches.getOrNull(idx + 1)?.range?.first ?: out.length
+            val endMark = SCAFFOLD_END.find(out, m.range.last + 1)
+            pos = if (endMark != null && endMark.range.first < nextStart) {
+                endMark.range.last + 1
+            } else {
+                nextStart
+            }
+        }
+        if (pos < out.length) sb.append(out.substring(pos))
+        out = sb.toString()
+    }
+    // 2. Fenced code blocks.
+    out = Regex("```[\\s\\S]*?```").replace(out, "")
+    // 3. Tidy leftover blank runs.
+    return out.lines().map { it.trimEnd() }.joinToString("\n")
+        .replace(Regex("\n{3,}"), "\n\n").trim()
+}
 
 internal fun safeScaffoldPath(project: Project, relPath: String): File? {
     var clean = relPath.trim().replace('\\', '/').removePrefix("./")
@@ -437,6 +469,53 @@ private fun isTruncatedScaffold(reply: String): Boolean {
  * asked to continue where it left off — up to [MAX_SCAFFOLD_CHUNKS] chunks —
  * each chunk written to disk immediately so partial progress survives.
  */
+/** One workspace model call (cloud or local) shared by scaffold + fix rounds. */
+private suspend fun callWorkspaceModel(
+    cloud: CloudProvider?,
+    cloudKey: String,
+    weightFile: File?,
+    effort: String,
+    threads: Int,
+    selectedModelName: String,
+    windowTokens: Int,
+    modelOverride: String?,
+    system: String,
+    history: List<Pair<String, String>>
+): String? {
+    if (cloud != null && cloudKey.isNotBlank()) {
+        return cloud.complete(
+            cloudKey,
+            history,
+            maxTokensFor(effort),
+            thinkingBudget = if (cloud.reasoning) thinkingBudgetFor(effort) else null,
+            historyLimit = historyTurnsFor(windowTokens),
+            model = modelOverride
+        )
+    }
+    if (weightFile != null && KarenLlama.ready) {
+        val ok = withContext(Dispatchers.IO) {
+            KarenLlama.ensureLoaded(weightFile, selectedModelName, windowTokens, threads)
+        }
+        if (!ok) return null
+        val withSystem = buildList {
+            add("user" to "System: $system")
+            addAll(history)
+        }
+        return withContext(Dispatchers.IO) {
+            KarenLlama.complete(
+                system,
+                withSystem.map { it.first }.toTypedArray(),
+                withSystem.map { it.second }.toTypedArray(),
+                maxTokensFor(effort)
+            )
+        }
+    }
+    return null
+}
+
+/** Fix rounds per build turn: scaffold once, then repair until clean. */
+private const val MAX_AGENT_FIXES = 3
+
 private suspend fun scaffoldWithModel(
     project: Project,
     userText: String,
@@ -464,37 +543,11 @@ private suspend fun scaffoldWithModel(
     val tree = withContext(Dispatchers.IO) { projectTreeSummary(projectRootDir(project)) }
     val firstAsk = "Existing project structure:\n$tree\n\nRequest: $userText"
 
-    suspend fun callModel(history: List<Pair<String, String>>): String? {
-        if (cloud != null && cloudKey.isNotBlank()) {
-            return cloud.complete(
-                cloudKey,
-                history,
-                maxTokensFor(effort),
-                thinkingBudget = if (cloud.reasoning) thinkingBudgetFor(effort) else null,
-                historyLimit = historyTurnsFor(windowTokens),
-                model = modelOverride
-            )
-        }
-        if (weightFile != null && KarenLlama.ready) {
-            val ok = withContext(Dispatchers.IO) {
-                KarenLlama.ensureLoaded(weightFile, selectedModelName, windowTokens, threads)
-            }
-            if (!ok) return null
-            val withSystem = buildList {
-                add("user" to "System: $system")
-                addAll(history)
-            }
-            return withContext(Dispatchers.IO) {
-                KarenLlama.complete(
-                    system,
-                    withSystem.map { it.first }.toTypedArray(),
-                    withSystem.map { it.second }.toTypedArray(),
-                    maxTokensFor(effort)
-                )
-            }
-        }
-        return null
-    }
+    suspend fun callModel(history: List<Pair<String, String>>): String? =
+        callWorkspaceModel(
+            cloud, cloudKey, weightFile, effort, threads,
+            selectedModelName, windowTokens, modelOverride, system, history
+        )
 
     var reply = callModel(listOf("user" to firstAsk)) ?: return "No model available to scaffold."
     val allFiles = linkedMapOf<String, String>()
@@ -781,6 +834,8 @@ private fun SessionListSheet(
     onDismiss: () -> Unit
 ) {
     val colors = LocalKarenColors.current
+    var renamingId by remember { mutableStateOf<String?>(null) }
+    var renameText by remember { mutableStateOf("") }
     val rows = remember(project.sessionTick.value) {
         val all = project.sessionStore.entries.sortedBy { it.value.createdAt }.map { it.key to it.value }
         // The live (never-stashed) session has no entry yet: show it too.
@@ -866,9 +921,54 @@ private fun SessionListSheet(
                             Icon(Icons.Default.DeleteOutline, contentDescription = "Delete session", tint = colors.textMuted, modifier = Modifier.size(16.dp))
                         }
                     }
+                    IconButton(
+                        onClick = {
+                            renamingId = id
+                            renameText = snap.title
+                        },
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(Icons.Default.Edit, contentDescription = "Rename session", tint = colors.textMuted, modifier = Modifier.size(16.dp))
+                    }
                 }
             }
             Spacer(Modifier.height(24.dp))
+        }
+        val renaming = renamingId
+        if (renaming != null) {
+            AlertDialog(
+                onDismissRequest = { renamingId = null },
+                containerColor = colors.surface,
+                titleContentColor = colors.textPrimary,
+                textContentColor = colors.textSecondary,
+                title = { Text("Rename session") },
+                text = {
+                    OutlinedTextField(
+                        value = renameText,
+                        onValueChange = { renameText = it.take(40) },
+                        label = { Text("Session name", color = colors.textMuted) },
+                        singleLine = true,
+                        textStyle = androidx.compose.ui.text.TextStyle(color = colors.textPrimary),
+                        colors = karenFieldColors(colors),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        val clean = renameText.trim().take(40)
+                        if (clean.isNotBlank()) {
+                            stashSession(project)
+                            project.sessionStore[renaming]?.let { it.title = clean }
+                            saveProjectState(project)
+                            project.sessionTick.value = System.currentTimeMillis()
+                        }
+                        renamingId = null
+                    }) { Text("Save", color = colors.accentGreen) }
+                },
+                dismissButton = {
+                    TextButton(onClick = { renamingId = null }) { Text("Cancel", color = colors.textMuted) }
+                }
+            )
         }
     }
 }
@@ -999,6 +1099,8 @@ fun WorkspaceScreen(
             fun note(s: String) {
                 turnNotes.add(s)
             }
+            /** Code-stripped answer prose for the thread (first one wins). */
+            var answerProse: String? = null
             /** Assistant replies stamp how long they took to appear. */
             fun addAssistant(text: String) {
                 directPost = true
@@ -1006,8 +1108,11 @@ fun WorkspaceScreen(
             }
             /** One summary of what the turn did + the steps involved. */
             fun postTurnSummary(toolName: String, modelName: String) {
-                if (turnNotes.isEmpty() || directPost) return
-                val sb = StringBuilder("Ran $toolName via $modelName.")
+                if (directPost) return
+                if (turnNotes.isEmpty() && answerProse == null) return
+                val sb = StringBuilder()
+                answerProse?.let { sb.append(it.trim()).append("\n\n---\n") }
+                sb.append("Ran $toolName via $modelName.")
                 turnNotes.forEach { sb.append("\n• $it") }
                 if (project.steps.isNotEmpty()) {
                     sb.append("\nSteps involved:")
@@ -1028,6 +1133,10 @@ fun WorkspaceScreen(
             val dir = projectRootDir(project)
             // Tool routing: one decision drives scaffold / checks / web / chat.
             val tool = routeTool(t)
+            /** Marks a plan step done (steps rebuild every turn). */
+            fun markStep(i: Int) {
+                if (i in project.steps.indices) project.steps[i] = project.steps[i].copy(done = true)
+            }
             // Helper: apply ///FILE blocks from any model reply so follow-up
             // prompts continue the same structure instead of starting over.
             // Returns a summary line for the turn notes (null = no files).
@@ -1037,6 +1146,17 @@ fun WorkspaceScreen(
                 val summary = withContext(Dispatchers.IO) { writeScaffoldFiles(project, files) }
                 project.filesVersion = System.currentTimeMillis()
                 return "Applied to ${project.name}: $summary\n${filesSummary(files)}"
+            }
+            /** Files land in the Code tab; the thread keeps prose + notes. */
+            suspend fun recordReply(reply: String) {
+                val applied = applyModelFiles(reply)
+                if (applied != null) note(applied)
+                if (answerProse == null) {
+                    stripCodeForChat(reply).takeIf { it.isNotBlank() }?.let {
+                        answerProse = it.take(2000)
+                    }
+                }
+                if (applied == null && answerProse == null) note("Answered directly — no file changes.")
             }
             // 3. SCAFFOLD tool: the model writes a full multi-file scaffold
             //    into the project. Files land on real paths.
@@ -1050,18 +1170,82 @@ fun WorkspaceScreen(
                     val threads = maxOf(2, minOf(6, Runtime.getRuntime().availableProcessors()))
                     val cloudScaffold = findCloudProviderByName(sendModel, customs)
                     val cwCloudKey = cloudScaffold?.let { UserPrefs.apiKey(ctx, it.id) }.orEmpty()
+                    val windowTokens = UserPrefs.contextTokens(ctx)
+                    val modelOverride = cloudScaffold?.let { UserPrefs.apiModel(ctx, it.id) }.orEmpty().ifBlank { null }
+                    val weightForCalls = ModelDownloader.weightFileFor(ctx, sendModel)
+                    markStep(0)
+                    markStep(1)
                     val scaffoldMsg = scaffoldWithModel(
                         project, t, cloudScaffold, cwCloudKey,
-                        weightFile = ModelDownloader.weightFileFor(ctx, sendModel),
+                        weightFile = weightForCalls,
                         effort = effort, threads = threads,
                         selectedModelName = sendModel,
-                        windowTokens = UserPrefs.contextTokens(ctx),
-                        modelOverride = cloudScaffold?.let { UserPrefs.apiModel(ctx, it.id) }.orEmpty().ifBlank { null },
+                        windowTokens = windowTokens,
+                        modelOverride = modelOverride,
                         sendStartMs = sendStartMs,
                         quiet = true
                     )
                     note("Scaffold: $scaffoldMsg")
                     project.filesVersion = System.currentTimeMillis()
+                    markStep(2)
+                    // Agent loop: verify on disk + checks, repair until clean
+                    // or the fix budget runs out. Each round lands in the
+                    // Terminal tab; the thread gets one verdict line.
+                    var fixes = 0
+                    var clean = false
+                    while (!cancelChat) {
+                        val checkOut = compileAndTest(dir)
+                        project.terminalLog.add("[agent] verify${if (fixes > 0) " after fix $fixes" else ""}\n$checkOut")
+                        val diskOk = withContext(Dispatchers.IO) {
+                            try {
+                                val fs = listProjectEntries(dir, 200).filter { it.isFile }
+                                fs.isNotEmpty() && fs.all { it.length() > 0 }
+                            } catch (_: Exception) {
+                                false
+                            }
+                        }
+                        clean = !checkOut.startsWith("Error") && "FAIL" !in checkOut && diskOk
+                        if (clean || fixes >= MAX_AGENT_FIXES) break
+                        fixes++
+                        if (cancelChat) break
+                        project.steps.add(ProjectStep("Fix issues (round $fixes)", false))
+                        val tree = withContext(Dispatchers.IO) { projectTreeSummary(dir) }
+                        val fixReply = callWorkspaceModel(
+                            cloudScaffold, cwCloudKey, weightForCalls, effort, threads,
+                            sendModel, windowTokens, modelOverride,
+                            "You are a code repair engine for Karen Workspace. Reply using this exact format:\n" +
+                                "///FILE: relative/path/File.ext\n<complete file content>\n///END\n" +
+                                "Rules: output ONLY corrected files as complete blocks (up to 8, no fences, no prose).",
+                            listOf(
+                                "user" to "The build has these problems:\n${checkOut.take(3000)}\n\n" +
+                                    (if (!diskOk) "Some files are missing or empty — rewrite them completely.\n" else "") +
+                                    "Existing project structure:\n$tree\n\n" +
+                                    "Original request: $t"
+                            )
+                        )
+                        if (cancelChat) break
+                        if (fixReply.isNullOrBlank()) {
+                            note("Agent: fix round $fixes returned nothing.")
+                            break
+                        }
+                        val fixed = parseScaffold(fixReply)
+                        if (fixed.isEmpty()) {
+                            note("Agent: fix round $fixes produced no files.")
+                            break
+                        }
+                        val fixSummary = withContext(Dispatchers.IO) { writeScaffoldFiles(project, fixed) }
+                        project.filesVersion = System.currentTimeMillis()
+                        project.terminalLog.add("[agent] fix round $fixes applied: $fixSummary")
+                        project.steps[project.steps.lastIndex] =
+                            project.steps.last().copy(done = true)
+                    }
+                    markStep(3)
+                    markStep(4)
+                    if (clean) {
+                        note("Agent: build verified clean${if (fixes > 0) " after $fixes fix round(s)" else ""}.")
+                    } else if (!cancelChat) {
+                        note("Agent: stopped after $fixes fix round(s) — issues remain, see Terminal.")
+                    }
                 }
             }
             // Stop checkpoint: abandon the turn without further work.
@@ -1159,7 +1343,7 @@ fun WorkspaceScreen(
                         chatBusy = false
                         return@launch
                     }
-                    note(applyModelFiles(reply) ?: "Answered directly — no file changes.")
+                    recordReply(reply)
                 } catch (e: CloudApiException) {
                     addAssistant("⚠ ${cloud.name} error (HTTP ${e.status}): ${e.message}")
                 } catch (e: Exception) {
@@ -1210,7 +1394,7 @@ fun WorkspaceScreen(
                                 return@launch
                             }
                             if (reply.isNotBlank()) {
-                                note(applyModelFiles(reply) ?: "Answered directly — no file changes.")
+                                recordReply(reply)
                             } else {
                                 addAssistant("The model returned an empty reply.")
                             }
@@ -1550,37 +1734,44 @@ fun WorkspaceScreen(
                 Icon(Icons.Default.ArrowBack, contentDescription = "Projects", tint = colors.textPrimary)
             }
             Column(Modifier.weight(1f)) {
-                Text(project.name, color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold)
-                Text(project.dir, color = colors.textMuted, fontSize = 10.5.sp, fontFamily = FontFamily.Monospace, maxLines = 1)
-            }
-            Text(
-                headerStats ?: "No runs yet",
-                color = if (headerStats != null) colors.accentGreen else colors.textMuted,
-                fontSize = 11.5.sp,
-                fontFamily = FontFamily.Monospace,
-                fontWeight = FontWeight.Bold
-            )
-            TextButton(
-                onClick = { showSessions = true },
-                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
-            ) {
-                val sessionCount = remember(project.sessionTick.value) {
-                    project.sessionStore.size +
-                        (if (project.activeSessionId in project.sessionStore) 0 else 1)
+                Text(project.name, color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                Text(project.dir, color = colors.textMuted, fontSize = 10.5.sp, fontFamily = FontFamily.Monospace, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                Spacer(Modifier.height(4.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        headerStats ?: "No runs yet",
+                        color = if (headerStats != null) colors.accentGreen else colors.textMuted,
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    TextButton(
+                        onClick = { showSessions = true },
+                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                        val sessionCount = remember(project.sessionTick.value) {
+                            project.sessionStore.size +
+                                (if (project.activeSessionId in project.sessionStore) 0 else 1)
+                        }
+                        Text(
+                            "Sessions ($sessionCount)",
+                            color = colors.accentBlue,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 1
+                        )
+                    }
+                    TextButton(
+                        onClick = { confirmNewSession = true },
+                        enabled = !chatBusy,
+                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                        Text("New session", color = if (chatBusy) colors.textMuted else colors.accentGreen, fontSize = 11.sp, fontWeight = FontWeight.Medium, maxLines = 1)
+                    }
                 }
-                Text(
-                    "Sessions ($sessionCount)",
-                    color = colors.accentBlue,
-                    fontSize = 11.5.sp,
-                    fontWeight = FontWeight.Medium
-                )
-            }
-            TextButton(
-                onClick = { confirmNewSession = true },
-                enabled = !chatBusy,
-                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
-            ) {
-                Text("New session", color = if (chatBusy) colors.textMuted else colors.accentGreen, fontSize = 11.5.sp, fontWeight = FontWeight.Medium)
             }
         }
 
@@ -1773,11 +1964,13 @@ fun WorkspaceScreen(
             }
         }
 
-        // Artifact panel (fixed height, theme-aware)
+        // Artifact panel (flexible height, capped: the composer below must
+        // always stay visible, even with the keyboard open on short screens)
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(300.dp)
+                .weight(0.5f, fill = false)
+                .heightIn(max = 300.dp)
                 .padding(horizontal = 16.dp)
                 .clip(RoundedCornerShape(12.dp))
                 .background(colors.surface)
@@ -1804,7 +1997,19 @@ fun WorkspaceScreen(
                 value = chatInput,
                 onValueChange = { chatInput = it },
                 placeholder = { Text("Message about ${project.name}…", color = colors.textMuted) },
-                modifier = Modifier.weight(1f),
+                modifier = Modifier
+                    .weight(1f)
+                    .onFocusChanged { state ->
+                        if (state.isFocused) {
+                            scope.launch {
+                                try {
+                                    val total = chatThreadState.layoutInfo.totalItemsCount
+                                    if (total > 0) chatThreadState.scrollToItem(total - 1)
+                                } catch (_: Exception) {
+                                }
+                            }
+                        }
+                    },
                 singleLine = true,
                 textStyle = androidx.compose.ui.text.TextStyle(color = colors.textPrimary),
                 colors = karenFieldColors(colors)

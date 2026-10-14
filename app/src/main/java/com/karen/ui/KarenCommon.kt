@@ -161,7 +161,9 @@ fun ChatGPTTopAppBar(
     eyebrow: String = "Dialogue",
     temporaryChat: Boolean = false,
     onToggleTemporaryChat: () -> Unit = {},
-    showTemporaryChat: Boolean = false
+    showTemporaryChat: Boolean = false,
+    /** Slim header: small fixed top inset instead of the full status inset. */
+    compact: Boolean = false
 ) {
     val colors = LocalKarenColors.current
     var showMoreMenu by remember { mutableStateOf(false) }
@@ -172,8 +174,8 @@ fun ChatGPTTopAppBar(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(colors.background)
-                .statusBarsPadding()
-                .height(50.dp)
+                .then(if (compact) Modifier.padding(top = 6.dp) else Modifier.statusBarsPadding())
+                .height(if (compact) 44.dp else 50.dp)
                 .padding(start = 4.dp, end = 4.dp),
             contentAlignment = Alignment.Center
         ) {

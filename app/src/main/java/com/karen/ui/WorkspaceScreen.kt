@@ -1431,6 +1431,7 @@ fun WorkspaceScreen(
             onMenuClick = onOpenDrawer,
             onModelClick = { showModelSheet = true },
             onBackClick = onNavigateToHome,
+            compact = true,
             effort = if (isReasoningModel(if (autoRoute) (lastRouted ?: selectedModel) else selectedModel)) effort else null,
             efforts = listOf("Low", "Medium", "High", "Max", "Extreme", "XHigh"),
             onSelectEffort = { effort = it },

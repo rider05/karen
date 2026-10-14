@@ -102,6 +102,11 @@ fun FilesScreen(
     var refreshTick by remember { mutableStateOf(0L) }
     var previewFile by remember { mutableStateOf<File?>(null) }
     var pendingDelete by remember { mutableStateOf<File?>(null) }
+    var renamingFile by remember { mutableStateOf<File?>(null) }
+    var renameInput by remember { mutableStateOf("") }
+    var showNewNote by remember { mutableStateOf(false) }
+    var noteName by remember { mutableStateOf("") }
+    var noteContent by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
 
     /** Case-insensitive name filter for the vault lists below. */
@@ -194,11 +199,90 @@ fun FilesScreen(
         refreshTick = System.currentTimeMillis()
     }
 
+    /** Renames a vault file (same folder, dedupe by counter suffix). */
+    fun renameFile(f: File, newName: String) {
+        val clean = newName.trim().replace(Regex("[^A-Za-z0-9._-]"), "_").take(80)
+        if (clean.isBlank() || clean == f.name) return
+        if (!isDeletable(context, f)) {
+            toast("Only vault files can be renamed here")
+            return
+        }
+        try {
+            val dir = f.parentFile ?: return
+            val stem = clean.substringBeforeLast('.', clean)
+            val ext = clean.substringAfterLast('.', "")
+            val withExt = if (ext.isNotEmpty() && ext != clean) ".$ext" else ""
+            var dest = File(dir, clean)
+            var n = 2
+            while (dest.exists()) {
+                dest = File(dir, "$stem-$n$withExt")
+                n++
+            }
+            if (f.renameTo(dest)) toast("Renamed to ${dest.name}")
+            else toast("Rename failed")
+        } catch (_: Exception) {
+            toast("Rename failed")
+        }
+        refreshTick = System.currentTimeMillis()
+    }
+
+    /** Creates a new text note directly in the vault. */
+    fun createNote() {
+        val content = noteContent.trimEnd()
+        if (content.isBlank()) {
+            toast("Write something first")
+            return
+        }
+        try {
+            val dir = File(context.filesDir, "vault").apply { mkdirs() }
+            var base = noteName.trim().replace(Regex("[^A-Za-z0-9._-]"), "_").take(60).ifBlank { "note" }
+            if ('.' !in base) base += ".md"
+            var dest = File(dir, base)
+            var n = 2
+            while (dest.exists()) {
+                val stem = base.substringBeforeLast('.')
+                val ext = base.substringAfterLast('.', "")
+                dest = File(dir, "$stem-$n.$ext")
+                n++
+            }
+            dest.writeText(content)
+            noteName = ""
+            noteContent = ""
+            showNewNote = false
+            refreshTick = System.currentTimeMillis()
+            toast("${dest.name} saved to the vault")
+        } catch (_: Exception) {
+            toast("Could not save the note")
+        }
+    }
+
+    /** Shares a vault file with another app (view-only grant). */
+    fun shareFile(f: File) {
+        try {
+            if (!f.exists()) {
+                refreshTick = System.currentTimeMillis()
+                toast("File no longer exists")
+                return
+            }
+            val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", f)
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = context.contentResolver.getType(uri) ?: mimeFor(f.name)
+                putExtra(Intent.EXTRA_STREAM, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            context.startActivity(Intent.createChooser(intent, "Share ${f.name}"))
+        } catch (_: Exception) {
+            toast("Share failed")
+        }
+    }
+
     // System back: dismiss dialogs/sheet first, otherwise route to Home —
     // same in-app behaviour as the chat screen (never exits to phone home).
     KarenHomeBackHandler(onNavigateToHome = onNavigateToHome) {
         if (previewFile != null) { previewFile = null; true }
         else if (pendingDelete != null) { pendingDelete = null; true }
+        else if (renamingFile != null) { renamingFile = null; true }
+        else if (showNewNote) { showNewNote = false; true }
         else if (showVaultSheet) { showVaultSheet = false; true } else false
     }
 
@@ -214,6 +298,7 @@ fun FilesScreen(
             onModelClick = { showVaultSheet = true },
             moreActions = listOf(
                 Triple("Add File", Icons.Default.Add) { vaultPicker.launch(arrayOf("*/*")) },
+                Triple("New note", Icons.Default.NoteAdd) { showNewNote = true },
                 Triple("Sort: $sortMode", Icons.Default.Sort) {
                     sortMode = when (sortMode) {
                         "Newest" -> "Oldest"
@@ -374,6 +459,11 @@ fun FilesScreen(
                                 else -> Icons.AutoMirrored.Filled.InsertDriveFile
                             },
                             onOpen = { openFile(f) },
+                            onShare = { shareFile(f) },
+                            onRename = {
+                                renamingFile = f
+                                renameInput = f.name
+                            },
                             onDelete = { pendingDelete = f }
                         )
                     }
@@ -399,6 +489,11 @@ fun FilesScreen(
                             "${formatSize(f.length())} · ${java.text.DateFormat.getDateTimeInstance().format(java.util.Date(f.lastModified()))}",
                             Icons.Default.MenuBook,
                             onOpen = { openFile(f) },
+                            onShare = { shareFile(f) },
+                            onRename = {
+                                renamingFile = f
+                                renameInput = f.name
+                            },
                             onDelete = { pendingDelete = f }
                         )
                     }
@@ -436,6 +531,80 @@ fun FilesScreen(
                 },
                 dismissButton = {
                     TextButton(onClick = { pendingDelete = null }) { Text("Cancel") }
+                }
+            )
+        }
+
+        val renaming = renamingFile
+        if (renaming != null) {
+            AlertDialog(
+                onDismissRequest = { renamingFile = null },
+                containerColor = colors.surface,
+                titleContentColor = colors.textPrimary,
+                textContentColor = colors.textSecondary,
+                title = { Text("Rename file") },
+                text = {
+                    OutlinedTextField(
+                        value = renameInput,
+                        onValueChange = { renameInput = it.take(80) },
+                        label = { Text("File name", color = colors.textMuted) },
+                        singleLine = true,
+                        textStyle = androidx.compose.ui.text.TextStyle(
+                            color = colors.textPrimary,
+                            fontFamily = FontFamily.Monospace
+                        ),
+                        colors = karenFieldColors(colors),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        renamingFile = null
+                        renameFile(renaming, renameInput)
+                    }) { Text("Rename", color = colors.accentGreen) }
+                },
+                dismissButton = {
+                    TextButton(onClick = { renamingFile = null }) { Text("Cancel") }
+                }
+            )
+        }
+
+        if (showNewNote) {
+            AlertDialog(
+                onDismissRequest = { showNewNote = false },
+                containerColor = colors.surface,
+                titleContentColor = colors.textPrimary,
+                textContentColor = colors.textSecondary,
+                title = { Text("New note") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        OutlinedTextField(
+                            value = noteName,
+                            onValueChange = { noteName = it.take(60) },
+                            label = { Text("Name (blank → note.md)", color = colors.textMuted) },
+                            singleLine = true,
+                            textStyle = androidx.compose.ui.text.TextStyle(
+                                color = colors.textPrimary,
+                                fontFamily = FontFamily.Monospace
+                            ),
+                            colors = karenFieldColors(colors),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = noteContent,
+                            onValueChange = { noteContent = it },
+                            label = { Text("Content", color = colors.textMuted) },
+                            textStyle = androidx.compose.ui.text.TextStyle(color = colors.textPrimary),
+                            colors = karenFieldColors(colors),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { createNote() }) { Text("Save", color = colors.accentGreen) }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showNewNote = false }) { Text("Cancel") }
                 }
             )
         }
@@ -552,6 +721,8 @@ private fun VaultFileRow(
     meta: String,
     icon: ImageVector,
     onOpen: () -> Unit = {},
+    onShare: () -> Unit = {},
+    onRename: () -> Unit = {},
     onDelete: (() -> Unit)? = null
 ) {
     val colors = LocalKarenColors.current
@@ -568,8 +739,21 @@ private fun VaultFileRow(
         Icon(icon, contentDescription = name, tint = colors.textSecondary, modifier = Modifier.size(20.dp))
         Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f)) {
-            Text(name, color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
-            Text(meta, color = colors.textMuted, fontSize = 11.5.sp)
+            Text(
+                name,
+                color = colors.textPrimary,
+                fontSize = 13.5.sp,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+            )
+            Text(meta, color = colors.textMuted, fontSize = 11.5.sp, maxLines = 1)
+        }
+        IconButton(onClick = onShare, modifier = Modifier.size(32.dp)) {
+            Icon(Icons.Default.Share, contentDescription = "Share $name", tint = colors.textMuted, modifier = Modifier.size(16.dp))
+        }
+        IconButton(onClick = onRename, modifier = Modifier.size(32.dp)) {
+            Icon(Icons.Default.Edit, contentDescription = "Rename $name", tint = colors.textMuted, modifier = Modifier.size(16.dp))
         }
         if (onDelete != null) {
             IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {

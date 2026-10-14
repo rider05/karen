@@ -211,8 +211,7 @@ fun FilesScreen(
             onBackClick = onNavigateToHome,
             onModelClick = { showVaultSheet = true },
             moreActions = listOf(
-                Triple("Refresh", Icons.Default.Refresh) { refreshTick = System.currentTimeMillis() },
-                Triple("Open in Study Book", Icons.Default.MenuBook) { onNavigate("StudyBook") }
+                Triple("Refresh", Icons.Default.Refresh) { refreshTick = System.currentTimeMillis() }
             )
         )
 
@@ -267,7 +266,7 @@ fun FilesScreen(
                 }
             }
 
-            // Top Match / Active RAG Item
+            // Latest file card
             item {
                 OutlinedTextField(
                     value = fileQuery,
@@ -293,7 +292,7 @@ fun FilesScreen(
                         .fillMaxWidth()
                         .padding(bottom = 10.dp)
                 )
-                Text("Active RAG Document", color = colors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                Text("Latest file", color = colors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(4.dp))
                 val topDoc = remember(allFiles) { allFiles.firstOrNull() }
                 Column(
@@ -311,7 +310,7 @@ fun FilesScreen(
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        topDoc?.let { "${formatSize(it.length())} · Modified ${java.text.DateFormat.getDateTimeInstance().format(java.util.Date(it.lastModified()))}" } ?: "Add files to the vault to enable on-device RAG.",
+                        topDoc?.let { "${formatSize(it.length())} · Modified ${java.text.DateFormat.getDateTimeInstance().format(java.util.Date(it.lastModified()))}" } ?: "Add files with Add File above.",
                         color = colors.textSecondary,
                         fontSize = 12.sp,
                         lineHeight = 17.sp
@@ -326,13 +325,6 @@ fun FilesScreen(
                             ) {
                                 Text("Open", fontSize = 11.5.sp)
                             }
-                        }
-                        OutlinedButton(
-                            onClick = { onNavigate("StudyBook") },
-                            shape = RoundedCornerShape(8.dp),
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
-                        ) {
-                            Text("Open in Study Book", fontSize = 11.5.sp)
                         }
                     }
                 }
@@ -352,7 +344,6 @@ fun FilesScreen(
                         )
                     }
                     files.forEach { f ->
-                        val isDoc = f.extension.lowercase() in listOf("pdf", "md", "txt")
                         VaultFileRow(
                             f.name,
                             "${formatSize(f.length())} · ${java.text.DateFormat.getDateTimeInstance().format(java.util.Date(f.lastModified()))}",
@@ -363,10 +354,6 @@ fun FilesScreen(
                                 "md", "txt", "pdf" -> Icons.Default.Description
                                 else -> Icons.AutoMirrored.Filled.InsertDriveFile
                             },
-                            primaryLabel = if (isDoc) "Study" else "Query",
-                            onPrimary = { onNavigate(if (isDoc) "StudyBook" else "Chat") },
-                            secondaryLabel = if (isDoc) "Query" else "Canvas",
-                            onSecondary = { onNavigate(if (isDoc) "Chat" else "Workspace") },
                             onOpen = { openFile(f) },
                             onDelete = { pendingDelete = f }
                         )
@@ -382,7 +369,7 @@ fun FilesScreen(
                     val kvFiles = allFiles.filter { it.extension.lowercase() in listOf("pdf", "md", "txt") && matchesQuery(it) }
                     if (kvFiles.isEmpty()) {
                         Text(
-                            if (fileQuery.isBlank()) "Drop PDFs/notes into the vault to build your knowledge base" else "No matches for “${fileQuery.trim()}”",
+                            if (fileQuery.isBlank()) "Add PDFs or notes with Add File above" else "No matches for “${fileQuery.trim()}”",
                             color = colors.textMuted,
                             fontSize = 12.sp
                         )
@@ -392,10 +379,6 @@ fun FilesScreen(
                             f.name,
                             "${formatSize(f.length())} · ${java.text.DateFormat.getDateTimeInstance().format(java.util.Date(f.lastModified()))}",
                             Icons.Default.MenuBook,
-                            primaryLabel = "Study",
-                            onPrimary = { onNavigate("StudyBook") },
-                            secondaryLabel = "Query",
-                            onSecondary = { onNavigate("Chat") },
                             onOpen = { openFile(f) },
                             onDelete = { pendingDelete = f }
                         )
@@ -408,7 +391,9 @@ fun FilesScreen(
             VaultSelectorSheet(
                 selectedVault = selectedVault,
                 onSelectVault = { selectedVault = it },
-                onDismiss = { showVaultSheet = false }
+                onDismiss = { showVaultSheet = false },
+                knowledgeCount = allFiles.count { it.extension.lowercase() in listOf("pdf", "md", "txt") },
+                secureCount = allFiles.size
             )
         }
 
@@ -465,7 +450,9 @@ fun FilesScreen(
 private fun VaultSelectorSheet(
     selectedVault: String,
     onSelectVault: (String) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    knowledgeCount: Int = 0,
+    secureCount: Int = 0
 ) {
     val colors = LocalKarenColors.current
     ModalBottomSheet(
@@ -486,8 +473,8 @@ private fun VaultSelectorSheet(
                 modifier = Modifier.padding(top = 2.dp, bottom = 16.dp)
             )
             val vaults = listOf(
-                Triple("Knowledge Vault", "PDFs, notes & markdown embedded for on-device RAG", "Active"),
-                Triple("Secure Vault", "All indexed files in sovereign sandboxed storage", "Ready")
+                Triple("Knowledge Vault", "PDFs, notes and markdown stored on-device", "$knowledgeCount files"),
+                Triple("Secure Vault", "Every file in the vault and attachments", "$secureCount files")
             )
             vaults.forEach { (name, desc, badge) ->
                 val isSelected = selectedVault == name
@@ -542,10 +529,6 @@ private fun VaultFileRow(
     name: String,
     meta: String,
     icon: ImageVector,
-    primaryLabel: String? = null,
-    onPrimary: () -> Unit = {},
-    secondaryLabel: String? = null,
-    onSecondary: () -> Unit = {},
     onOpen: () -> Unit = {},
     onDelete: (() -> Unit)? = null
 ) {
@@ -565,18 +548,6 @@ private fun VaultFileRow(
         Column(Modifier.weight(1f)) {
             Text(name, color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
             Text(meta, color = colors.textMuted, fontSize = 11.5.sp)
-        }
-        if (primaryLabel != null) {
-            TextButton(
-                onClick = onPrimary,
-                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
-            ) { Text(primaryLabel, color = colors.accentGreen, fontSize = 11.5.sp, fontWeight = FontWeight.Medium) }
-        }
-        if (secondaryLabel != null) {
-            TextButton(
-                onClick = onSecondary,
-                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
-            ) { Text(secondaryLabel, color = colors.accentBlue, fontSize = 11.5.sp, fontWeight = FontWeight.Medium) }
         }
         if (onDelete != null) {
             IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {

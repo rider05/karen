@@ -85,7 +85,8 @@ private fun ModelSourceRow(
 
 @Composable
 fun ModelManagerScreen(
-    onOpenDrawer: () -> Unit = {}
+    onOpenDrawer: () -> Unit = {},
+    onNavigateToHome: () -> Unit = {}
 ) {
     val colors = LocalKarenColors.current
     val device = rememberDeviceTelemetry()
@@ -193,6 +194,18 @@ fun ModelManagerScreen(
     // Download catalog collapse: 3 cards by default.
     var catalogExpanded by remember { mutableStateOf(false) }
     var pendingDelete by remember { mutableStateOf<GgufModel?>(null) }
+
+    // System back: dismiss dialogs first, otherwise route to Home.
+    KarenHomeBackHandler(onNavigateToHome = onNavigateToHome) {
+        when {
+            showUrlDialog -> { showUrlDialog = false; true }
+            showApiDialog -> { showApiDialog = false; apiStep = 0; true }
+            showExportPw -> { showExportPw = false; true }
+            showImportPw -> { showImportPw = false; true }
+            pendingDelete != null -> { pendingDelete = null; true }
+            else -> false
+        }
+    }
 
     /** Removes a model: deletes its weight file(s) and unregisters it. */
     fun deleteModel(m: GgufModel) {
@@ -390,6 +403,7 @@ fun ModelManagerScreen(
         ChatGPTTopAppBar(
             selectedModel = "Local Models (GGUF)",
             onMenuClick = onOpenDrawer,
+            onBackClick = onNavigateToHome,
             moreActions = listOf(
                 Triple("Refresh lists", Icons.Default.Refresh) { refreshAll() },
                 Triple("Load model", Icons.Default.Upload) { android.widget.Toast.makeText(ctx, "Load model", android.widget.Toast.LENGTH_SHORT).show() },

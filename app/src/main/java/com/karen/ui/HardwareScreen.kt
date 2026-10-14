@@ -21,11 +21,14 @@ import com.karen.rememberDeviceTelemetry
 
 @Composable
 fun HardwareScreen(
-    onOpenDrawer: () -> Unit = {}
+    onOpenDrawer: () -> Unit = {},
+    onNavigateToHome: () -> Unit = {}
 ) {
     val colors = LocalKarenColors.current
     val device = rememberDeviceTelemetry()
     val ctx = androidx.compose.ui.platform.LocalContext.current
+
+    KarenHomeBackHandler(onNavigateToHome = onNavigateToHome)
 
     Column(
         modifier = Modifier
@@ -35,6 +38,7 @@ fun HardwareScreen(
         ChatGPTTopAppBar(
             selectedModel = "Hardware & Governance",
             onMenuClick = onOpenDrawer,
+            onBackClick = onNavigateToHome,
             moreActions = listOf(
                 Triple("Refresh sensors", Icons.Default.Refresh) { android.widget.Toast.makeText(ctx, "Sensors refreshed", android.widget.Toast.LENGTH_SHORT).show() },
                 Triple("Thermal report", Icons.Default.Whatshot) { android.widget.Toast.makeText(ctx, "Thermal report", android.widget.Toast.LENGTH_SHORT).show() },

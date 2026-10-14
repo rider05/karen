@@ -38,9 +38,11 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
     val context = LocalContext.current
     val currentMode = LocalKarenThemeMode.current
 
-    androidx.activity.compose.BackHandler(onBack = onBack)
-
     var editing by remember { mutableStateOf(false) }
+
+    KarenHomeBackHandler(onNavigateToHome = onBack) {
+        if (editing) { editing = false; true } else false
+    }
     var editName by remember(editing) { mutableStateOf(UserPrefs.name(context)) }
     var editAge by remember(editing) { mutableStateOf(UserPrefs.age(context).takeIf { it != "-" } ?: "") }
     var editType by remember(editing) { mutableStateOf(UserPrefs.type(context).takeIf { it != "-" } ?: "Personal") }
@@ -743,6 +745,76 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                             }) {
                                 Text("Allow", color = colors.accentGreen)
                             }
+                        }
+                    }
+                }
+            }
+
+            item {
+                Text("Calls", color = colors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(6.dp))
+                var callMode by remember { mutableStateOf(UserPrefs.callBehavior(context)) }
+                var callPermOk by remember {
+                    mutableStateOf(
+                        ContextCompat.checkSelfPermission(context, Manifest.permission.CALL_PHONE) ==
+                            PackageManager.PERMISSION_GRANTED
+                    )
+                }
+                val callPermLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.RequestPermission()
+                ) { granted ->
+                    callPermOk = granted
+                    if (!granted) {
+                        android.widget.Toast.makeText(context, "Without the phone permission, calls open the dialer", android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                }
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(colors.surface)
+                        .border(1.dp, colors.border, RoundedCornerShape(14.dp))
+                        .padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text("How /place_call runs", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf(
+                            UserPrefs.CALL_ASK to "Ask every time",
+                            UserPrefs.CALL_DIRECT to "Call directly",
+                            UserPrefs.CALL_DIALER to "Dialer only"
+                        ).forEach { (value, label) ->
+                            val selected = callMode == value
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(if (selected) colors.accentGreen.copy(alpha = 0.18f) else colors.surfaceHover)
+                                    .border(1.dp, if (selected) colors.accentGreen else colors.border, RoundedCornerShape(8.dp))
+                                    .clickable {
+                                        callMode = value
+                                        UserPrefs.setCallBehavior(context, value)
+                                    }
+                                    .padding(horizontal = 10.dp, vertical = 6.dp)
+                            ) {
+                                Text(label, color = if (selected) colors.accentGreen else colors.textPrimary, fontSize = 11.5.sp)
+                            }
+                        }
+                    }
+                    Text(
+                        when (callMode) {
+                            UserPrefs.CALL_DIRECT -> "Runs immediately after matching the contact. Needs the phone permission, or it opens the dialer."
+                            UserPrefs.CALL_DIALER -> "Always opens the dialer with the number filled — never places a call by itself."
+                            else -> "Matches the contact, then asks Run/Cancel every time. Default."
+                        },
+                        color = colors.textMuted,
+                        fontSize = 11.5.sp
+                    )
+                    if (callMode == UserPrefs.CALL_DIRECT && !callPermOk) {
+                        OutlinedButton(
+                            onClick = { callPermLauncher.launch(Manifest.permission.CALL_PHONE) },
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Text("Grant phone permission", fontSize = 12.sp)
                         }
                     }
                 }

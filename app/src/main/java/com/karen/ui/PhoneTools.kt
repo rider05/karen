@@ -72,6 +72,19 @@ data class PendingTool(
 data class ExecResult(val ok: Boolean, val text: String)
 
 /**
+ * True when a call runs without a confirmation card: T0/T1 always, plus
+ * place_call when the user chose direct or dialer-only in Settings.
+ */
+fun runsDirect(spec: ToolSpec, ctx: Context): Boolean {
+    if (spec.tier == "T0" || spec.tier == "T1") return true
+    if (spec.name == "place_call") {
+        val mode = UserPrefs.callBehavior(ctx)
+        if (mode == UserPrefs.CALL_DIRECT || mode == UserPrefs.CALL_DIALER) return true
+    }
+    return false
+}
+
+/**
  * "@file" vault mentions: fetches each named file's content so the model
  * answers from it in the same turn. Text reads direct; PDFs transcribe
  * through DocVision (needs a vision key). Unresolvable tokens stay as-is.
@@ -789,9 +802,11 @@ suspend fun executePhoneTool(ctx: Context, spec: ToolSpec, args: JSONObject): Ex
             if (number.length < 3) {
                 ExecResult(false, "no phone number to dial")
             } else {
-                // Confirmed in-app already: call directly when allowed,
-                // otherwise open the dialer as the safe fallback.
-                val canDirect = androidx.core.content.ContextCompat.checkSelfPermission(
+                // Confirmed in-app already (or user chose direct): call
+                // directly when allowed, otherwise open the dialer.
+                // Dialer-only setting never places a call by itself.
+                val mode = UserPrefs.callBehavior(ctx)
+                val canDirect = mode != UserPrefs.CALL_DIALER && androidx.core.content.ContextCompat.checkSelfPermission(
                     ctx, android.Manifest.permission.CALL_PHONE
                 ) == android.content.pm.PackageManager.PERMISSION_GRANTED
                 val action = if (canDirect) Intent.ACTION_CALL else Intent.ACTION_DIAL

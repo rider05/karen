@@ -60,11 +60,13 @@ private fun toast(ctx: android.content.Context, msg: String) {
 private fun ManagerHeader(
     title: String,
     onOpenDrawer: () -> Unit,
+    onNavigateToHome: () -> Unit = {},
     vararg actions: Triple<String, androidx.compose.ui.graphics.vector.ImageVector, () -> Unit>
 ) {
     ChatGPTTopAppBar(
         selectedModel = title,
         onMenuClick = onOpenDrawer,
+        onBackClick = onNavigateToHome,
         moreActions = actions.toList()
     )
 }
@@ -87,14 +89,15 @@ private fun StepRow(index: Int, label: String, done: Boolean) {
 // ---- §91.1 + §91.2 Local Model Import & Validation ----
 
 @Composable
-fun ModelImportScreen(onOpenDrawer: () -> Unit = {}) {
+fun ModelImportScreen(onOpenDrawer: () -> Unit = {}, onNavigateToHome: () -> Unit = {}) {
+    KarenHomeBackHandler(onNavigateToHome = onNavigateToHome)
     val ctx = LocalContext.current
     val colors = LocalKarenColors.current
     var pickedFile by remember { mutableStateOf<String?>(null) }
     var validating by remember { mutableStateOf(false) }
     var progress by remember { mutableStateOf(0.65f) }
 
-    Column { ManagerHeader("Model Import", onOpenDrawer) }
+    Column { ManagerHeader("Model Import", onOpenDrawer, onNavigateToHome) }
     KScreen(title = "Local Model Import", subtitle = "§91.1 · §91.2 — UI preview, no file access yet") {
         Section(title = "Source file") {
             KCard(
@@ -158,14 +161,15 @@ fun ModelImportScreen(onOpenDrawer: () -> Unit = {}) {
 // ---- §91.3 + §91.4 Portable Model Export + Metadata ----
 
 @Composable
-fun ModelExportScreen(onOpenDrawer: () -> Unit = {}) {
+fun ModelExportScreen(onOpenDrawer: () -> Unit = {}, onNavigateToHome: () -> Unit = {}) {
+    KarenHomeBackHandler(onNavigateToHome = onNavigateToHome)
     val ctx = LocalContext.current
     val colors = LocalKarenColors.current
     var exporting by remember { mutableStateOf(false) }
     var progress by remember { mutableStateOf(0.4f) }
     var includeMetadata by remember { mutableStateOf(true) }
 
-    Column { ManagerHeader("Model Export", onOpenDrawer) }
+    Column { ManagerHeader("Model Export", onOpenDrawer, onNavigateToHome) }
     KScreen(title = "Portable Model Export", subtitle = "§91.3 · §91.4 — UI preview") {
         Section(title = "Selected model") {
             KCard("Qwen3.5-2B-IQ4_XS.gguf", "1.1 GB · IQ4_XS · installed")
@@ -224,13 +228,14 @@ fun ModelExportScreen(onOpenDrawer: () -> Unit = {}) {
 // ---- §92 Memory Export & Import ----
 
 @Composable
-fun MemoryTransferScreen(onOpenDrawer: () -> Unit = {}) {
+fun MemoryTransferScreen(onOpenDrawer: () -> Unit = {}, onNavigateToHome: () -> Unit = {}) {
+    KarenHomeBackHandler(onNavigateToHome = onNavigateToHome)
     val ctx = LocalContext.current
     val colors = LocalKarenColors.current
     var encrypt by remember { mutableStateOf(true) }
     var mode by remember { mutableStateOf("Merge") }
 
-    Column { ManagerHeader("Memory Transfer", onOpenDrawer) }
+    Column { ManagerHeader("Memory Transfer", onOpenDrawer, onNavigateToHome) }
     KScreen(title = "Memory Export & Import", subtitle = "§92 — UI preview, nothing is written") {
         Section(title = "Export package (mock)") {
             KCard("memory.json", "142 approved memories · categories + timestamps")
@@ -287,12 +292,13 @@ fun MemoryTransferScreen(onOpenDrawer: () -> Unit = {}) {
 // ---- §93 Portable Backup Package ----
 
 @Composable
-fun BackupPackageScreen(onOpenDrawer: () -> Unit = {}) {
+fun BackupPackageScreen(onOpenDrawer: () -> Unit = {}, onNavigateToHome: () -> Unit = {}) {
+    KarenHomeBackHandler(onNavigateToHome = onNavigateToHome)
     val ctx = LocalContext.current
     val colors = LocalKarenColors.current
     var selectedMode by remember { mutableStateOf("Full") }
 
-    Column { ManagerHeader("Backup Package", onOpenDrawer) }
+    Column { ManagerHeader("Backup Package", onOpenDrawer, onNavigateToHome) }
     KScreen(title = "Portable Karen Backup", subtitle = "§93 — UI preview") {
         Section(title = "Backup mode") {
             listOf(
@@ -341,11 +347,12 @@ fun BackupPackageScreen(onOpenDrawer: () -> Unit = {}) {
 // ---- §94 Storage / File Manager ----
 
 @Composable
-fun StorageManagerScreen(onOpenDrawer: () -> Unit = {}) {
+fun StorageManagerScreen(onOpenDrawer: () -> Unit = {}, onNavigateToHome: () -> Unit = {}) {
+    KarenHomeBackHandler(onNavigateToHome = onNavigateToHome)
     val ctx = LocalContext.current
     val colors = LocalKarenColors.current
 
-    Column { ManagerHeader("Karen Storage", onOpenDrawer) }
+    Column { ManagerHeader("Karen Storage", onOpenDrawer, onNavigateToHome) }
     KScreen(title = "Storage & File Manager", subtitle = "§94 — UI preview, mock sizes") {
         Section(title = "Usage breakdown") {
             listOf(
@@ -392,12 +399,13 @@ fun StorageManagerScreen(onOpenDrawer: () -> Unit = {}) {
 // ---- §95 Offline Device-to-Device Migration ----
 
 @Composable
-fun MigrationScreen(onOpenDrawer: () -> Unit = {}) {
+fun MigrationScreen(onOpenDrawer: () -> Unit = {}, onNavigateToHome: () -> Unit = {}) {
+    KarenHomeBackHandler(onNavigateToHome = onNavigateToHome)
     val ctx = LocalContext.current
     val colors = LocalKarenColors.current
     var step by remember { mutableStateOf(2) }
 
-    Column { ManagerHeader("Device Migration", onOpenDrawer) }
+    Column { ManagerHeader("Device Migration", onOpenDrawer, onNavigateToHome) }
     KScreen(title = "Offline Migration", subtitle = "§95 — UI preview, no cloud account") {
         Section(title = "Checklist") {
             val steps = listOf(

@@ -159,7 +159,7 @@ fun KarenApp(startScreen: String = "Home") {
             // If in Voice mode, show immersive full screen without bottom bar
             if (currentScreen == "Voice") {
                 VoiceScreen(
-                    onClose = { currentScreen = "Chat" }
+                    onClose = { currentScreen = "Home" }
                 )
             } else {
                 Scaffold(
@@ -207,37 +207,48 @@ fun KarenApp(startScreen: String = "Home") {
                                 onNavigateToHome = { currentScreen = "Home" }
                             )
                             "Memory" -> MemoryScreen(
-                                onOpenDrawer = { coroutineScope.launch { drawerState.open() } }
+                                onOpenDrawer = { coroutineScope.launch { drawerState.open() } },
+                                onNavigateToHome = { currentScreen = "Home" }
                             )
                             "ModelManager" -> ModelManagerScreen(
-                                onOpenDrawer = { coroutineScope.launch { drawerState.open() } }
+                                onOpenDrawer = { coroutineScope.launch { drawerState.open() } },
+                                onNavigateToHome = { currentScreen = "Home" }
                             )
                             "Performance" -> PerformanceScreen(
-                                onOpenDrawer = { coroutineScope.launch { drawerState.open() } }
+                                onOpenDrawer = { coroutineScope.launch { drawerState.open() } },
+                                onNavigateToHome = { currentScreen = "Home" }
                             )
                             "Hardware" -> HardwareScreen(
-                                onOpenDrawer = { coroutineScope.launch { drawerState.open() } }
+                                onOpenDrawer = { coroutineScope.launch { drawerState.open() } },
+                                onNavigateToHome = { currentScreen = "Home" }
                             )
                             "StudyBook" -> StudyBookScreen(
-                                onOpenDrawer = { coroutineScope.launch { drawerState.open() } }
+                                onOpenDrawer = { coroutineScope.launch { drawerState.open() } },
+                                onNavigateToHome = { currentScreen = "Home" }
                             )
                             "ModelImport" -> ModelImportScreen(
-                                onOpenDrawer = { coroutineScope.launch { drawerState.open() } }
+                                onOpenDrawer = { coroutineScope.launch { drawerState.open() } },
+                                onNavigateToHome = { currentScreen = "Home" }
                             )
                             "ModelExport" -> ModelExportScreen(
-                                onOpenDrawer = { coroutineScope.launch { drawerState.open() } }
+                                onOpenDrawer = { coroutineScope.launch { drawerState.open() } },
+                                onNavigateToHome = { currentScreen = "Home" }
                             )
                             "MemoryTransfer" -> MemoryTransferScreen(
-                                onOpenDrawer = { coroutineScope.launch { drawerState.open() } }
+                                onOpenDrawer = { coroutineScope.launch { drawerState.open() } },
+                                onNavigateToHome = { currentScreen = "Home" }
                             )
                             "BackupPackage" -> BackupPackageScreen(
-                                onOpenDrawer = { coroutineScope.launch { drawerState.open() } }
+                                onOpenDrawer = { coroutineScope.launch { drawerState.open() } },
+                                onNavigateToHome = { currentScreen = "Home" }
                             )
                             "StorageManager" -> StorageManagerScreen(
-                                onOpenDrawer = { coroutineScope.launch { drawerState.open() } }
+                                onOpenDrawer = { coroutineScope.launch { drawerState.open() } },
+                                onNavigateToHome = { currentScreen = "Home" }
                             )
                             "Migration" -> MigrationScreen(
-                                onOpenDrawer = { coroutineScope.launch { drawerState.open() } }
+                                onOpenDrawer = { coroutineScope.launch { drawerState.open() } },
+                                onNavigateToHome = { currentScreen = "Home" }
                             )
                             else -> ChatScreen(
                                 onOpenDrawer = { coroutineScope.launch { drawerState.open() } },

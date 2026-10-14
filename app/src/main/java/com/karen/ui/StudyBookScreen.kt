@@ -30,7 +30,8 @@ data class FlashcardItem(
 
 @Composable
 fun StudyBookScreen(
-    onOpenDrawer: () -> Unit = {}
+    onOpenDrawer: () -> Unit = {},
+    onNavigateToHome: () -> Unit = {}
 ) {
     val colors = LocalKarenColors.current
     val device = rememberDeviceTelemetry()
@@ -43,6 +44,8 @@ fun StudyBookScreen(
     val card = flashcards.getOrNull(currentCardIndex)
     val ctx = androidx.compose.ui.platform.LocalContext.current
 
+    KarenHomeBackHandler(onNavigateToHome = onNavigateToHome)
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -51,6 +54,7 @@ fun StudyBookScreen(
         ChatGPTTopAppBar(
             selectedModel = "DBMS Study Companion",
             onMenuClick = onOpenDrawer,
+            onBackClick = onNavigateToHome,
             moreActions = listOf(
                 Triple("Flip card", Icons.Default.Refresh) { android.widget.Toast.makeText(ctx, "Flip card", android.widget.Toast.LENGTH_SHORT).show() },
                 Triple("Mark known", Icons.Default.Done) { android.widget.Toast.makeText(ctx, "Marked known", android.widget.Toast.LENGTH_SHORT).show() },

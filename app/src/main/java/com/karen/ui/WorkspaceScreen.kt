@@ -49,6 +49,15 @@ import kotlinx.coroutines.withContext
 data class ProjectChat(val role: String, val text: String, val tookMs: Long = 0L, val tokEst: Int = 0)
 data class ProjectTask(val text: String, val done: Boolean = false)
 data class ProjectStep(val text: String, val done: Boolean = false)
+
+/** One conversation inside a project: its own chat + terminal memory. */
+data class SessionSnapshot(
+    var title: String,
+    var createdAt: Long = System.currentTimeMillis(),
+    val chat: MutableList<ProjectChat> = mutableListOf(),
+    val terminal: MutableList<String> = mutableListOf()
+)
+
 data class Project(
     val name: String,
     val dir: String,
@@ -58,7 +67,13 @@ data class Project(
     var codeOld: String = "",
     var codeNew: String = "",
     val terminalLog: MutableList<String> = mutableStateListOf(),
-    var filesVersion: Long = 0L
+    var filesVersion: Long = 0L,
+    /** Active conversation; chat/terminal buffers mirror its snapshot. */
+    var activeSessionId: String = "s1",
+    /** Inactive conversations (active one lives in the buffers above). */
+    val sessionStore: MutableMap<String, SessionSnapshot> = mutableMapOf(),
+    /** Bumped on session switch/new/delete/rename to refresh the list UI. */
+    val sessionTick: MutableState<Long> = mutableStateOf(0L)
 )
 
 /** Token estimate (chars/4): neither inference path reports real counts. */
@@ -561,7 +576,136 @@ private fun dec(s: String): String = try {
     ""
 }
 
+/** Per-project conversations: stash/switch/new/delete with isolated memory. */
+
+private fun ensureSession(project: Project): SessionSnapshot =
+    project.sessionStore.getOrPut(project.activeSessionId) {
+        SessionSnapshot("Session ${project.sessionStore.size + 1}", System.currentTimeMillis())
+    }
+
+/** Copies the live buffers into the active session's snapshot. */
+private fun stashSession(project: Project) {
+    val e = ensureSession(project)
+    e.chat.clear()
+    e.chat.addAll(project.chat)
+    e.terminal.clear()
+    e.terminal.addAll(project.terminalLog)
+}
+
+private fun loadSnapshotInto(project: Project, e: SessionSnapshot) {
+    project.chat.clear()
+    project.chat.addAll(e.chat)
+    project.terminalLog.clear()
+    project.terminalLog.addAll(e.terminal)
+}
+
+fun switchProjectSession(project: Project, id: String) {
+    if (id == project.activeSessionId) return
+    stashSession(project)
+    project.activeSessionId = id
+    loadSnapshotInto(project, ensureSession(project))
+    project.sessionTick.value = System.currentTimeMillis()
+    saveProjectState(project)
+}
+
+fun newProjectSession(project: Project) {
+    stashSession(project)
+    val id = "s${System.currentTimeMillis()}"
+    project.sessionStore[id] = SessionSnapshot(
+        "Session ${project.sessionStore.size + 1}",
+        System.currentTimeMillis()
+    )
+    project.activeSessionId = id
+    project.chat.clear()
+    project.terminalLog.clear()
+    project.sessionTick.value = System.currentTimeMillis()
+    saveProjectState(project)
+}
+
+/** Deletes a session (never the last one). Returns false when refused. */
+fun deleteProjectSession(project: Project, id: String): Boolean {
+    stashSession(project)
+    if (project.sessionStore.size <= 1) return false
+    project.sessionStore.remove(id)
+    try {
+        File(File(project.dir, ".karen"), "sessions/$id").deleteRecursively()
+    } catch (_: Exception) {
+    }
+    if (project.activeSessionId == id) {
+        project.activeSessionId = project.sessionStore.keys.sorted().first()
+        loadSnapshotInto(project, project.sessionStore.getValue(project.activeSessionId))
+    }
+    project.sessionTick.value = System.currentTimeMillis()
+    saveProjectState(project)
+    return true
+}
+
+/** Titles a fresh session from its first message. */
+private fun touchSessionTitle(project: Project, text: String) {
+    val e = ensureSession(project)
+    if (e.title.startsWith("Session ") && project.chat.size <= 1) {
+        e.title = text.trim().take(36).ifBlank { e.title }
+        project.sessionTick.value = System.currentTimeMillis()
+    }
+}
+
+private fun sessionsDir(project: Project): File = File(File(project.dir, ".karen"), "sessions")
+
+private fun saveSessions(project: Project) {
+    try {
+        stashSession(project)
+        val dir = sessionsDir(project).apply { mkdirs() }
+        File(dir, "index.txt").writeText(
+            project.sessionStore.entries.sortedBy { it.value.createdAt }.joinToString("\n") {
+                "${it.key}\t${enc(it.value.title)}\t${it.value.createdAt}"
+            }
+        )
+        project.sessionStore.forEach { (id, s) ->
+            val sdir = File(dir, id).apply { mkdirs() }
+            File(sdir, "chat.txt").writeText(
+                s.chat.takeLast(200).joinToString("\n") { "${it.role}\t${enc(it.text)}\t${it.tookMs}\t${it.tokEst}" }
+            )
+            File(sdir, "terminal.txt").writeText(
+                s.terminal.takeLast(200).joinToString("\n") { enc(it) }
+            )
+        }
+    } catch (_: Exception) {
+    }
+}
+
+/** Restores sessions; legacy single chat.txt becomes Session 1. */
+private fun loadSessions(project: Project): Boolean {
+    return try {
+        val dir = sessionsDir(project)
+        val index = File(dir, "index.txt")
+        if (!index.exists()) return false
+        project.sessionStore.clear()
+        index.readLines().forEach { line ->
+            val p = line.split('\t')
+            if (p.size < 3) return@forEach
+            val sdir = File(dir, p[0])
+            val chat = File(sdir, "chat.txt").takeIf { it.exists() }?.readLines()?.mapNotNull { l ->
+                val q = l.split('\t')
+                if (q.size < 2 || (q[0] != "user" && q[0] != "assistant")) null
+                else ProjectChat(q[0], dec(q[1]), q.getOrNull(2)?.toLongOrNull() ?: 0L, q.getOrNull(3)?.toIntOrNull() ?: 0)
+            } ?: emptyList()
+            val term = File(sdir, "terminal.txt").takeIf { it.exists() }?.readLines()?.map { dec(it) }
+                ?: emptyList()
+            project.sessionStore[p[0]] = SessionSnapshot(dec(p[1]).ifBlank { "Session" }, p[2].toLongOrNull() ?: 0L, chat.toMutableList(), term.toMutableList())
+        }
+        if (project.sessionStore.isEmpty()) return false
+        if (project.sessionStore.none { it.key == project.activeSessionId }) {
+            project.activeSessionId = project.sessionStore.keys.sorted().first()
+        }
+        loadSnapshotInto(project, project.sessionStore.getValue(project.activeSessionId))
+        true
+    } catch (_: Exception) {
+        false
+    }
+}
+
 private fun saveProjectState(project: Project) {
+    saveSessions(project)
     try {
         val dir = stateDir(project)
         File(dir, "chat.txt").writeText(
@@ -583,6 +727,8 @@ private fun loadProjectState(project: Project): Boolean {
         val dir = File(project.dir, ".karen")
         if (!dir.exists()) return false
         var restored = false
+        // Sessions first (new format); legacy chat.txt becomes Session 1.
+        if (loadSessions(project)) return true
         File(dir, "chat.txt").takeIf { it.exists() }?.let { f ->
             val items = f.readLines().mapNotNull { line ->
                 val p = line.split('\t')
@@ -592,6 +738,8 @@ private fun loadProjectState(project: Project): Boolean {
             if (items.isNotEmpty()) {
                 project.chat.clear()
                 project.chat.addAll(items)
+                project.activeSessionId = "s1"
+                stashSession(project)
                 restored = true
             }
         }
@@ -620,6 +768,108 @@ private fun loadProjectState(project: Project): Boolean {
         restored
     } catch (_: Exception) {
         false
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SessionListSheet(
+    project: Project,
+    onSwitch: (String) -> Unit,
+    onNew: () -> Unit,
+    onDelete: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val colors = LocalKarenColors.current
+    val rows = remember(project.sessionTick.value) {
+        val all = project.sessionStore.entries.sortedBy { it.value.createdAt }.map { it.key to it.value }
+        // The live (never-stashed) session has no entry yet: show it too.
+        if (project.activeSessionId in project.sessionStore || project.chat.isEmpty()) all
+        else all + (project.activeSessionId to SessionSnapshot("Session ${all.size + 1}", System.currentTimeMillis()))
+    }
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = colors.surface,
+        dragHandle = { BottomSheetDefaults.DragHandle(color = colors.border) }
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 8.dp)
+        ) {
+            Text("Sessions in ${project.name}", color = colors.textPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+            Text(
+                "Each session keeps its own chat and terminal memory",
+                color = colors.textMuted,
+                fontSize = 12.sp,
+                modifier = Modifier.padding(top = 2.dp, bottom = 12.dp)
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(colors.accentGreen.copy(alpha = 0.12f))
+                    .border(1.dp, colors.accentGreen.copy(alpha = 0.4f), RoundedCornerShape(12.dp))
+                    .clickable { onNew() }
+                    .padding(14.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Default.Add, contentDescription = null, tint = colors.accentGreen, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(10.dp))
+                Text("New session", color = colors.accentGreen, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+            }
+            rows.forEach { (id, snap) ->
+                val isActive = id == project.activeSessionId
+                val msgCount = if (isActive) project.chat.size else snap.chat.size
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(if (isActive) colors.surfaceHover else Color.Transparent)
+                        .border(1.dp, if (isActive) colors.accentGreen else colors.border, RoundedCornerShape(12.dp))
+                        .clickable { onSwitch(id) }
+                        .padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                snap.title,
+                                color = colors.textPrimary,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1
+                            )
+                            if (isActive) {
+                                Spacer(Modifier.width(8.dp))
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(colors.accentGreen.copy(alpha = 0.2f))
+                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                ) {
+                                    Text("ACTIVE", color = colors.accentGreen, fontSize = 10.5.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            "$msgCount messages",
+                            color = colors.textMuted,
+                            fontSize = 11.5.sp
+                        )
+                    }
+                    if (rows.size > 1) {
+                        IconButton(onClick = { onDelete(id) }, modifier = Modifier.size(32.dp)) {
+                            Icon(Icons.Default.DeleteOutline, contentDescription = "Delete session", tint = colors.textMuted, modifier = Modifier.size(16.dp))
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.height(24.dp))
+        }
     }
 }
 
@@ -685,9 +935,11 @@ fun WorkspaceScreen(
     var showWindowDialog by remember { mutableStateOf(false) }
     var contentWindow by remember { mutableStateOf(UserPrefs.contextTokens(ctx)) }
     var confirmNewSession by remember { mutableStateOf(false) }
+    var showSessions by remember { mutableStateOf(false) }
 
     KarenHomeBackHandler(onNavigateToHome = onNavigateToHome) {
         when {
+            showSessions -> { showSessions = false; true }
             confirmNewSession -> { confirmNewSession = false; true }
             showModelSheet -> { showModelSheet = false; true }
             showNewProject -> { showNewProject = false; true }
@@ -736,6 +988,7 @@ fun WorkspaceScreen(
         chatBusy = true
         cancelChat = false
         project.chat.add(ProjectChat("user", t))
+        touchSessionTitle(project, t)
         // Auto routing swaps in the best model for this prompt.
         val sendModel = routeFor(t)
         scope.launch {
@@ -1308,12 +1561,49 @@ fun WorkspaceScreen(
                 fontWeight = FontWeight.Bold
             )
             TextButton(
+                onClick = { showSessions = true },
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+            ) {
+                val sessionCount = remember(project.sessionTick.value) {
+                    project.sessionStore.size +
+                        (if (project.activeSessionId in project.sessionStore) 0 else 1)
+                }
+                Text(
+                    "Sessions ($sessionCount)",
+                    color = colors.accentBlue,
+                    fontSize = 11.5.sp,
+                    fontWeight = FontWeight.Medium
+                )
+            }
+            TextButton(
                 onClick = { confirmNewSession = true },
                 enabled = !chatBusy,
                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
             ) {
                 Text("New session", color = if (chatBusy) colors.textMuted else colors.accentGreen, fontSize = 11.5.sp, fontWeight = FontWeight.Medium)
             }
+        }
+
+        // Conversation list for this project: each session keeps its own
+        // chat + terminal memory; switching stashes and restores them.
+        if (showSessions) {
+            SessionListSheet(
+                project = project,
+                onSwitch = { id ->
+                    switchProjectSession(project, id)
+                    showSessions = false
+                },
+                onNew = {
+                    newProjectSession(project)
+                    showSessions = false
+                },
+                onDelete = { id ->
+                    if (!deleteProjectSession(project, id)) {
+                        android.widget.Toast.makeText(ctx, "Can't delete the last session", android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                },
+                onDismiss = { showSessions = false }
+            )
         }
 
         if (confirmNewSession && selected === project) {

@@ -502,33 +502,35 @@ fun ChatScreen(
                 notes.add("⚠ ${spec.name}: $err — not run")
                 continue
             }
-            if (spec.tier == "T2" || spec.tier == "T3") {
-                if (spec.tier == "T3") {
-                    notes.add("⚠ ${spec.name} is disabled (T3) — not run")
+            if (spec.tier == "T3") {
+                notes.add("⚠ ${spec.name} is disabled (T3) — not run")
+                continue
+            }
+            // place_call: resolve the name against contacts first so every
+            // mode confirms or dials a real number, never a bare name.
+            var resolvedArgs = call.args
+            var options = emptyList<String>()
+            if (spec.name == "place_call" && digitsOf(call.args.optString("number", "")).length < 3) {
+                val q = call.args.optString("number", "")
+                val hits = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    queryContacts(context, q, 5)
+                }
+                if (hits.isEmpty()) {
+                    notes.add("⚠ place_call: no contacts match \"$q\" — not run")
                     continue
-                }
-                // place_call: resolve the name against contacts first so the
-                // card confirms a real number; several matches → picker.
-                var resolvedArgs = call.args
-                var options = emptyList<String>()
-                if (spec.name == "place_call" && digitsOf(call.args.optString("number", "")).length < 3) {
-                    val q = call.args.optString("number", "")
-                    val hits = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                        queryContacts(context, q, 5)
+                } else if (hits.size == 1) {
+                    resolvedArgs = org.json.JSONObject(call.args.toString())
+                    resolvedArgs.put("number", digitsOf(hits[0].second))
+                    if (resolvedArgs.optString("display_name", "").isBlank()) {
+                        resolvedArgs.put("display_name", hits[0].first)
                     }
-                    if (hits.isEmpty()) {
-                        notes.add("⚠ place_call: no contacts match \"$q\" — not run")
-                        continue
-                    } else if (hits.size == 1) {
-                        resolvedArgs = org.json.JSONObject(call.args.toString())
-                        resolvedArgs.put("number", digitsOf(hits[0].second))
-                        if (resolvedArgs.optString("display_name", "").isBlank()) {
-                            resolvedArgs.put("display_name", hits[0].first)
-                        }
-                    } else {
-                        options = hits.map { "${it.first} — ${it.second}" }
-                    }
+                } else {
+                    options = hits.map { "${it.first} — ${it.second}" }
                 }
+            }
+            // Several matches always need a pick; T2 otherwise parks unless
+            // the user chose direct/dialer-only in Settings.
+            if (options.isNotEmpty() || (spec.tier == "T2" && !runsDirect(spec, context))) {
                 val i = messages.indexOfFirst { (it as? ChatItem.Assistant)?.id == id }
                 if (i >= 0) {
                     val cur = messages[i] as ChatItem.Assistant
@@ -549,7 +551,7 @@ fun ChatScreen(
             }
             val t0 = System.currentTimeMillis()
             val res = try {
-                executePhoneTool(context, spec, call.args)
+                executePhoneTool(context, spec, resolvedArgs)
             } catch (e: Exception) {
                 ExecResult(false, "failed (${e.message})")
             }
@@ -1128,7 +1130,7 @@ fun ChatScreen(
             coroutineScope.launch { scrollToBottomIfNear() }
             return true
         }
-        if (spec.tier == "T2") {
+        if (spec.tier == "T2" && !runsDirect(spec, context)) {
             val summary = summarizeArgs(spec, dargs)
             messages.add(
                 ChatItem.Assistant(

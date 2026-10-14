@@ -248,6 +248,20 @@ object UserPrefs {
         }
     }
 
+    // place_call behavior: ask (default), direct, or dialer-only.
+    const val CALL_ASK = "ask"
+    const val CALL_DIRECT = "direct"
+    const val CALL_DIALER = "dialer"
+    private const val KEY_CALL_BEHAVIOR = "call_behavior"
+    fun callBehavior(ctx: Context): String =
+        (prefs(ctx).getString(KEY_CALL_BEHAVIOR, CALL_ASK) ?: CALL_ASK)
+            .takeIf { it == CALL_ASK || it == CALL_DIRECT || it == CALL_DIALER } ?: CALL_ASK
+    fun setCallBehavior(ctx: Context, value: String) {
+        if (value == CALL_ASK || value == CALL_DIRECT || value == CALL_DIALER) {
+            prefs(ctx).edit().putString(KEY_CALL_BEHAVIOR, value).apply()
+        }
+    }
+
     // Last wake trigger epoch-ms (service writes, UI reads for cold start).
     private const val KEY_WAKE_TRIGGER_AT = "wake_trigger_at"
     fun wakeTriggerAt(ctx: Context): Long = prefs(ctx).getLong(KEY_WAKE_TRIGGER_AT, 0L)

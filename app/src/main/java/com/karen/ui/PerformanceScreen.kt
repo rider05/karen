@@ -21,10 +21,13 @@ import com.karen.rememberDeviceTelemetry
 
 @Composable
 fun PerformanceScreen(
-    onOpenDrawer: () -> Unit = {}
+    onOpenDrawer: () -> Unit = {},
+    onNavigateToHome: () -> Unit = {}
 ) {
     val colors = LocalKarenColors.current
     val device = rememberDeviceTelemetry()
+
+    KarenHomeBackHandler(onNavigateToHome = onNavigateToHome)
 
     Column(
         modifier = Modifier
@@ -35,6 +38,7 @@ fun PerformanceScreen(
         ChatGPTTopAppBar(
             selectedModel = "Performance & TTFT",
             onMenuClick = onOpenDrawer,
+            onBackClick = onNavigateToHome,
             moreActions = listOf(
                 Triple("Run benchmark", Icons.Default.Speed) { android.widget.Toast.makeText(ctx, "Run benchmark", android.widget.Toast.LENGTH_SHORT).show() },
                 Triple("Copy metrics", Icons.Default.Share) { android.widget.Toast.makeText(ctx, "Copy metrics", android.widget.Toast.LENGTH_SHORT).show() },

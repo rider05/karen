@@ -30,7 +30,8 @@ data class MemoryTrait(
 
 @Composable
 fun MemoryScreen(
-    onOpenDrawer: () -> Unit = {}
+    onOpenDrawer: () -> Unit = {},
+    onNavigateToHome: () -> Unit = {}
 ) {
     val colors = LocalKarenColors.current
 
@@ -43,6 +44,7 @@ fun MemoryScreen(
     }
 
     val ctx = androidx.compose.ui.platform.LocalContext.current
+    KarenHomeBackHandler(onNavigateToHome = onNavigateToHome)
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -51,6 +53,7 @@ fun MemoryScreen(
         ChatGPTTopAppBar(
             selectedModel = "Memory & Preferences",
             onMenuClick = onOpenDrawer,
+            onBackClick = onNavigateToHome,
             moreActions = listOf(
                 Triple("Export JSON", Icons.Default.Share) { android.widget.Toast.makeText(ctx, "Export JSON", android.widget.Toast.LENGTH_SHORT).show() },
                 Triple("Flush cache", Icons.Default.Delete) { android.widget.Toast.makeText(ctx, "Flush cache", android.widget.Toast.LENGTH_SHORT).show() },

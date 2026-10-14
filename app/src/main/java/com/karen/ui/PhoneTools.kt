@@ -71,6 +71,36 @@ data class PendingTool(
 /** Honest executor outcome. */
 data class ExecResult(val ok: Boolean, val text: String)
 
+/**
+ * "@file" vault mentions: fetches each named file's content so the model
+ * answers from it in the same turn. Text reads direct; PDFs transcribe
+ * through DocVision (needs a vision key). Unresolvable tokens stay as-is.
+ */
+suspend fun resolveMentions(ctx: Context, raw: String): String {
+    val hits = Regex("@([^\\s@]{1,80})").findAll(raw).toList()
+    if (hits.isEmpty()) return raw
+    val files = withContext(Dispatchers.IO) { vaultFiles(ctx) }
+    var out = raw
+    hits.forEach { m ->
+        val key = m.groupValues[1].trimEnd('.', ',', ';', ':', '!', '?')
+        if (key.isBlank()) return@forEach
+        val file = files.firstOrNull { it.name.equals(key, ignoreCase = true) }
+            ?: files.firstOrNull { it.name.lowercase().contains(key.lowercase()) }
+            ?: return@forEach
+        val content = when (file.extension.lowercase()) {
+            "pdf" -> DocVision.transcribePdf(ctx, file, 2)
+                ?.takeIf { it.first.isNotBlank() }
+                ?.let { "[OCR pages 1-${it.second}]\n${it.first.take(3000)}" }
+            in ATTACH_TEXT_EXTS -> withContext(Dispatchers.IO) { readPreview(file, 3000) }
+            else -> null
+        }
+        if (!content.isNullOrBlank()) {
+            out = out.replaceFirst("@${m.groupValues[1]}", "[File ${file.name} content:\n$content]")
+        }
+    }
+    return out
+}
+
 object ToolSpecs {
     @Volatile
     private var cached: List<ToolSpec>? = null

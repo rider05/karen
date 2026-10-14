@@ -93,9 +93,11 @@ fun FilesScreen(
     val colors = LocalKarenColors.current
     val device = rememberDeviceTelemetry()
     val context = androidx.compose.ui.platform.LocalContext.current
-    var selectedVault by remember { mutableStateOf("Knowledge Vault") }
+    var selectedVault by remember { mutableStateOf(UserPrefs.selectedVault(context)) }
     var showVaultSheet by remember { mutableStateOf(false) }
     var fileQuery by remember { mutableStateOf("") }
+    /** List order for the vault lists below (cycles from the ⋯ menu). */
+    var sortMode by remember { mutableStateOf("Newest") }
     /** Bumped after import/delete so the lists rescan. */
     var refreshTick by remember { mutableStateOf(0L) }
     var previewFile by remember { mutableStateOf<File?>(null) }
@@ -211,12 +213,29 @@ fun FilesScreen(
             onBackClick = onNavigateToHome,
             onModelClick = { showVaultSheet = true },
             moreActions = listOf(
+                Triple("Add File", Icons.Default.Add) { vaultPicker.launch(arrayOf("*/*")) },
+                Triple("Sort: $sortMode", Icons.Default.Sort) {
+                    sortMode = when (sortMode) {
+                        "Newest" -> "Oldest"
+                        "Oldest" -> "Name"
+                        "Name" -> "Size"
+                        else -> "Newest"
+                    }
+                },
                 Triple("Refresh", Icons.Default.Refresh) { refreshTick = System.currentTimeMillis() }
             )
         )
 
         // Real vault contents (rescanned after import/delete/refresh).
-        val allFiles = remember(refreshTick) { currentFiles() }
+        val allFiles = remember(refreshTick, sortMode) {
+            val base = currentFiles()
+            when (sortMode) {
+                "Oldest" -> base.sortedBy { it.lastModified() }
+                "Name" -> base.sortedBy { it.name.lowercase() }
+                "Size" -> base.sortedByDescending { it.length() }
+                else -> base
+            }
+        }
         val vaultBytes = remember(allFiles) { allFiles.sumOf { it.length() } }
 
         LazyColumn(
@@ -390,7 +409,10 @@ fun FilesScreen(
         if (showVaultSheet) {
             VaultSelectorSheet(
                 selectedVault = selectedVault,
-                onSelectVault = { selectedVault = it },
+                onSelectVault = {
+                    selectedVault = it
+                    UserPrefs.setSelectedVault(context, it)
+                },
                 onDismiss = { showVaultSheet = false },
                 knowledgeCount = allFiles.count { it.extension.lowercase() in listOf("pdf", "md", "txt") },
                 secureCount = allFiles.size

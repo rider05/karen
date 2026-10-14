@@ -237,6 +237,17 @@ object UserPrefs {
         prefs(ctx).edit().putString(KEY_WAKE_PHRASE, clean).apply()
     }
 
+    // Last-selected Files vault (Knowledge / Secure) survives restarts.
+    private const val KEY_VAULT = "selected_vault"
+    fun selectedVault(ctx: Context): String =
+        (prefs(ctx).getString(KEY_VAULT, "Knowledge Vault") ?: "Knowledge Vault")
+            .takeIf { it == "Knowledge Vault" || it == "Secure Vault" } ?: "Knowledge Vault"
+    fun setSelectedVault(ctx: Context, name: String) {
+        if (name == "Knowledge Vault" || name == "Secure Vault") {
+            prefs(ctx).edit().putString(KEY_VAULT, name).apply()
+        }
+    }
+
     // Last wake trigger epoch-ms (service writes, UI reads for cold start).
     private const val KEY_WAKE_TRIGGER_AT = "wake_trigger_at"
     fun wakeTriggerAt(ctx: Context): Long = prefs(ctx).getLong(KEY_WAKE_TRIGGER_AT, 0L)

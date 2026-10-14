@@ -23,6 +23,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.karen.formatSize
 import com.karen.rememberVoiceStt
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.async
@@ -79,7 +80,7 @@ private val localInferenceDispatcher =
 data class Attachment(val name: String, val sizeBytes: Long, val mime: String? = null, val path: String? = null)
 
 /** Text extensions whose attachment content is fed to the model. */
-private val ATTACH_TEXT_EXTS = setOf(
+internal val ATTACH_TEXT_EXTS = setOf(
     "txt", "md", "markdown", "json", "csv", "tsv", "log", "xml", "yaml", "yml",
     "ini", "cfg", "properties", "toml", "kt", "java", "py", "js", "ts", "tsx",
     "jsx", "c", "h", "cpp", "hpp", "cs", "go", "rs", "rb", "php", "swift",
@@ -889,6 +890,8 @@ fun ChatScreen(
 
         coroutineScope.launch {
             cancelGeneration = false
+            // "@file" vault mentions: fetch content so this turn answers from it.
+            val userText = resolveMentions(context, userText)
             streamStartMs = System.currentTimeMillis()
             streamingContent = false
             genLive = null
@@ -1772,6 +1775,76 @@ fun ChatScreen(
                                     .size(16.dp)
                                     .clickable { queue.removeAt(i) }
                             )
+                        }
+                    }
+                }
+            }
+            // "@file" vault menu (OpenCode style): "@…" lists vault files
+            // above the composer; picking one inserts "@filename ".
+            val mentionMatch = Regex("@([\\w.\\-]*)$").find(input)
+            if (mentionMatch != null) {
+                val mq = mentionMatch.groupValues[1].lowercase()
+                val mentionFiles = remember(mq) {
+                    vaultFiles(context)
+                        .filter { mq.isBlank() || it.name.lowercase().contains(mq) }
+                        .take(8)
+                }
+                if (mentionFiles.isNotEmpty()) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 22.dp, end = 14.dp, bottom = 6.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(colors.surface)
+                            .border(1.dp, colors.border, RoundedCornerShape(14.dp))
+                            .padding(vertical = 4.dp)
+                    ) {
+                        Text(
+                            text = "VAULT · tap to attach",
+                            color = colors.textMuted,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                        )
+                        mentionFiles.forEach { f ->
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        input = input.removeSuffix("@" + mentionMatch.groupValues[1]) + "@${f.name} "
+                                    }
+                                    .padding(horizontal = 12.dp, vertical = 7.dp)
+                            ) {
+                                Icon(
+                                    when (f.extension.lowercase()) {
+                                        "pdf", "md", "txt" -> Icons.Default.Description
+                                        "mp3", "wav" -> Icons.Default.Mic
+                                        else -> Icons.AutoMirrored.Filled.InsertDriveFile
+                                    },
+                                    contentDescription = null,
+                                    tint = colors.accentBlue,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    text = "@${f.name}",
+                                    color = colors.accentGreen,
+                                    fontSize = 13.sp,
+                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    text = formatSize(f.length()),
+                                    color = colors.textMuted,
+                                    fontSize = 11.sp,
+                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                )
+                            }
                         }
                     }
                 }

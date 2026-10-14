@@ -1,12 +1,20 @@
 package com.karen.ui
 
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.provider.OpenableColumns
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.automirrored.filled.*
@@ -21,9 +29,60 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.FileProvider
 import com.karen.rememberDeviceTelemetry
-import com.karen.sandboxFiles
 import com.karen.formatSize
+import java.io.File
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+/** User document stores: the vault plus chat-saved attachments. */
+internal fun vaultDirs(context: Context): List<File> =
+    listOf(File(context.filesDir, "vault"), File(context.filesDir, "attachments"))
+
+/** Real file list for the Files screen, newest first. */
+internal fun vaultFiles(context: Context): List<File> =
+    vaultDirs(context)
+        .filter { it.exists() && it.isDirectory }
+        .flatMap { it.listFiles()?.toList() ?: emptyList() }
+        .filter { it.isFile }
+        .sortedByDescending { it.lastModified() }
+
+/** True when [f] lives inside the user stores (never models/voices). */
+private fun isDeletable(context: Context, f: File): Boolean = try {
+    val canon = f.canonicalPath
+    vaultDirs(context).any { canon.startsWith(it.canonicalPath + File.separator) }
+} catch (_: Exception) {
+    false
+}
+
+internal fun mimeFor(name: String): String = when (name.substringAfterLast('.', "").lowercase()) {
+    "pdf" -> "application/pdf"
+    "txt", "md" -> "text/plain"
+    "jpg", "jpeg" -> "image/jpeg"
+    "png" -> "image/png"
+    "webp" -> "image/webp"
+    "gif" -> "image/gif"
+    "mp3" -> "audio/mpeg"
+    "wav" -> "audio/wav"
+    "m4a" -> "audio/mp4"
+    "ogg" -> "audio/ogg"
+    "mp4" -> "video/mp4"
+    "mkv" -> "video/x-matroska"
+    "zip" -> "application/zip"
+    else -> "*/*"
+}
+
+/** Text preview for small text files, null when not previewable. */
+internal fun readPreview(f: File, maxChars: Int = 50_000): String? {
+    if (f.length() > 2_000_000) return null
+    return try {
+        f.readText(Charsets.UTF_8).take(maxChars)
+    } catch (_: Exception) {
+        null
+    }
+}
 
 @Composable
 fun FilesScreen(
@@ -37,15 +96,108 @@ fun FilesScreen(
     var selectedVault by remember { mutableStateOf("Knowledge Vault") }
     var showVaultSheet by remember { mutableStateOf(false) }
     var fileQuery by remember { mutableStateOf("") }
+    /** Bumped after import/delete so the lists rescan. */
+    var refreshTick by remember { mutableStateOf(0L) }
+    var previewFile by remember { mutableStateOf<File?>(null) }
+    var pendingDelete by remember { mutableStateOf<File?>(null) }
+    val scope = rememberCoroutineScope()
 
     /** Case-insensitive name filter for the vault lists below. */
     fun matchesQuery(f: java.io.File): Boolean =
         fileQuery.isBlank() || f.name.contains(fileQuery.trim(), ignoreCase = true)
 
-    // System back: dismiss the vault sheet first, otherwise route to Home —
+    fun currentFiles(): List<File> = vaultFiles(context)
+
+    fun toast(msg: String) {
+        android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
+    }
+
+    /** Copies picked documents into the vault (dedupe by counter suffix). */
+    fun importUris(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        scope.launch(Dispatchers.IO) {
+            val dir = File(context.filesDir, "vault").apply { mkdirs() }
+            var added = 0
+            uris.forEach { uri ->
+                try {
+                    val raw = context.contentResolver.query(uri, null, null, null, null)?.use { c ->
+                        val i = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                        if (c.moveToFirst() && i >= 0) c.getString(i) else null
+                    } ?: uri.lastPathSegment?.substringAfterLast('/') ?: "file"
+                    val safe = raw.replace(Regex("[^A-Za-z0-9._-]"), "_").takeLast(80).ifBlank { "file" }
+                    var dest = File(dir, safe)
+                    var n = 2
+                    while (dest.exists()) {
+                        val stem = safe.substringBeforeLast('.', safe)
+                        val ext = safe.substringAfterLast('.', "")
+                        dest = File(dir, "$stem-$n${if (ext.isNotEmpty() && ext != safe) ".$ext" else ""}")
+                        n++
+                    }
+                    context.contentResolver.openInputStream(uri)?.use { input ->
+                        dest.outputStream().use { out -> input.copyTo(out, 256 * 1024) }
+                    }
+                    if (dest.exists() && dest.length() > 0) added++
+                    else try { dest.delete() } catch (_: Exception) {}
+                } catch (_: Exception) {
+                }
+            }
+            withContext(kotlinx.coroutines.Dispatchers.Main) {
+                refreshTick = System.currentTimeMillis()
+                toast(if (added > 0) "Added $added file${if (added == 1) "" else "s"} to the vault" else "Import failed")
+            }
+        }
+    }
+
+    val vaultPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        importUris(uris)
+    }
+
+    /** In-app text preview when possible, else a system viewer. */
+    fun openFile(f: File) {
+        if (!f.exists()) {
+            refreshTick = System.currentTimeMillis()
+            toast("File no longer exists")
+            return
+        }
+        if (f.extension.lowercase() in listOf("txt", "md")) {
+            val text = readPreview(f)
+            if (text != null) {
+                previewFile = f
+                return
+            }
+        }
+        try {
+            val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", f)
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, context.contentResolver.getType(uri) ?: mimeFor(f.name))
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            context.startActivity(Intent.createChooser(intent, "Open with"))
+        } catch (_: Exception) {
+            toast("No app can open this file")
+        }
+    }
+
+    fun deleteFile(f: File) {
+        try {
+            if (!isDeletable(context, f)) {
+                toast("Only vault files can be deleted here")
+                return
+            }
+            if (f.delete() || !f.exists()) toast("${f.name} deleted")
+            else toast("Delete failed")
+        } catch (_: Exception) {
+            toast("Delete failed")
+        }
+        refreshTick = System.currentTimeMillis()
+    }
+
+    // System back: dismiss dialogs/sheet first, otherwise route to Home —
     // same in-app behaviour as the chat screen (never exits to phone home).
     KarenHomeBackHandler(onNavigateToHome = onNavigateToHome) {
-        if (showVaultSheet) { showVaultSheet = false; true } else false
+        if (previewFile != null) { previewFile = null; true }
+        else if (pendingDelete != null) { pendingDelete = null; true }
+        else if (showVaultSheet) { showVaultSheet = false; true } else false
     }
 
     Column(
@@ -59,11 +211,14 @@ fun FilesScreen(
             onBackClick = onNavigateToHome,
             onModelClick = { showVaultSheet = true },
             moreActions = listOf(
-                Triple("Index all", Icons.Default.DoneAll) { android.widget.Toast.makeText(context, "Indexing all", android.widget.Toast.LENGTH_SHORT).show() },
-                Triple("Refresh", Icons.Default.Refresh) { android.widget.Toast.makeText(context, "Refresh", android.widget.Toast.LENGTH_SHORT).show() },
+                Triple("Refresh", Icons.Default.Refresh) { refreshTick = System.currentTimeMillis() },
                 Triple("Open in Study Book", Icons.Default.MenuBook) { onNavigate("StudyBook") }
             )
         )
+
+        // Real vault contents (rescanned after import/delete/refresh).
+        val allFiles = remember(refreshTick) { currentFiles() }
+        val vaultBytes = remember(allFiles) { allFiles.sumOf { it.length() } }
 
         LazyColumn(
             modifier = Modifier
@@ -92,21 +247,21 @@ fun FilesScreen(
                     }
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        "All documents embedded locally into sqlite-vec with 768-D vectors. Zero network egress.",
+                        "${allFiles.size} file${if (allFiles.size == 1) "" else "s"} · ${formatSize(vaultBytes)} stored on this device. Nothing leaves the phone.",
                         color = colors.textMuted,
                         fontSize = 12.sp
                     )
                     Spacer(Modifier.height(12.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(
-                            onClick = {},
+                            onClick = { vaultPicker.launch(arrayOf("*/*")) },
                             colors = ButtonDefaults.buttonColors(containerColor = colors.accentGreen, contentColor = Color.White),
                             shape = RoundedCornerShape(8.dp),
                             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
                         ) {
                             Icon(Icons.Default.Add, contentDescription = "Add", modifier = Modifier.size(16.dp))
                             Spacer(Modifier.width(4.dp))
-                            Text("Index File", fontSize = 12.sp)
+                            Text("Add File", fontSize = 12.sp)
                         }
                     }
                 }
@@ -140,6 +295,7 @@ fun FilesScreen(
                 )
                 Text("Active RAG Document", color = colors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(4.dp))
+                val topDoc = remember(allFiles) { allFiles.firstOrNull() }
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -151,17 +307,26 @@ fun FilesScreen(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.AutoMirrored.Filled.MenuBook, contentDescription = null, tint = colors.accentGreen, modifier = Modifier.size(20.dp))
                         Spacer(Modifier.width(8.dp))
-                        Text(sandboxFiles(context).firstOrNull()?.name ?: "No documents yet", color = colors.textPrimary, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                        Text(topDoc?.name ?: "No documents yet", color = colors.textPrimary, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        sandboxFiles(context).firstOrNull()?.let { "${formatSize(it.length())} · Modified ${java.text.DateFormat.getDateTimeInstance().format(java.util.Date(it.lastModified()))}" } ?: "Add files to the vault to enable on-device RAG.",
+                        topDoc?.let { "${formatSize(it.length())} · Modified ${java.text.DateFormat.getDateTimeInstance().format(java.util.Date(it.lastModified()))}" } ?: "Add files to the vault to enable on-device RAG.",
                         color = colors.textSecondary,
                         fontSize = 12.sp,
                         lineHeight = 17.sp
                     )
                     Spacer(Modifier.height(8.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (topDoc != null) {
+                            OutlinedButton(
+                                onClick = { openFile(topDoc) },
+                                shape = RoundedCornerShape(8.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                            ) {
+                                Text("Open", fontSize = 11.5.sp)
+                            }
+                        }
                         OutlinedButton(
                             onClick = { onNavigate("StudyBook") },
                             shape = RoundedCornerShape(8.dp),
@@ -175,10 +340,10 @@ fun FilesScreen(
 
             // File items list (Secure Vault view)
             if (selectedVault == "Secure Vault") item {
-                Text("Indexed Vault Items (${sandboxFiles(context).size})", color = colors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                Text("Indexed Vault Items (${allFiles.size})", color = colors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(6.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    val files = sandboxFiles(context).filter { matchesQuery(it) }
+                    val files = allFiles.filter { matchesQuery(it) }
                     if (files.isEmpty()) {
                         Text(
                             if (fileQuery.isBlank()) "No indexed files yet" else "No matches for “${fileQuery.trim()}”",
@@ -201,7 +366,9 @@ fun FilesScreen(
                             primaryLabel = if (isDoc) "Study" else "Query",
                             onPrimary = { onNavigate(if (isDoc) "StudyBook" else "Chat") },
                             secondaryLabel = if (isDoc) "Query" else "Canvas",
-                            onSecondary = { onNavigate(if (isDoc) "Chat" else "Workspace") }
+                            onSecondary = { onNavigate(if (isDoc) "Chat" else "Workspace") },
+                            onOpen = { openFile(f) },
+                            onDelete = { pendingDelete = f }
                         )
                     }
                 }
@@ -212,7 +379,7 @@ fun FilesScreen(
                 Text("Knowledge Vault", color = colors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(6.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    val kvFiles = sandboxFiles(context).filter { it.extension.lowercase() in listOf("pdf", "md", "txt") && matchesQuery(it) }
+                    val kvFiles = allFiles.filter { it.extension.lowercase() in listOf("pdf", "md", "txt") && matchesQuery(it) }
                     if (kvFiles.isEmpty()) {
                         Text(
                             if (fileQuery.isBlank()) "Drop PDFs/notes into the vault to build your knowledge base" else "No matches for “${fileQuery.trim()}”",
@@ -228,7 +395,9 @@ fun FilesScreen(
                             primaryLabel = "Study",
                             onPrimary = { onNavigate("StudyBook") },
                             secondaryLabel = "Query",
-                            onSecondary = { onNavigate("Chat") }
+                            onSecondary = { onNavigate("Chat") },
+                            onOpen = { openFile(f) },
+                            onDelete = { pendingDelete = f }
                         )
                     }
                 }
@@ -240,6 +409,52 @@ fun FilesScreen(
                 selectedVault = selectedVault,
                 onSelectVault = { selectedVault = it },
                 onDismiss = { showVaultSheet = false }
+            )
+        }
+
+        val doomed = pendingDelete
+        if (doomed != null) {
+            AlertDialog(
+                onDismissRequest = { pendingDelete = null },
+                containerColor = colors.surface,
+                titleContentColor = colors.textPrimary,
+                textContentColor = colors.textSecondary,
+                title = { Text("Delete file?") },
+                text = { Text("“${doomed.name}” will be removed from the vault. This cannot be undone.") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        pendingDelete = null
+                        deleteFile(doomed)
+                    }) { Text("Delete", color = colors.accentRed) }
+                },
+                dismissButton = {
+                    TextButton(onClick = { pendingDelete = null }) { Text("Cancel") }
+                }
+            )
+        }
+
+        val preview = previewFile
+        if (preview != null) {
+            val previewText = remember(preview) { readPreview(preview) ?: "(cannot preview this file)" }
+            AlertDialog(
+                onDismissRequest = { previewFile = null },
+                containerColor = colors.surface,
+                titleContentColor = colors.textPrimary,
+                textContentColor = colors.textSecondary,
+                title = { Text(preview.name) },
+                text = {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 380.dp)
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        Text(previewText, color = colors.textSecondary, fontSize = 12.5.sp, fontFamily = FontFamily.Monospace)
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { previewFile = null }) { Text("Close") }
+                }
             )
         }
     }
@@ -330,7 +545,9 @@ private fun VaultFileRow(
     primaryLabel: String? = null,
     onPrimary: () -> Unit = {},
     secondaryLabel: String? = null,
-    onSecondary: () -> Unit = {}
+    onSecondary: () -> Unit = {},
+    onOpen: () -> Unit = {},
+    onDelete: (() -> Unit)? = null
 ) {
     val colors = LocalKarenColors.current
     Row(
@@ -339,6 +556,7 @@ private fun VaultFileRow(
             .clip(RoundedCornerShape(12.dp))
             .background(colors.surface)
             .border(1.dp, colors.border, RoundedCornerShape(12.dp))
+            .clickable { onOpen() }
             .padding(12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -359,6 +577,11 @@ private fun VaultFileRow(
                 onClick = onSecondary,
                 contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
             ) { Text(secondaryLabel, color = colors.accentBlue, fontSize = 11.5.sp, fontWeight = FontWeight.Medium) }
+        }
+        if (onDelete != null) {
+            IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
+                Icon(Icons.Default.DeleteOutline, contentDescription = "Delete $name", tint = colors.textMuted, modifier = Modifier.size(16.dp))
+            }
         }
     }
 }

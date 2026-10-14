@@ -46,7 +46,8 @@ sealed class ChatItem {
         val thought: String? = null,
         val toolCall: String? = null,
         val text: String,
-        val showCalendarAction: Boolean = false,
+        /** T2 tool call awaiting user confirmation (null = none pending). */
+        val pendingTool: PendingTool? = null,
         val codeJson: String? = null,
         /** How long this reply took to generate, ms. 0 = unknown/not finished. */
         val tookMs: Long = 0L,
@@ -476,6 +477,112 @@ fun ChatScreen(
     }
 
     /**
+     * Realtime tool loop: validates ///TOOL calls from a finished reply,
+     * runs T0/T1 immediately, and parks T2 behind a confirmation card.
+     * Returns the text to display (tool lines stripped) with executor
+     * results appended. Results come from the executors, never model prose.
+     */
+    suspend fun settleTools(id: String, reply: String): String {
+        val calls = extractToolCalls(reply)
+        if (calls.isEmpty()) return reply
+        var visible = stripToolCalls(reply, calls)
+        val notes = mutableListOf<String>()
+        var pill: String? = null
+        for (call in calls.take(2)) {
+            val spec = ToolSpecs.byName(context, call.name)
+            if (spec == null) {
+                notes.add("⚠ unknown tool \"${call.name}\" — not run")
+                continue
+            }
+            val err = validateToolCall(spec, call.args)
+            if (err != null) {
+                notes.add("⚠ ${spec.name}: $err — not run")
+                continue
+            }
+            if (spec.tier == "T2" || spec.tier == "T3") {
+                if (spec.tier == "T3") {
+                    notes.add("⚠ ${spec.name} is disabled (T3) — not run")
+                    continue
+                }
+                val i = messages.indexOfFirst { (it as? ChatItem.Assistant)?.id == id }
+                if (i >= 0) {
+                    val cur = messages[i] as ChatItem.Assistant
+                    messages[i] = cur.copy(
+                        pendingTool = PendingTool(
+                            name = spec.name,
+                            argsJson = call.args.toString(),
+                            summary = summarizeArgs(spec, call.args)
+                        )
+                    )
+                }
+                notes.add("${spec.name}: waiting for your confirmation below")
+                continue
+            }
+            val t0 = System.currentTimeMillis()
+            val res = try {
+                executePhoneTool(context, spec, call.args)
+            } catch (e: Exception) {
+                ExecResult(false, "failed (${e.message})")
+            }
+            val ms = System.currentTimeMillis() - t0
+            pill = "${spec.name} · ${ms}ms"
+            notes.add((if (res.ok) "✓ " else "⚠ ") + "${spec.name}: ${res.text}")
+        }
+        if (notes.isNotEmpty()) {
+            visible = (if (visible.isBlank()) "" else visible.trimEnd() + "\n\n") +
+                notes.joinToString("\n")
+        }
+        if (pill != null) {
+            val i = messages.indexOfFirst { (it as? ChatItem.Assistant)?.id == id }
+            if (i >= 0) {
+                (messages[i] as? ChatItem.Assistant)?.let { messages[i] = it.copy(toolCall = pill) }
+            }
+        }
+        persist()
+        return visible
+    }
+
+    /** T2 confirm: runs the parked call and appends its honest result. */
+    fun confirmPendingTool(id: String, pt: PendingTool) {
+        coroutineScope.launch {
+            val spec = ToolSpecs.byName(context, pt.name)
+            val i = messages.indexOfFirst { (it as? ChatItem.Assistant)?.id == id }
+            if (i < 0 || spec == null) return@launch
+            val t0 = System.currentTimeMillis()
+            setStreamingText(id, (messages[i] as ChatItem.Assistant).text)
+            val args = try {
+                org.json.JSONObject(pt.argsJson)
+            } catch (_: Exception) {
+                org.json.JSONObject()
+            }
+            val res = try {
+                executePhoneTool(context, spec, args)
+            } catch (e: Exception) {
+                ExecResult(false, "failed (${e.message})")
+            }
+            val ms = System.currentTimeMillis() - t0
+            val cur = messages[i] as ChatItem.Assistant
+            val line = (if (res.ok) "✓ " else "⚠ ") + "${spec.name}: ${res.text}"
+            messages[i] = cur.copy(
+                pendingTool = null,
+                toolCall = "${spec.name} · ${ms}ms",
+                text = cur.text.trimEnd() + "\n\n" + line
+            )
+            persist()
+        }
+    }
+
+    /** T2 dismiss: drops the parked call without running it. */
+    fun clearPendingTool(id: String) {
+        val i = messages.indexOfFirst { (it as? ChatItem.Assistant)?.id == id }
+        if (i >= 0) {
+            (messages[i] as? ChatItem.Assistant)?.let { messages[i] = it.copy(pendingTool = null) }
+        }
+        persist()
+        android.widget.Toast.makeText(context, "Tool not run", android.widget.Toast.LENGTH_SHORT).show()
+    }
+
+    /**
      * Lists the next queued prompt (typed while busy) so the drain effect
      * starts its turn. Runs after success AND after interrupt — queued work
      * is independent of how the previous turn ended.
@@ -535,12 +642,13 @@ fun ChatScreen(
         scrollToBottomIfNear()
     }
 
-    /** Prompt shaping: explainer guide, liked-style memory, custom instructions. */
+    /** Prompt shaping: explainer guide, liked-style memory, custom instructions, phone tools. */
     fun shapingSuffix(prompt: String): String {
         val custom = UserPrefs.customInstructions(context).trim().take(500)
         val parts = listOf(
             if (wantsExplainer(prompt, context)) EXPLAINER_STYLE_GUIDE else "",
             StyleMemory.currentHint(context),
+            ToolSpecs.promptBlock(context, prompt),
             if (custom.isNotBlank()) "User instructions: $custom" else ""
         ).filter { it.isNotBlank() }
         return if (parts.isEmpty()) "" else " " + parts.joinToString("\n\n")
@@ -637,8 +745,14 @@ fun ChatScreen(
                 cancelSettle(aid)
                 return
             }
-            if (hasVisibleContent(reply)) {
-                playOut(aid, reply)
+            // Realtime tools: validate + run ///TOOL calls before showing.
+            val withTools = settleTools(aid, reply)
+            if (cancelGeneration) {
+                cancelSettle(aid)
+                return
+            }
+            if (hasVisibleContent(withTools)) {
+                playOut(aid, withTools)
                 if (cancelGeneration) cancelSettle(aid) else completeSettle()
                 return
             }
@@ -816,8 +930,9 @@ fun ChatScreen(
                             cancelSettle(aid)
                         } else {
                             val finalReply = cleanReply(out.reply)
-                            if (hasVisibleContent(finalReply)) {
-                                playOut(aid, finalReply)
+                            val withTools = settleTools(aid, finalReply)
+                            if (hasVisibleContent(withTools)) {
+                                playOut(aid, withTools)
                                 if (cancelGeneration) cancelSettle(aid) else completeSettle()
                             } else {
                                 errorSettle(aid, "The model returned an empty reply.")
@@ -1111,11 +1226,16 @@ fun ChatScreen(
                                     Spacer(Modifier.height(8.dp))
                                 }
 
-                                // Action Confirmation Card
-                                if (item.showCalendarAction) {
+                                // Action Confirmation Card (T2 tool awaiting approval)
+                                item.pendingTool?.let { pt ->
                                     ActionConfirmationCard(
-                                        title = "Schedule Calendar Reminder",
-                                        subtitle = "Distributed Systems Lab Exam\nThu, Oct 24 · 02:00 PM – 05:00 PM · Hardware Lab 4B"
+                                        title = pt.name,
+                                        subtitle = pt.summary,
+                                        confirmLabel = "Run",
+                                        dismissLabel = "Cancel",
+                                        confirmedNote = "Running…",
+                                        onConfirm = { confirmPendingTool(item.id, pt) },
+                                        onDismiss = { clearPendingTool(item.id) }
                                     )
                                     Spacer(Modifier.height(10.dp))
                                 }

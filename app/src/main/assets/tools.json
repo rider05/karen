@@ -1,0 +1,350 @@
+{
+  "open_app": {
+    "description": "Open an installed Android app.",
+    "risk_tier": "T1",
+    "arguments": {
+      "app_name": {
+        "type": "string",
+        "required": true,
+        "description": "App name, e.g. WhatsApp."
+      }
+    }
+  },
+  "open_url": {
+    "description": "Open a web address in the browser.",
+    "risk_tier": "T1",
+    "arguments": {
+      "url": {
+        "type": "string",
+        "required": true,
+        "description": "Full URL starting with https://."
+      }
+    }
+  },
+  "open_settings_page": {
+    "description": "Open a system settings page (cannot toggle settings).",
+    "risk_tier": "T1",
+    "arguments": {
+      "page": {
+        "type": "string",
+        "required": true,
+        "description": "Settings page.",
+        "enum": [
+          "wifi",
+          "bluetooth",
+          "display",
+          "sound",
+          "battery",
+          "storage",
+          "apps",
+          "location",
+          "notifications",
+          "airplane_mode"
+        ]
+      }
+    }
+  },
+  "find_contact": {
+    "description": "Look up a contact by name.",
+    "risk_tier": "T0",
+    "arguments": {
+      "name": {
+        "type": "string",
+        "required": true,
+        "description": "Contact name or part of it."
+      }
+    }
+  },
+  "place_call": {
+    "description": "Start a phone call. App asks the user to confirm.",
+    "risk_tier": "T2",
+    "arguments": {
+      "number": {
+        "type": "string",
+        "required": true,
+        "description": "Phone number to dial."
+      },
+      "display_name": {
+        "type": "string",
+        "required": false,
+        "description": "Contact name for the confirmation card."
+      }
+    }
+  },
+  "compose_message": {
+    "description": "Open a message with text prefilled. Never sends; the user taps Send.",
+    "risk_tier": "T2",
+    "arguments": {
+      "app": {
+        "type": "string",
+        "required": true,
+        "description": "Messaging app.",
+        "enum": [
+          "whatsapp",
+          "sms"
+        ]
+      },
+      "recipient": {
+        "type": "string",
+        "required": true,
+        "description": "Contact name or phone number."
+      },
+      "text": {
+        "type": "string",
+        "required": true,
+        "description": "Message text."
+      }
+    }
+  },
+  "create_reminder": {
+    "description": "Create a reminder at a date and time.",
+    "risk_tier": "T1",
+    "arguments": {
+      "text": {
+        "type": "string",
+        "required": true,
+        "description": "What to be reminded about."
+      },
+      "datetime": {
+        "type": "string",
+        "required": true,
+        "description": "ISO 8601 date-time with UTC offset."
+      }
+    }
+  },
+  "create_calendar_event": {
+    "description": "Create a calendar event. App asks the user to confirm.",
+    "risk_tier": "T2",
+    "arguments": {
+      "title": {
+        "type": "string",
+        "required": true,
+        "description": "Event title."
+      },
+      "start": {
+        "type": "string",
+        "required": true,
+        "description": "ISO 8601 start with UTC offset."
+      },
+      "end": {
+        "type": "string",
+        "required": false,
+        "description": "ISO 8601 end with UTC offset."
+      },
+      "location": {
+        "type": "string",
+        "required": false,
+        "description": "Event location."
+      }
+    }
+  },
+  "get_time": {
+    "description": "Get the current time and date, optionally for another time zone.",
+    "risk_tier": "T0",
+    "arguments": {
+      "timezone": {
+        "type": "string",
+        "required": false,
+        "description": "IANA time zone, e.g. Europe/London. Omit for local."
+      }
+    }
+  },
+  "get_device_info": {
+    "description": "Read a device status field.",
+    "risk_tier": "T0",
+    "arguments": {
+      "field": {
+        "type": "string",
+        "required": true,
+        "description": "Which field.",
+        "enum": [
+          "battery",
+          "storage",
+          "memory",
+          "network"
+        ]
+      }
+    }
+  },
+  "search_local_files": {
+    "description": "Search local files by name or topic.",
+    "risk_tier": "T0",
+    "arguments": {
+      "query": {
+        "type": "string",
+        "required": true,
+        "description": "Search text."
+      },
+      "file_type": {
+        "type": "string",
+        "required": false,
+        "description": "Optional file type filter.",
+        "enum": [
+          "pdf",
+          "docx",
+          "pptx",
+          "xlsx",
+          "image",
+          "any"
+        ]
+      }
+    }
+  },
+  "open_document": {
+    "description": "Open a local document in a viewer.",
+    "risk_tier": "T1",
+    "arguments": {
+      "query": {
+        "type": "string",
+        "required": true,
+        "description": "Exact filename or a description of the document."
+      }
+    }
+  },
+  "read_document": {
+    "description": "Read text from a local document.",
+    "risk_tier": "T0",
+    "arguments": {
+      "path": {
+        "type": "string",
+        "required": true,
+        "description": "File path or filename."
+      },
+      "pages": {
+        "type": "string",
+        "required": false,
+        "description": "Optional page range such as 1 or 2-4."
+      }
+    }
+  },
+  "set_timer": {
+    "description": "Start a countdown timer.",
+    "risk_tier": "T1",
+    "arguments": {
+      "seconds": {
+        "type": "integer",
+        "required": true,
+        "description": "Duration in seconds.",
+        "min": 1
+      },
+      "label": {
+        "type": "string",
+        "required": false,
+        "description": "Optional timer label."
+      }
+    }
+  },
+  "set_alarm": {
+    "description": "Set an alarm for a clock time.",
+    "risk_tier": "T1",
+    "arguments": {
+      "hour": {
+        "type": "integer",
+        "required": true,
+        "description": "Hour, 24-hour clock.",
+        "min": 0,
+        "max": 23
+      },
+      "minute": {
+        "type": "integer",
+        "required": true,
+        "description": "Minute.",
+        "min": 0,
+        "max": 59
+      },
+      "label": {
+        "type": "string",
+        "required": false,
+        "description": "Optional alarm label."
+      },
+      "days": {
+        "type": "array",
+        "required": false,
+        "description": "Repeat days; omit for a one-time alarm.",
+        "items_enum": [
+          "mon",
+          "tue",
+          "wed",
+          "thu",
+          "fri",
+          "sat",
+          "sun"
+        ]
+      }
+    }
+  },
+  "media_control": {
+    "description": "Control media playback.",
+    "risk_tier": "T1",
+    "arguments": {
+      "action": {
+        "type": "string",
+        "required": true,
+        "description": "Playback action.",
+        "enum": [
+          "play",
+          "pause",
+          "next",
+          "previous",
+          "volume_up",
+          "volume_down",
+          "mute"
+        ]
+      },
+      "query": {
+        "type": "string",
+        "required": false,
+        "description": "What to play (only with action=play)."
+      }
+    }
+  },
+  "calculator": {
+    "description": "Evaluate an arithmetic expression exactly.",
+    "risk_tier": "T0",
+    "arguments": {
+      "expression": {
+        "type": "string",
+        "required": true,
+        "description": "Expression such as 1847*23."
+      }
+    }
+  },
+  "clipboard_read": {
+    "description": "Read the clipboard. Only when the user asks.",
+    "risk_tier": "T0",
+    "arguments": {}
+  },
+  "clipboard_write": {
+    "description": "Copy text to the clipboard.",
+    "risk_tier": "T1",
+    "arguments": {
+      "text": {
+        "type": "string",
+        "required": true,
+        "description": "Text to copy."
+      }
+    }
+  },
+  "remember_fact": {
+    "description": "Save a user-approved fact to memory. App asks the user to confirm.",
+    "risk_tier": "T2",
+    "arguments": {
+      "fact": {
+        "type": "string",
+        "required": true,
+        "description": "The fact to remember, in one sentence."
+      }
+    }
+  },
+  "forget_fact": {
+    "description": "Remove a saved fact from memory.",
+    "risk_tier": "T2",
+    "arguments": {
+      "fact": {
+        "type": "string",
+        "required": true,
+        "description": "Which fact to forget."
+      }
+    }
+  }
+}

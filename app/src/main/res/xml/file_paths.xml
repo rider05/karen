@@ -2,4 +2,5 @@
 <paths>
     <cache-path name="photos" path="photos/" />
     <cache-path name="files" path="files/" />
+    <files-path name="vault" path="." />
 </paths>

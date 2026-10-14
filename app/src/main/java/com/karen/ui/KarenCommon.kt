@@ -1094,6 +1094,8 @@ fun ActionConfirmationCard(
     subtitle: String,
     confirmLabel: String = "Confirm & Add",
     dismissLabel: String = "Dismiss",
+    /** Line shown after confirm; defaults to the calendar note. */
+    confirmedNote: String = "Added to local system calendar (Zero egress)",
     onConfirm: () -> Unit = {},
     onDismiss: () -> Unit = {}
 ) {
@@ -1159,7 +1161,7 @@ fun ActionConfirmationCard(
                 )
                 Spacer(Modifier.width(6.dp))
                 Text(
-                    text = "Added to local system calendar (Zero egress)",
+                    text = confirmedNote,
                     color = colors.accentSuccess,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Medium

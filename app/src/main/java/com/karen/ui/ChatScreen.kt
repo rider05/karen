@@ -487,7 +487,7 @@ fun ChatScreen(
         if (calls.isEmpty()) return reply
         var visible = stripToolCalls(reply, calls)
         val notes = mutableListOf<String>()
-        var pill: String? = null
+        val pills = mutableListOf<String>()
         for (call in calls.take(2)) {
             val spec = ToolSpecs.byName(context, call.name)
             if (spec == null) {
@@ -525,17 +525,17 @@ fun ChatScreen(
                 ExecResult(false, "failed (${e.message})")
             }
             val ms = System.currentTimeMillis() - t0
-            pill = "${spec.name} · ${ms}ms"
+            pills.add("${spec.name} · ${ms}ms")
             notes.add((if (res.ok) "✓ " else "⚠ ") + "${spec.name}: ${res.text}")
         }
         if (notes.isNotEmpty()) {
             visible = (if (visible.isBlank()) "" else visible.trimEnd() + "\n\n") +
                 notes.joinToString("\n")
         }
-        if (pill != null) {
+        if (pills.isNotEmpty()) {
             val i = messages.indexOfFirst { (it as? ChatItem.Assistant)?.id == id }
             if (i >= 0) {
-                (messages[i] as? ChatItem.Assistant)?.let { messages[i] = it.copy(toolCall = pill) }
+                (messages[i] as? ChatItem.Assistant)?.let { messages[i] = it.copy(toolCall = pills.joinToString(" · ")) }
             }
         }
         persist()
@@ -1518,11 +1518,117 @@ fun ChatScreen(
                     }
                 }
             }
+            // Slash tool menu (ChatGPT/OpenCode style): "/…" lists phone
+            // tools above the composer; picking one inserts "/name ".
+            val slashQuery = if (input.startsWith("/") && ' ' !in input) {
+                input.removePrefix("/").trimStart()
+            } else null
+            if (slashQuery != null) {
+                val slashSpecs = remember(slashQuery) {
+                    val all = ToolSpecs.load(context)
+                    val q = slashQuery.lowercase()
+                    all.filter { q.isBlank() || it.name.contains(q) || it.desc.lowercase().contains(q) }
+                        .sortedWith(compareBy({ !it.name.startsWith(q) }, { it.name }))
+                        .take(8)
+                }
+                if (slashSpecs.isNotEmpty()) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 22.dp, end = 14.dp, bottom = 6.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(colors.surface)
+                            .border(1.dp, colors.border, RoundedCornerShape(14.dp))
+                            .padding(vertical = 4.dp)
+                    ) {
+                        Text(
+                            text = "TOOLS · tap to insert",
+                            color = colors.textMuted,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                        )
+                        slashSpecs.forEach { spec ->
+                            val tierTint = when (spec.tier) {
+                                "T0" -> colors.accentGreen
+                                "T2", "T3" -> colors.accentAmber
+                                else -> colors.accentBlue
+                            }
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { input = "/${spec.name} " }
+                                    .padding(horizontal = 12.dp, vertical = 7.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(7.dp)
+                                        .clip(androidx.compose.foundation.shape.CircleShape)
+                                        .background(tierTint)
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    text = "/${spec.name}",
+                                    color = colors.accentGreen,
+                                    fontSize = 13.sp,
+                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    text = spec.desc,
+                                    color = colors.textSecondary,
+                                    fontSize = 12.sp,
+                                    maxLines = 1,
+                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            // Inserted "/tool …" reminder chip (args are plain text after the name).
+            val slashActive = Regex("^/([A-Za-z_][A-Za-z0-9_]*)\\s")
+                .find(input)?.groupValues?.getOrNull(1)
+                ?.let { ToolSpecs.byName(context, it) }
+            if (slashActive != null) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(start = 22.dp, bottom = 6.dp)
+                ) {
+                    Icon(Icons.Default.Build, contentDescription = null, tint = colors.accentGreen, modifier = Modifier.size(12.dp))
+                    Spacer(Modifier.width(5.dp))
+                    Text(
+                        text = "/${slashActive.name} · ${slashActive.desc}",
+                        color = colors.textMuted,
+                        fontSize = 11.sp,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                    )
+                }
+            }
             ChatGPTFloatingComposer(
                 value = input,
                 onValueChange = { input = it },
                 onSend = {
-                val userText = input.trim()
+                val rawText = input.trim()
+                // "/tool args" expands to an explicit tool instruction.
+                val m = Regex("^/([A-Za-z_][A-Za-z0-9_]*)\\s*(.*)$", RegexOption.DOT_MATCHES_ALL)
+                    .matchEntire(rawText)
+                val userText = if (m != null) {
+                    val spec = ToolSpecs.byName(context, m.groupValues[1])
+                    if (spec == null) rawText
+                    else {
+                        val rest = m.groupValues[2].trim()
+                        val req = spec.args.filter { it.required }.joinToString(", ") { it.name }
+                        "Use the \"${spec.name}\" tool now (${spec.desc}" +
+                            (if (req.isNotBlank()) ". Required arguments: $req" else "") + ")." +
+                            if (rest.isNotBlank()) " Request: $rest"
+                            else " Proceed with sensible defaults, or ask for the missing detail."
+                    }
+                } else rawText
                 if (userText.isNotBlank() || attachments.isNotEmpty()) {
                     input = ""
                     val sentAttachments = attachments

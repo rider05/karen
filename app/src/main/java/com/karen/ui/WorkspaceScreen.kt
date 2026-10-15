@@ -513,6 +513,12 @@ private suspend fun callWorkspaceModel(
     return null
 }
 
+/** Short honest API/model failure text for chat notes (never a traceback). */
+internal fun modelErrorText(e: Exception): String {
+    val raw = (e.message ?: "request failed").trim().take(160)
+    return "⚠ model error: $raw"
+}
+
 /** Fix rounds per build turn: scaffold once, then repair until clean. */
 private const val MAX_AGENT_FIXES = 3
 
@@ -540,7 +546,11 @@ private suspend fun scaffoldWithModel(
         "If the whole project does not fit in one message, output as many COMPLETE blocks as fit and stop cleanly after an ///END — you will be asked to continue. Never leave a block unclosed. " +
         "Maintain the existing project structure on follow-ups: edit files in place, keep paths stable unless the user asks to restructure."
     // Give the model the current tree so follow-ups continue the same project.
-    val tree = withContext(Dispatchers.IO) { projectTreeSummary(projectRootDir(project)) }
+    val tree = try {
+        withContext(Dispatchers.IO) { projectTreeSummary(projectRootDir(project)) }
+    } catch (_: Exception) {
+        "(tree unavailable)"
+    }
     val firstAsk = "Existing project structure:\n$tree\n\nRequest: $userText"
 
     suspend fun callModel(history: List<Pair<String, String>>): String? =
@@ -549,10 +559,15 @@ private suspend fun scaffoldWithModel(
             selectedModelName, windowTokens, modelOverride, system, history
         )
 
-    var reply = callModel(listOf("user" to firstAsk)) ?: return "No model available to scaffold."
+    var reply = try {
+        callModel(listOf("user" to firstAsk))
+    } catch (e: Exception) {
+        return modelErrorText(e)
+    } ?: return "No model available to scaffold."
     val allFiles = linkedMapOf<String, String>()
     var chunks = 0
     var stillTruncated = false
+    var callError: String? = null
     while (true) {
         chunks++
         val parsed = parseScaffold(reply)
@@ -564,15 +579,20 @@ private suspend fun scaffoldWithModel(
         stillTruncated = isTruncatedScaffold(reply)
         if (!stillTruncated || chunks >= MAX_SCAFFOLD_CHUNKS) break
         val doneList = allFiles.keys.sorted().joinToString(", ").ifBlank { "(none completed)" }
-        val next = callModel(
-            listOf(
-                "user" to firstAsk,
-                "assistant" to reply.takeLast(6000),
-                "user" to "Continue exactly where you stopped. Do NOT resend completed files ($doneList). " +
-                    "Output only the REMAINING files as complete ///FILE blocks ending with ///END. " +
-                    "If you were cut inside a file, resend that whole file from its start."
+        val next = try {
+            callModel(
+                listOf(
+                    "user" to firstAsk,
+                    "assistant" to reply.takeLast(6000),
+                    "user" to "Continue exactly where you stopped. Do NOT resend completed files ($doneList). " +
+                        "Output only the REMAINING files as complete ///FILE blocks ending with ///END. " +
+                        "If you were cut inside a file, resend that whole file from its start."
+                )
             )
-        )
+        } catch (e: Exception) {
+            callError = modelErrorText(e)
+            break
+        }
         if (next.isNullOrBlank()) break
         reply = next
     }
@@ -590,8 +610,9 @@ private suspend fun scaffoldWithModel(
     // Validate: confirm every written file is really on disk, non-empty.
     val verdict = validateScaffoldFiles(project, list.map { it.first })
     val verifyNote = if (verdict.ok) " Verified on disk." else " WARNING: ${verdict.detail}."
+    val stoppedNote = if (callError != null) " Stopped: $callError." else ""
     if (!quiet) project.chat.add(ProjectChat("assistant", "Scaffolded ${list.size} file(s)$chunkNote.\n${filesSummary(list)}$truncNote$verifyNote", tookMs = scaffoldStamp(), tokEst = estTokens(reply)))
-    return "${list.size} file(s) written$chunkNote$truncNote$verifyNote"
+    return "${list.size} file(s) written$chunkNote$truncNote$verifyNote$stoppedNote"
 }
 
 private fun filesSummary(files: List<Pair<String, String>>): String =
@@ -1209,20 +1230,29 @@ fun WorkspaceScreen(
                         fixes++
                         if (cancelChat) break
                         project.steps.add(ProjectStep("Fix issues (round $fixes)", false))
-                        val tree = withContext(Dispatchers.IO) { projectTreeSummary(dir) }
-                        val fixReply = callWorkspaceModel(
-                            cloudScaffold, cwCloudKey, weightForCalls, effort, threads,
-                            sendModel, windowTokens, modelOverride,
-                            "You are a code repair engine for Karen Workspace. Reply using this exact format:\n" +
-                                "///FILE: relative/path/File.ext\n<complete file content>\n///END\n" +
-                                "Rules: output ONLY corrected files as complete blocks (up to 8, no fences, no prose).",
-                            listOf(
-                                "user" to "The build has these problems:\n${checkOut.take(3000)}\n\n" +
-                                    (if (!diskOk) "Some files are missing or empty — rewrite them completely.\n" else "") +
-                                    "Existing project structure:\n$tree\n\n" +
-                                    "Original request: $t"
+                        val tree = try {
+                            withContext(Dispatchers.IO) { projectTreeSummary(dir) }
+                        } catch (_: Exception) {
+                            "(tree unavailable)"
+                        }
+                        val fixReply = try {
+                            callWorkspaceModel(
+                                cloudScaffold, cwCloudKey, weightForCalls, effort, threads,
+                                sendModel, windowTokens, modelOverride,
+                                "You are a code repair engine for Karen Workspace. Reply using this exact format:\n" +
+                                    "///FILE: relative/path/File.ext\n<complete file content>\n///END\n" +
+                                    "Rules: output ONLY corrected files as complete blocks (up to 8, no fences, no prose).",
+                                listOf(
+                                    "user" to "The build has these problems:\n${checkOut.take(3000)}\n\n" +
+                                        (if (!diskOk) "Some files are missing or empty — rewrite them completely.\n" else "") +
+                                        "Existing project structure:\n$tree\n\n" +
+                                        "Original request: $t"
+                                )
                             )
-                        )
+                        } catch (e: Exception) {
+                            note("Agent: fix round $fixes failed (${modelErrorText(e)}).")
+                            break
+                        }
                         if (cancelChat) break
                         if (fixReply.isNullOrBlank()) {
                             note("Agent: fix round $fixes returned nothing.")

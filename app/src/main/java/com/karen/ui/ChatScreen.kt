@@ -1134,6 +1134,70 @@ fun ChatScreen(
      */
     fun tryDirectToolTurn(rawText: String): Boolean {
         val (spec, rest) = matchSlash(context, rawText) ?: return false
+        // place_call with a name skips the model too: match contacts now,
+        // then confirm (or direct-run per Settings) — no API needed.
+        if (spec.name == "place_call" && rest.any { it.isLetter() }) {
+            val newId = System.currentTimeMillis().toString()
+            messages.add(ChatItem.User(id = "user_$newId", text = rawText, tokens = rawText.length / 4))
+            StyleMemory.bumpMessageCount(context)
+            val aid = "asst_$newId"
+            streamStartMs = System.currentTimeMillis()
+            messages.add(ChatItem.Assistant(id = aid, text = "Looking up “$rest”…", model = "tools"))
+            isGenerating = true
+            coroutineScope.launch {
+                val hits = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    queryContacts(context, rest, 5)
+                }
+                val i = messages.indexOfFirst { (it as? ChatItem.Assistant)?.id == aid }
+                when {
+                    hits.isEmpty() -> {
+                        if (i >= 0) messages[i] = (messages[i] as ChatItem.Assistant).copy(
+                            text = "⚠ place_call: no contacts match “$rest” — not run"
+                        )
+                    }
+                    hits.size == 1 -> {
+                        val args = org.json.JSONObject()
+                            .put("number", digitsOf(hits[0].second))
+                            .put("display_name", hits[0].first)
+                        if (runsDirect(spec, context)) {
+                            val res = try {
+                                executePhoneTool(context, spec, args)
+                            } catch (e: Exception) {
+                                ExecResult(false, "failed (${e.message})")
+                            }
+                            if (i >= 0) messages[i] = (messages[i] as ChatItem.Assistant).copy(
+                                text = (if (res.ok) "✓ " else "⚠ ") + "place_call: ${res.text}",
+                                toolCall = "place_call"
+                            )
+                        } else if (i >= 0) {
+                            val summary = summarizeArgs(spec, args)
+                            messages[i] = (messages[i] as ChatItem.Assistant).copy(
+                                text = "place_call: $summary",
+                                pendingTool = PendingTool(spec.name, args.toString(), summary)
+                            )
+                        }
+                    }
+                    else -> {
+                        val options = hits.map { "${it.first} — ${it.second}" }
+                        val args = org.json.JSONObject().put("number", rest)
+                        if (i >= 0) messages[i] = (messages[i] as ChatItem.Assistant).copy(
+                            text = "place_call: ${options.size} similar contacts — pick one below",
+                            pendingTool = PendingTool(
+                                spec.name,
+                                args.toString(),
+                                "matches: ${options.joinToString("; ")}",
+                                options
+                            )
+                        )
+                    }
+                }
+                isGenerating = false
+                stampTook(aid)
+                persist()
+                scrollToBottomIfNear()
+            }
+            return true
+        }
         val dargs = directArgs(spec, rest) ?: return false
         val newId = System.currentTimeMillis().toString()
         messages.add(ChatItem.User(id = "user_$newId", text = rawText, tokens = rawText.length / 4))

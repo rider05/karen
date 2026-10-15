@@ -1243,6 +1243,7 @@ fun ChatScreen(
                 selectedModel = if (autoRoute) "Auto → " + (lastRouted ?: selectedModel) else selectedModel,
                 onMenuClick = onOpenDrawer,
                 onModelClick = { showModelSheet = true },
+                compact = true,
                 effort = if (isReasoningModel(if (autoRoute) (lastRouted ?: selectedModel) else selectedModel)) effort else null,
                 efforts = listOf("Low", "Medium", "High", "Max", "Extreme", "XHigh"),
                 onSelectEffort = { effort = it },

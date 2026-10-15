@@ -224,37 +224,34 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                         color = colors.textMuted,
                         fontSize = 11.5.sp
                     )
-                    // Auto model routing (per-task best model).
+                    // Model routing mode: auto-switching vs the selected model.
                     var autoRoutePref by remember { mutableStateOf(UserPrefs.autoRoute(context)) }
                     var autoCloudPref by remember { mutableStateOf(UserPrefs.autoCloud(context)) }
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(colors.surfaceHover.copy(alpha = 0.55f))
-                            .border(1.dp, colors.border.copy(alpha = 0.6f), RoundedCornerShape(12.dp))
-                            .padding(horizontal = 12.dp, vertical = 10.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text("Auto Model Routing", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
-                            Text("Code → strongest · reasoning → thinker · quick chats → fastest", color = colors.textMuted, fontSize = 11.5.sp)
+                    Text("Model Routing", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf(true to "Auto-switching", false to "Selected model").forEach { (value, label) ->
+                            val selected = autoRoutePref == value
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(if (selected) colors.accentGreen.copy(alpha = 0.18f) else colors.surfaceHover)
+                                    .border(1.dp, if (selected) colors.accentGreen else colors.border, RoundedCornerShape(8.dp))
+                                    .clickable {
+                                        autoRoutePref = value
+                                        UserPrefs.setAutoRoute(context, value)
+                                    }
+                                    .padding(horizontal = 14.dp, vertical = 6.dp)
+                            ) {
+                                Text(label, color = if (selected) colors.accentGreen else colors.textPrimary, fontSize = 11.5.sp)
+                            }
                         }
-                        Switch(
-                            checked = autoRoutePref,
-                            onCheckedChange = {
-                                autoRoutePref = it
-                                UserPrefs.setAutoRoute(context, it)
-                            },
-                            colors = SwitchDefaults.colors(
-                                checkedThumbColor = Color.White,
-                                checkedTrackColor = colors.accentGreen,
-                                uncheckedThumbColor = colors.textMuted,
-                                uncheckedTrackColor = colors.surfaceHover
-                            )
-                        )
                     }
+                    Text(
+                        if (autoRoutePref) "Code → strongest · reasoning → thinker · quick chats → fastest"
+                        else "Pinned: ${UserPrefs.selectedModel(context).ifBlank { "(pick one in the model sheet)" }} — every surface uses it",
+                        color = colors.textMuted,
+                        fontSize = 11.5.sp
+                    )
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -1058,10 +1055,7 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                                             val file = AppUpdate.download(context, sha, { p -> progress = p }, errors)
                                             if (file != null) {
                                                 pendingSha = null
-                                                updateStatus = "Downloaded — opening installer…"
-                                                if (!AppUpdate.install(context, file)) {
-                                                    updateStatus = "Installer blocked — allow installs, then retry"
-                                                }
+                                                updateStatus = AppUpdate.installAndReopen(context, file)
                                             } else {
                                                 updateStatus = "Download failed: ${errors.firstOrNull() ?: "unknown error"}"
                                             }

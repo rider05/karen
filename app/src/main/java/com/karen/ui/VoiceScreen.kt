@@ -76,8 +76,13 @@ fun VoiceScreen(
                 val locals = UserPrefs.models(personaCtx)
                     .filter { !isCloudProviderName(it) && ModelDownloader.isRunnableWeight(personaCtx, it) }
                 val keyed = allCloudProviders(personaCtx).filter { UserPrefs.apiKey(personaCtx, it.id).isNotBlank() }
-                val pick = routeModel(text, locals, keyed, UserPrefs.autoCloud(personaCtx))?.modelName
-                    ?: UserPrefs.selectedModel(personaCtx).takeIf { isSelectableModel(personaCtx, it) }
+                // Manual pick wins when auto-switching is off (same rule as Chat).
+                val pinned = UserPrefs.selectedModel(personaCtx).takeIf { isSelectableModel(personaCtx, it) }
+                val pick = if (!UserPrefs.autoRoute(personaCtx)) {
+                    pinned
+                } else {
+                    routeModel(text, locals, keyed, UserPrefs.autoCloud(personaCtx))?.modelName ?: pinned
+                }
                 val customs = UserPrefs.customProviders(personaCtx)
                 val cloud = pick?.let { findCloudProviderByName(it, customs) }
                 val key = cloud?.let { UserPrefs.apiKey(personaCtx, it.id) }.orEmpty()

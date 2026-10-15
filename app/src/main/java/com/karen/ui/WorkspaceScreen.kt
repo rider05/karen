@@ -262,18 +262,61 @@ internal fun safeScaffoldPath(project: Project, relPath: String): File? {
     return File(project.dir, clean)
 }
 
+/** Per-project usage ledger: file IO, model thinking time, token estimates. */
+data class UsageStats(
+    var filesRead: Int = 0,
+    var filesWritten: Int = 0,
+    var bytesWritten: Long = 0L,
+    var modelMs: Long = 0L,
+    var inTok: Int = 0,
+    var outTok: Int = 0
+)
+
+object WorkspaceUsage {
+    private val map = mutableMapOf<String, UsageStats>()
+
+    @Synchronized
+    fun forDir(dir: String): UsageStats = map.getOrPut(dir) { UsageStats() }
+
+    @Synchronized
+    fun snapshot(dir: String): UsageStats = (map[dir] ?: UsageStats()).copy()
+
+    @Synchronized
+    fun reset(dir: String) {
+        map.remove(dir)
+    }
+}
+
+/** Times one model call and accrues thinking time + token estimates. */
+private suspend fun timedModel(dir: String, inputChars: Int, block: suspend () -> String?): String? {
+    val t0 = System.currentTimeMillis()
+    val r = block()
+    val s = WorkspaceUsage.forDir(dir)
+    s.modelMs += System.currentTimeMillis() - t0
+    s.inTok += inputChars / 4
+    if (!r.isNullOrBlank()) s.outTok += r.length / 4
+    return r
+}
+
 private fun writeScaffoldFiles(project: Project, files: List<Pair<String, String>>): String {
     var written = 0
     var skipped = 0
+    var bytes = 0L
     for ((rel, content) in files.take(12)) {
         val target = safeScaffoldPath(project, rel) ?: continue
         try {
             target.parentFile?.mkdirs()
             target.writeText(content)
             written++
+            bytes += content.length
         } catch (_: Exception) {
             skipped++
         }
+    }
+    if (written > 0) {
+        val s = WorkspaceUsage.forDir(File(project.dir).absolutePath)
+        s.filesWritten += written
+        s.bytesWritten += bytes
     }
     return if (written == 0 && skipped > 0) "Could not write files." else "$written file(s) written${if (skipped > 0) ", $skipped failed" else ""}"
 }
@@ -371,17 +414,20 @@ private fun projectContextForModel(root: File, maxChars: Int = 9000): String {
     val sb = StringBuilder()
     sb.appendLine(projectTreeSummary(root))
     var used = sb.length
+    var reads = 0
     val files = listProjectEntries(root).filter { it.isFile && !isBinaryName(it.name) }
         .sortedBy { relPathOf(root, it) }
         .take(8)
     for (f in files) {
         val rel = relPathOf(root, f)
         val body = readTextFileSafe(f, maxChars = 2500) ?: continue
+        reads++
         val block = "\n\n--- $rel ---\n$body"
         if (used + block.length > maxChars) break
         sb.append(block)
         used += block.length
     }
+    if (reads > 0) WorkspaceUsage.forDir(root.absolutePath).filesRead += reads
     return sb.toString()
 }
 
@@ -560,7 +606,9 @@ private suspend fun scaffoldWithModel(
         )
 
     var reply = try {
-        callModel(listOf("user" to firstAsk))
+        timedModel(File(project.dir).absolutePath, firstAsk.length) {
+            callModel(listOf("user" to firstAsk))
+        }
     } catch (e: Exception) {
         return modelErrorText(e)
     } ?: return "No model available to scaffold."
@@ -580,15 +628,16 @@ private suspend fun scaffoldWithModel(
         if (!stillTruncated || chunks >= MAX_SCAFFOLD_CHUNKS) break
         val doneList = allFiles.keys.sorted().joinToString(", ").ifBlank { "(none completed)" }
         val next = try {
-            callModel(
-                listOf(
-                    "user" to firstAsk,
-                    "assistant" to reply.takeLast(6000),
-                    "user" to "Continue exactly where you stopped. Do NOT resend completed files ($doneList). " +
-                        "Output only the REMAINING files as complete ///FILE blocks ending with ///END. " +
-                        "If you were cut inside a file, resend that whole file from its start."
-                )
+            val contHistory = listOf(
+                "user" to firstAsk,
+                "assistant" to reply.takeLast(6000),
+                "user" to "Continue exactly where you stopped. Do NOT resend completed files ($doneList). " +
+                    "Output only the REMAINING files as complete ///FILE blocks ending with ///END. " +
+                    "If you were cut inside a file, resend that whole file from its start."
             )
+            timedModel(File(project.dir).absolutePath, contHistory.sumOf { it.second.length }) {
+                callModel(contHistory)
+            }
         } catch (e: Exception) {
             callError = modelErrorText(e)
             break
@@ -845,6 +894,25 @@ private fun loadProjectState(project: Project): Boolean {
     }
 }
 
+@Composable
+private fun UsageRow(label: String, value: String) {
+    val colors = LocalKarenColors.current
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(label, color = colors.textSecondary, fontSize = 13.sp)
+        Text(
+            value,
+            color = colors.textPrimary,
+            fontSize = 13.sp,
+            fontFamily = FontFamily.Monospace,
+            fontWeight = FontWeight.SemiBold
+        )
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SessionListSheet(
@@ -1057,9 +1125,12 @@ fun WorkspaceScreen(
     var contentWindow by remember { mutableStateOf(UserPrefs.contextTokens(ctx)) }
     var confirmNewSession by remember { mutableStateOf(false) }
     var showSessions by remember { mutableStateOf(false) }
+    var showUsage by remember { mutableStateOf(false) }
+    var usageFor by remember { mutableStateOf<Project?>(null) }
 
     KarenHomeBackHandler(onNavigateToHome = onNavigateToHome) {
         when {
+            showUsage -> { showUsage = false; true }
             showSessions -> { showSessions = false; true }
             confirmNewSession -> { confirmNewSession = false; true }
             showModelSheet -> { showModelSheet = false; true }
@@ -1236,19 +1307,22 @@ fun WorkspaceScreen(
                             "(tree unavailable)"
                         }
                         val fixReply = try {
-                            callWorkspaceModel(
-                                cloudScaffold, cwCloudKey, weightForCalls, effort, threads,
-                                sendModel, windowTokens, modelOverride,
-                                "You are a code repair engine for Karen Workspace. Reply using this exact format:\n" +
-                                    "///FILE: relative/path/File.ext\n<complete file content>\n///END\n" +
-                                    "Rules: output ONLY corrected files as complete blocks (up to 8, no fences, no prose).",
-                                listOf(
-                                    "user" to "The build has these problems:\n${checkOut.take(3000)}\n\n" +
-                                        (if (!diskOk) "Some files are missing or empty — rewrite them completely.\n" else "") +
-                                        "Existing project structure:\n$tree\n\n" +
-                                        "Original request: $t"
-                                )
+                            val fixHistory = listOf(
+                                "user" to "The build has these problems:\n${checkOut.take(3000)}\n\n" +
+                                    (if (!diskOk) "Some files are missing or empty — rewrite them completely.\n" else "") +
+                                    "Existing project structure:\n$tree\n\n" +
+                                    "Original request: $t"
                             )
+                            timedModel(dir.absolutePath, fixHistory.sumOf { it.second.length }) {
+                                callWorkspaceModel(
+                                    cloudScaffold, cwCloudKey, weightForCalls, effort, threads,
+                                    sendModel, windowTokens, modelOverride,
+                                    "You are a code repair engine for Karen Workspace. Reply using this exact format:\n" +
+                                        "///FILE: relative/path/File.ext\n<complete file content>\n///END\n" +
+                                        "Rules: output ONLY corrected files as complete blocks (up to 8, no fences, no prose).",
+                                    fixHistory
+                                )
+                            }
                         } catch (e: Exception) {
                             note("Agent: fix round $fixes failed (${modelErrorText(e)}).")
                             break
@@ -1359,14 +1433,16 @@ fun WorkspaceScreen(
                     val enriched = if (web != null) {
                         (history + ("user" to "Use these fresh web results if relevant:\n$web")).takeLast(cloudLimit)
                     } else history.takeLast(cloudLimit)
-                    val reply = cloud.complete(
-                        cloudKey,
-                        enriched,
-                        maxTokensFor(effort),
-                        thinkingBudget = if (cloud.reasoning) thinkingBudgetFor(effort) else null,
-                        historyLimit = cloudLimit,
-                        model = UserPrefs.apiModel(ctx, cloud.id).ifBlank { null }
-                    )
+                    val reply = timedModel(dir.absolutePath, enriched.sumOf { it.second.length }) {
+                        cloud.complete(
+                            cloudKey,
+                            enriched,
+                            maxTokensFor(effort),
+                            thinkingBudget = if (cloud.reasoning) thinkingBudgetFor(effort) else null,
+                            historyLimit = cloudLimit,
+                            model = UserPrefs.apiModel(ctx, cloud.id).ifBlank { null }
+                        )
+                    } ?: ""
                     if (cancelChat) {
                         project.chat.add(ProjectChat("assistant", "(stopped)"))
                         saveProjectState(project)
@@ -1409,14 +1485,16 @@ fun WorkspaceScreen(
                             val withWeb = if (web != null) {
                                 (pairs + ("user" to "Use these fresh web results if relevant:\n$web")).takeLast(localLimit)
                             } else pairs.takeLast(localLimit)
-                            val reply = withContext(Dispatchers.IO) {
-                                KarenLlama.complete(
-                                    buildInstruction,
-                                    withWeb.map { it.first }.toTypedArray(),
-                                    withWeb.map { it.second }.toTypedArray(),
-                                    maxTokensFor(effort)
-                                )
-                            }
+                            val reply = timedModel(dir.absolutePath, withWeb.sumOf { it.second.length }) {
+                                withContext(Dispatchers.IO) {
+                                    KarenLlama.complete(
+                                        buildInstruction,
+                                        withWeb.map { it.first }.toTypedArray(),
+                                        withWeb.map { it.second }.toTypedArray(),
+                                        maxTokensFor(effort)
+                                    )
+                                }
+                            } ?: ""
                             if (cancelChat) {
                                 project.chat.add(ProjectChat("assistant", "(stopped)"))
                                 saveProjectState(project)
@@ -1498,6 +1576,15 @@ fun WorkspaceScreen(
                     }
                 },
                 Triple("New project", Icons.Default.Add) { showNewProject = true },
+                Triple("Usage stats", Icons.Default.BarChart) {
+                    val target = selected
+                    if (target == null) {
+                        android.widget.Toast.makeText(ctx, "Open a project first", android.widget.Toast.LENGTH_SHORT).show()
+                    } else {
+                        usageFor = target
+                        showUsage = true
+                    }
+                },
                 Triple("Content window: ${windowLabel(contentWindow)}", Icons.Default.DataArray) {
                     contentWindow = UserPrefs.contextTokens(ctx)
                     showWindowDialog = true
@@ -1510,6 +1597,45 @@ fun WorkspaceScreen(
                 }
             )
         )
+
+        // Usage stats for the open project (⋯ → Usage stats).
+        val usageProject = usageFor
+        if (showUsage && usageProject != null) {
+            var usageVersion by remember(usageProject) { mutableStateOf(0) }
+            val stats = remember(usageProject, usageVersion) {
+                WorkspaceUsage.snapshot(File(usageProject.dir).absolutePath)
+            }
+            AlertDialog(
+                onDismissRequest = { showUsage = false },
+                containerColor = colors.surface,
+                titleContentColor = colors.textPrimary,
+                textContentColor = colors.textSecondary,
+                title = { Text("Usage · ${usageProject.name}") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        UsageRow("Files read", "${stats.filesRead}")
+                        UsageRow("Files written", "${stats.filesWritten} · ${formatFileSize(stats.bytesWritten)}")
+                        UsageRow("Thinking", formatDuration(stats.modelMs))
+                        UsageRow("Input tokens", "≈${stats.inTok}")
+                        UsageRow("Output tokens", "≈${stats.outTok}")
+                        Text(
+                            "Token counts are chars÷4 estimates; thinking is total model-call time. Counters reset when the screen closes.",
+                            color = colors.textMuted,
+                            fontSize = 11.sp
+                        )
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { showUsage = false }) { Text("Close", color = colors.accentGreen) }
+                },
+                dismissButton = {
+                    TextButton(onClick = {
+                        WorkspaceUsage.reset(File(usageProject.dir).absolutePath)
+                        usageVersion++
+                    }) { Text("Reset", color = colors.accentRed) }
+                }
+            )
+        }
 
         if (selected == null) {
             // Project list

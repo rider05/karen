@@ -249,6 +249,15 @@ fun expandSlash(ctx: Context, raw: String): String {
  */
 fun directArgs(spec: ToolSpec, rest: String): JSONObject? {
     val r = rest.trim()
+    // Accept both "value" and "argname=value" forms for single-arg tools.
+    fun oneArg(): String? {
+        if (r.isBlank()) return null
+        val req = spec.args.firstOrNull { it.required } ?: return r
+        val prefix = req.name + "="
+        return if (r.startsWith(prefix, ignoreCase = true)) {
+            r.substring(prefix.length).trim().ifBlank { null }
+        } else r
+    }
     fun obj(vararg ps: Pair<String, Any>): JSONObject =
         JSONObject().apply { ps.forEach { (k, v) -> put(k, v) } }
     return when (spec.name) {
@@ -258,15 +267,15 @@ fun directArgs(spec: ToolSpec, rest: String): JSONObject? {
             val f = r.lowercase()
             if (f in listOf("battery", "storage", "memory", "network")) put("field", f)
         }
-        "calculator" -> if (r.isBlank()) null else obj("expression" to r)
-        "search_local_files" -> if (r.isBlank()) null else obj("query" to r)
-        "open_document" -> if (r.isBlank()) null else obj("query" to r)
-        "read_document" -> if (r.isBlank()) null else obj("path" to r)
-        "find_contact" -> if (r.isBlank()) null else obj("name" to r)
-        "clipboard_write" -> if (r.isBlank()) null else obj("text" to r)
-        "remember_fact" -> if (r.isBlank()) null else obj("fact" to r)
-        "forget_fact" -> if (r.isBlank()) null else obj("fact" to r)
-        "open_app" -> if (r.isBlank()) null else obj("app_name" to r)
+        "calculator" -> if (r.isBlank()) null else (oneArg() ?.let { obj("expression" to it) })
+        "search_local_files" -> if (r.isBlank()) null else (oneArg() ?.let { obj("query" to it) })
+        "open_document" -> if (r.isBlank()) null else (oneArg() ?.let { obj("query" to it) })
+        "read_document" -> if (r.isBlank()) null else (oneArg() ?.let { obj("path" to it) })
+        "find_contact" -> if (r.isBlank()) null else (oneArg() ?.let { obj("name" to it) })
+        "clipboard_write" -> if (r.isBlank()) null else (oneArg() ?.let { obj("text" to it) })
+        "remember_fact" -> if (r.isBlank()) null else (oneArg() ?.let { obj("fact" to it) })
+        "forget_fact" -> if (r.isBlank()) null else (oneArg() ?.let { obj("fact" to it) })
+        "open_app" -> if (r.isBlank()) null else (oneArg() ?.let { obj("app_name" to it) })
         "place_call" -> {
             // Digits dial direct (still T2-confirmed); names need AI + matching.
             val d = r.filter { it.isDigit() }
@@ -275,8 +284,9 @@ fun directArgs(spec: ToolSpec, rest: String): JSONObject? {
             } else null
         }
         "open_url" -> {
-            if (r.isBlank() || ' ' in r) null
-            else obj("url" to (if (r.startsWith("http://") || r.startsWith("https://")) r else "https://$r"))
+            val u = oneArg() ?: return null
+            if (' ' in u) null
+            else obj("url" to (if (u.startsWith("http://") || u.startsWith("https://")) u else "https://$u"))
         }
         "open_settings_page" -> {
             val p = r.lowercase().replace(" ", "_")
@@ -471,6 +481,9 @@ object DocVision {
                         val h = (page.height * scale).toInt().coerceIn(1, 2000)
                         val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
                         try {
+                            // Opaque white: fresh bitmaps are transparent black,
+                            // which JPEG keeps as black and swallows dark text.
+                            bmp.eraseColor(android.graphics.Color.WHITE)
                             page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
                             val bos = ByteArrayOutputStream()
                             bmp.compress(Bitmap.CompressFormat.JPEG, 70, bos)
@@ -501,39 +514,43 @@ object DocVision {
     /**
      * Transcribes [file]'s first pages. Returns (text, pagesRead) or null
      * when unusable (caller reports honestly: no key, offline, bad PDF).
+     * Bounded: 30s per attempt, 150s overall — never hangs the turn.
      */
     suspend fun transcribePdf(ctx: Context, file: File, maxPages: Int = 3): Pair<String, Int>? {
         val pages = renderPages(file, maxPages)
         if (pages.isEmpty()) return null
-        val keyed = visionOrder.mapNotNull { id ->
-            (cloudProviders + UserPrefs.customProviders(ctx)).find { it.id == id }
-                ?.takeIf { UserPrefs.apiKey(ctx, it.id).isNotBlank() }
-        }
-        if (keyed.isEmpty()) return null
-        val prompt = "Transcribe exactly the visible text in these document pages, top to bottom, " +
-            "page by page. No summary, no commentary — transcription only. " +
-            "If a page has no readable text, write [no text on page N]."
-        for (provider in keyed) {
-            val key = UserPrefs.apiKey(ctx, provider.id)
-            val userModel = UserPrefs.apiModel(ctx, provider.id).ifBlank { null }
-            val candidates = listOfNotNull(userModel, visionDefault(provider.id)).distinct()
-            for (model in candidates) {
-                try {
-                    val text = provider.complete(
-                        key,
-                        listOf("user" to prompt),
-                        2048,
-                        thinkingBudget = null,
-                        historyLimit = 2,
-                        model = model,
-                        images = pages
-                    ).trim()
-                    if (text.isNotBlank()) return text to pages.size
-                } catch (_: Exception) {
+        return kotlinx.coroutines.withTimeoutOrNull(150_000L) {
+            val keyed = visionOrder.mapNotNull { id ->
+                (cloudProviders + UserPrefs.customProviders(ctx)).find { it.id == id }
+                    ?.takeIf { UserPrefs.apiKey(ctx, it.id).isNotBlank() }
+            }
+            if (keyed.isEmpty()) return@withTimeoutOrNull null
+            val prompt = "Transcribe exactly the visible text in these document pages, top to bottom, " +
+                "page by page. No summary, no commentary — transcription only. " +
+                "If a page has no readable text, write [no text on page N]."
+            for (provider in keyed) {
+                val key = UserPrefs.apiKey(ctx, provider.id)
+                val userModel = UserPrefs.apiModel(ctx, provider.id).ifBlank { null }
+                val candidates = listOfNotNull(userModel, visionDefault(provider.id)).distinct()
+                for (model in candidates) {
+                    try {
+                        val text = provider.complete(
+                            key,
+                            listOf("user" to prompt),
+                            2048,
+                            thinkingBudget = null,
+                            historyLimit = 2,
+                            model = model,
+                            images = pages,
+                            timeoutMs = 30000
+                        ).trim()
+                        if (text.isNotBlank()) return@withTimeoutOrNull text to pages.size
+                    } catch (_: Exception) {
+                    }
                 }
             }
+            null
         }
-        return null
     }
 }
 

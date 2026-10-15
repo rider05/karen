@@ -238,8 +238,10 @@ suspend fun CloudProvider.complete(
     /** Model id override (per stored key); null/blank uses [defaultModel]. */
     model: String? = null,
     /** Page/document images attached to the last user message. */
-    images: List<VisionImage> = emptyList()
-): String = completeResult(apiKey, history, maxTokens, thinkingBudget, historyLimit, model, images).text
+    images: List<VisionImage> = emptyList(),
+    /** Socket read timeout per request. */
+    timeoutMs: Int = 90000
+): String = completeResult(apiKey, history, maxTokens, thinkingBudget, historyLimit, model, images, timeoutMs).text
 
 suspend fun CloudProvider.completeResult(
     apiKey: String,
@@ -248,7 +250,8 @@ suspend fun CloudProvider.completeResult(
     thinkingBudget: Int? = null,
     historyLimit: Int = 20,
     model: String? = null,
-    images: List<VisionImage> = emptyList()
+    images: List<VisionImage> = emptyList(),
+    timeoutMs: Int = 90000
 ): CloudResult = withContext(Dispatchers.IO) {
     val trimmed = history.takeLast(historyLimit.coerceIn(4, 80))
     val effectiveModel = modelOrDefault(model)
@@ -273,12 +276,12 @@ suspend fun CloudProvider.completeResult(
                 headers["X-Title"] = "Karen"
             }
             try {
-                val first = post(URL("$apiBase/chat/completions"), headers, body("max_tokens"))
+                val first = post(URL("$apiBase/chat/completions"), headers, body("max_tokens"), timeoutMs)
                 CloudResult(extractOpenAiText(first), isLengthCutoff(first))
             } catch (e: CloudApiException) {
                 // Newer models (o-series, GPT-5 class) reject max_tokens — retry once.
                 if (e.status == 400 && e.message.orEmpty().contains("max_completion_tokens")) {
-                    val retry = post(URL("$apiBase/chat/completions"), headers, body("max_completion_tokens"))
+                    val retry = post(URL("$apiBase/chat/completions"), headers, body("max_completion_tokens"), timeoutMs)
                     CloudResult(extractOpenAiText(retry), isLengthCutoff(retry))
                 } else throw e
             }
@@ -307,7 +310,8 @@ suspend fun CloudProvider.completeResult(
                     "anthropic-version" to "2023-06-01",
                     "Content-Type" to "application/json"
                 ),
-                body
+                body,
+                timeoutMs
             )
             val blocks = json.getJSONArray("content")
             val text = (0 until blocks.length())
@@ -334,7 +338,8 @@ suspend fun CloudProvider.completeResult(
                     "x-goog-api-key" to apiKey,
                     "Content-Type" to "application/json"
                 ),
-                body
+                body,
+                timeoutMs
             )
             val text = json.optJSONArray("candidates")
                 ?.optJSONObject(0)
@@ -640,11 +645,11 @@ private fun geminiContents(trimmed: List<Pair<String, String>>, images: List<Vis
             .put("parts", parts)
     })
 
-private fun post(url: URL, headers: Map<String, String>, body: JSONObject): JSONObject {
+private fun post(url: URL, headers: Map<String, String>, body: JSONObject, timeoutMs: Int = 90000): JSONObject {
     val conn = (url.openConnection() as HttpURLConnection).apply {
         requestMethod = "POST"
         connectTimeout = 15000
-        readTimeout = 90000
+        readTimeout = timeoutMs
         doOutput = true
         headers.forEach { (k, v) -> setRequestProperty(k, v) }
     }

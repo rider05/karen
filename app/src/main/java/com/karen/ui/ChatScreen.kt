@@ -1160,10 +1160,18 @@ fun ChatScreen(
                             .put("number", digitsOf(hits[0].second))
                             .put("display_name", hits[0].first)
                         if (runsDirect(spec, context)) {
-                            val res = try {
-                                executePhoneTool(context, spec, args)
-                            } catch (e: Exception) {
-                                ExecResult(false, "failed (${e.message})")
+                            val res = kotlinx.coroutines.withTimeoutOrNull(150_000L) {
+                                try {
+                                    executePhoneTool(context, spec, args)
+                                } catch (e: Exception) {
+                                    ExecResult(false, "failed (${e.message})")
+                                }
+                            } ?: ExecResult(false, "timed out after 150s — check connection and retry")
+                            if (cancelGeneration) {
+                                isGenerating = false
+                                stampTook(aid)
+                                persist()
+                                return@launch
                             }
                             if (i >= 0) messages[i] = (messages[i] as ChatItem.Assistant).copy(
                                 text = (if (res.ok) "✓ " else "⚠ ") + "place_call: ${res.text}",
@@ -1238,10 +1246,19 @@ fun ChatScreen(
         isGenerating = true
         coroutineScope.launch {
             val t0 = System.currentTimeMillis()
-            val res = try {
-                executePhoneTool(context, spec, dargs)
-            } catch (e: Exception) {
-                ExecResult(false, "failed (${e.message})")
+            // Bounded: a stalled API must fail the turn, never hang it.
+            val res = kotlinx.coroutines.withTimeoutOrNull(150_000L) {
+                try {
+                    executePhoneTool(context, spec, dargs)
+                } catch (e: Exception) {
+                    ExecResult(false, "failed (${e.message})")
+                }
+            } ?: ExecResult(false, "timed out after 150s — check connection and retry")
+            if (cancelGeneration) {
+                isGenerating = false
+                stampTook(aid)
+                persist()
+                return@launch
             }
             val i = messages.indexOfFirst { (it as? ChatItem.Assistant)?.id == aid }
             if (i >= 0) {
@@ -1265,6 +1282,9 @@ fun ChatScreen(
         val body = displayText.ifBlank { sentAttachments.joinToString(", ") { it.name } }
         messages.add(ChatItem.User(id = "user_$newId", text = body, attachments = sentAttachments, tokens = body.length / 4))
         StyleMemory.bumpMessageCount(context)
+        // Persist the prompt immediately: a recreation mid-turn must never
+        // lose what the user asked.
+        persist()
         // Model answers (fresh sends, edited resends, regenerates) run here.
         runAssistantTurn(userText, sentAttachments)
     }

@@ -731,6 +731,9 @@ fun ChatScreen(
     /** Best keyed cloud for slow-local fallback, or null when offline/unkeyed. */
     fun pickFallbackCloud(prompt: String): CloudProvider? = pickCloud(prompt)?.first
 
+    /** Assigned below: restarts the turn on-device after total API failure. */
+    var fallbackToLocal: (String, List<Attachment>, String?) -> Unit = { _, _, _ -> }
+
     /**
      * One full cloud turn for an already-listed provisional bubble [aid].
      * Shared by direct cloud routes and slow-local fallback so the flow
@@ -743,7 +746,9 @@ fun ChatScreen(
         aid: String,
         userText: String,
         web: String?,
-        regenerateHint: String?
+        regenerateHint: String?,
+        sentAttachments: List<Attachment> = emptyList(),
+        allowLocalFallback: Boolean = true
     ) {
         var provider = cloud
         var key = cloudKey
@@ -859,9 +864,21 @@ fun ChatScreen(
                 }
                 lastError = "Could not reach ${provider.name} — check internet and your API key. (${e.message})"
             }
-            // Reroute: next keyed cloud takes over the same turn.
+            // Reroute: next keyed cloud takes over the same turn (when set).
+            if (!UserPrefs.apiFailover(context)) {
+                errorSettle(aid, "⚠ $lastError")
+                return
+            }
             val next = pickCloud(userText, tried)
             if (next == null) {
+                if (allowLocalFallback && UserPrefs.cloudLocalFallback(context)) {
+                    messages.removeAll { (it as? ChatItem.Assistant)?.id == aid }
+                    isGenerating = false
+                    streamingId = null
+                    android.widget.Toast.makeText(context, "APIs failed — continuing on-device", android.widget.Toast.LENGTH_SHORT).show()
+                    fallbackToLocal(userText, sentAttachments, regenerateHint)
+                    return
+                }
                 errorSettle(aid, "⚠ $lastError")
                 return
             }
@@ -879,14 +896,22 @@ fun ChatScreen(
     fun runAssistantTurn(
         userText: String,
         sentAttachments: List<Attachment>,
-        regenerateHint: String? = null
+        regenerateHint: String? = null,
+        /** All APIs failed with on-device fallback on: skip clouds entirely. */
+        forceLocal: Boolean = false
     ) {
         if (isGenerating) return
+        fallbackToLocal = { u, a, r -> runAssistantTurn(u, a, r, forceLocal = true) }
         // Live cloud model when one is selected (key stored in Model Manager),
         // real on-device inference for downloaded weights, else the mock.
         // Auto routing swaps in the best model for this prompt.
-        val sendModel = effectiveModel(userText.ifBlank { "chat" })
-        val cloud = findCloudProviderByName(sendModel, UserPrefs.customProviders(context))
+        val routed = effectiveModel(userText.ifBlank { "chat" })
+        val sendModel = if (forceLocal) {
+            UserPrefs.models(context).firstOrNull {
+                !isCloudProviderName(it) && !isEmbeddingModel(it) && ModelDownloader.isRunnableWeight(context, it)
+            } ?: routed
+        } else routed
+        val cloud = if (forceLocal) null else findCloudProviderByName(sendModel, UserPrefs.customProviders(context))
         val cloudKey = cloud?.let { UserPrefs.apiKey(context, it.id) }.orEmpty()
         val weightFile = if (cloud == null) ModelDownloader.weightFileFor(context, sendModel) else null
 
@@ -934,7 +959,7 @@ fun ChatScreen(
                 }
             }
             if (cloud != null && cloudKey.isNotBlank()) {
-                cloudTurn(cloud, cloudKey, aid, userText, web, regenerateHint)
+                cloudTurn(cloud, cloudKey, aid, userText, web, regenerateHint, sentAttachments)
             } else if (weightFile != null) {
                 // Real on-device inference through the bundled llama.cpp core.
                 if (!KarenLlama.ready) {
@@ -1023,11 +1048,11 @@ fun ChatScreen(
                                 cancelSettle(aid)
                             } else {
                                 val fb = pickFallbackCloud(userText)
-                                if (fb == null) {
+                                if (fb == null || forceLocal) {
                                     errorSettle(aid, "$sendModel is taking too long and no keyed cloud model is reachable — check internet and Model Manager keys.")
                                 } else {
                                     android.widget.Toast.makeText(context, "Local slow — continuing on ${fb.name}", android.widget.Toast.LENGTH_SHORT).show()
-                                    cloudTurn(fb, UserPrefs.apiKey(context, fb.id), aid, userText, web, regenerateHint)
+                                    cloudTurn(fb, UserPrefs.apiKey(context, fb.id), aid, userText, web, regenerateHint, sentAttachments, allowLocalFallback = false)
                                 }
                             }
                         } else if (!out.loaded) {

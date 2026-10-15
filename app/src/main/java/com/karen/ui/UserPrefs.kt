@@ -140,6 +140,21 @@ object UserPrefs {
         prefs(ctx).edit().putBoolean(KEY_AUTO_CLOUD, enabled).apply()
     }
 
+    // API failover: a quota/network error tries the next keyed API.
+    private const val KEY_API_FAILOVER = "api_failover"
+    fun apiFailover(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_API_FAILOVER, true)
+    fun setApiFailover(ctx: Context, enabled: Boolean) {
+        prefs(ctx).edit().putBoolean(KEY_API_FAILOVER, enabled).apply()
+    }
+
+    // All keyed APIs failed: continue the turn on the first runnable
+    // on-device weight instead of showing an error.
+    private const val KEY_CLOUD_LOCAL_FALLBACK = "cloud_local_fallback"
+    fun cloudLocalFallback(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_CLOUD_LOCAL_FALLBACK, false)
+    fun setCloudLocalFallback(ctx: Context, enabled: Boolean) {
+        prefs(ctx).edit().putBoolean(KEY_CLOUD_LOCAL_FALLBACK, enabled).apply()
+    }
+
     // TTS voice persona for Voice mode (Juniper/Sol/Cove/Breeze/Ember).
     val voicePersonas = listOf("Juniper", "Sol", "Cove", "Breeze", "Ember")
     private const val KEY_VOICE_PERSONA = "voice_persona"

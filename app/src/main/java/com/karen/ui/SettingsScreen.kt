@@ -227,6 +227,8 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                     // Model routing mode: auto-switching vs the selected model.
                     var autoRoutePref by remember { mutableStateOf(UserPrefs.autoRoute(context)) }
                     var autoCloudPref by remember { mutableStateOf(UserPrefs.autoCloud(context)) }
+                    var apiFailoverPref by remember { mutableStateOf(UserPrefs.apiFailover(context)) }
+                    var localFallbackPref by remember { mutableStateOf(UserPrefs.cloudLocalFallback(context)) }
                     Text("Model Routing", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         listOf(true to "Auto-switching", false to "Selected model").forEach { (value, label) ->
@@ -271,6 +273,62 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                             onCheckedChange = {
                                 autoCloudPref = it
                                 UserPrefs.setAutoCloud(context, it)
+                            },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color.White,
+                                checkedTrackColor = colors.accentGreen,
+                                uncheckedThumbColor = colors.textMuted,
+                                uncheckedTrackColor = colors.surfaceHover
+                            )
+                        )
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(colors.surfaceHover.copy(alpha = 0.55f))
+                            .border(1.dp, colors.border.copy(alpha = 0.6f), RoundedCornerShape(12.dp))
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Auto-switch API on failure", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
+                            Text("Quota/network error tries the next keyed API in the same turn", color = colors.textMuted, fontSize = 11.5.sp)
+                        }
+                        Switch(
+                            checked = apiFailoverPref,
+                            onCheckedChange = {
+                                apiFailoverPref = it
+                                UserPrefs.setApiFailover(context, it)
+                            },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color.White,
+                                checkedTrackColor = colors.accentGreen,
+                                uncheckedThumbColor = colors.textMuted,
+                                uncheckedTrackColor = colors.surfaceHover
+                            )
+                        )
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(colors.surfaceHover.copy(alpha = 0.55f))
+                            .border(1.dp, colors.border.copy(alpha = 0.6f), RoundedCornerShape(12.dp))
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("On-device fallback", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
+                            Text("All APIs failed → continue on the first runnable local weight", color = colors.textMuted, fontSize = 11.5.sp)
+                        }
+                        Switch(
+                            checked = localFallbackPref,
+                            onCheckedChange = {
+                                localFallbackPref = it
+                                UserPrefs.setCloudLocalFallback(context, it)
                             },
                             colors = SwitchDefaults.colors(
                                 checkedThumbColor = Color.White,

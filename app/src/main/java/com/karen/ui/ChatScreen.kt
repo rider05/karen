@@ -42,6 +42,33 @@ import android.net.Uri
 import androidx.core.content.FileProvider
 import java.io.File
 
+/** Built-in /help answer: how tools, mentions, and routing work. */
+private const val HELP_TEXT = """How Karen tools work
+
+Type / anywhere to list 21 phone tools, or @ to attach a vault file. Works mid-sentence.
+
+RUNNING A TOOL
+• /tool plus plain text — e.g. /calculator 1847*23, /get_time Asia/Kolkata, /open_app Spotify, /set_timer 2 min eggs
+• Clear-cut calls run at once, no model involved. Anything ambiguous goes to the AI, which fills the details.
+• Just ask normally too — "call Arun", "remind me at 6" routes the same way.
+
+SAFETY TIERS (colored dots)
+• Green T0 — reads and math, always auto-run.
+• Blue T1 — reversible actions (open app, timer), auto-run with a visible pill.
+• Amber T2 — calls, messages, calendar, memory: a Run/Cancel card asks first. Nothing sends or dials without your tap. T3 stays disabled.
+
+FILES
+• @name pulls a vault file's content into the turn — text reads direct, PDFs transcribe through a vision-capable cloud key (first pages).
+• Ask follow-ups and the answer is grounded in the file, cited with its name.
+
+MODELS
+• Header pill shows what's answering: a name, or Auto → routed pick.
+• Settings → Model Routing: Auto-switching per task, or pin one model everywhere (Chat, Voice, Workspace).
+• Settings → API Failover: failed keys auto-try the next API, optionally falling back on-device.
+
+VOICE
+• Voice mode streams replies sentence by sentence; talk over Karen to interrupt. Needs mic + a model (cloud key or local weight). Wake word ("Hey Jarvis") lives in Settings → Voice & Speech."""
+
 sealed class ChatItem {
     data class User(val id: String, val text: String, val attachments: List<Attachment> = emptyList(), val tokens: Int = 0) : ChatItem()
     data class Assistant(
@@ -793,7 +820,7 @@ fun ChatScreen(
                 }
             }.takeLast(limit)
             val history = if (web != null) {
-                (base + ("user" to "Use these fresh web results if relevant:\n$web")).takeLast(limit)
+                (base + ("user" to "Use these fresh web results where they help. ${WebSearch.GROUNDING_GUIDE}\n$web")).takeLast(limit)
             } else base
             val instructed = if (regenerateHint != null) {
                 (history + ("user" to regenerateHint)).takeLast(limit)
@@ -847,7 +874,7 @@ fun ChatScreen(
                 setStreamingText(aid, (withTools.trimEnd() + "\n\nReading ${settled.docName}…").trim())
                 try {
                     val followHistory = (styled + ("user" to
-                        "Use this document text to answer the request. Do not emit ///TOOL lines:\n${settled.docText}")
+                        "Use this document text to answer the request. ${WebSearch.GROUNDING_GUIDE} Do not emit ///TOOL lines:\n${settled.docText}")
                         ).takeLast(limit)
                     val ans = provider.completeResult(
                         key,
@@ -1008,7 +1035,7 @@ fun ChatScreen(
                             }
                         }
                         val trimmedPairs = if (web != null) {
-                            (basePairs + ("user" to "Use these fresh web results if relevant:\n$web")).takeLast(localLimit)
+                            (basePairs + ("user" to "Use these fresh web results where they help. ${WebSearch.GROUNDING_GUIDE}\n$web")).takeLast(localLimit)
                         } else basePairs.takeLast(localLimit)
                         val instructedPairs = if (regenerateHint != null) {
                             (trimmedPairs + ("user" to regenerateHint)).takeLast(localLimit)
@@ -1088,7 +1115,7 @@ fun ChatScreen(
                             if (settled.docText != null && !cancelGeneration) {
                                 setStreamingText(aid, (withTools.trimEnd() + "\n\nReading ${settled.docName}…").trim())
                                 val docPairs = (instructedPairs + ("user" to
-                                    "Use this document text to answer the request. Do not emit ///TOOL lines:\n${settled.docText}")
+                                    "Use this document text to answer the request. ${WebSearch.GROUNDING_GUIDE} Do not emit ///TOOL lines:\n${settled.docText}")
                                     ).takeLast(localLimit)
                                 val ans = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                                     try {
@@ -1154,6 +1181,19 @@ fun ChatScreen(
      * returns false so the AI route (and API if needed) handles it.
      */
     fun tryDirectToolTurn(rawText: String): Boolean {
+        // Built-in help: answered locally, no model or network involved.
+        if (rawText.trim().equals("/help", ignoreCase = true)) {
+            val newId = System.currentTimeMillis().toString()
+            messages.add(ChatItem.User(id = "user_$newId", text = rawText, tokens = rawText.length / 4))
+            StyleMemory.bumpMessageCount(context)
+            val aid = "asst_$newId"
+            streamStartMs = System.currentTimeMillis()
+            messages.add(ChatItem.Assistant(id = aid, text = HELP_TEXT, model = "tools"))
+            stampTook(aid)
+            persist()
+            coroutineScope.launch { scrollToBottomIfNear() }
+            return true
+        }
         val (spec, rest) = matchSlash(context, rawText) ?: return false
         // place_call with a name skips the model too: match contacts now,
         // then confirm (or direct-run per Settings) — no API needed.
@@ -2013,6 +2053,39 @@ fun ChatScreen(
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
                         )
+                        if ("help".contains(slashQuery)) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { setInputEnd("/help") }
+                                    .padding(horizontal = 12.dp, vertical = 7.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(7.dp)
+                                        .clip(androidx.compose.foundation.shape.CircleShape)
+                                        .background(colors.accentGreen)
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    text = "/help",
+                                    color = colors.accentGreen,
+                                    fontSize = 13.sp,
+                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    text = "How Karen tools work",
+                                    color = colors.textSecondary,
+                                    fontSize = 12.sp,
+                                    maxLines = 1,
+                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                        }
                         LazyColumn(
                             modifier = Modifier
                                 .fillMaxWidth()

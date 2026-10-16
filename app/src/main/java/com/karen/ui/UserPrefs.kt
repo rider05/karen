@@ -337,4 +337,31 @@ object UserPrefs {
             cur.joinToString(";;") { "${it.id}||${it.name}||${it.apiBase}||${it.defaultModel}" }
         ).apply()
     }
+
+    // On-device API server (Thinai-style localhost endpoints).
+    private const val KEY_SERVER_PORT = "server_port"
+    fun serverPort(ctx: Context): Int =
+        prefs(ctx).getInt(KEY_SERVER_PORT, 11434).coerceIn(1, 65535)
+    fun setServerPort(ctx: Context, port: Int) {
+        prefs(ctx).edit().putInt(KEY_SERVER_PORT, port.coerceIn(1, 65535)).apply()
+    }
+
+    private const val KEY_SERVER_LAN = "server_lan"
+    fun serverLan(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_SERVER_LAN, false)
+    fun setServerLan(ctx: Context, enabled: Boolean) {
+        prefs(ctx).edit().putBoolean(KEY_SERVER_LAN, enabled).apply()
+    }
+
+    private const val KEY_SERVER_TOKEN = "server_token"
+    fun serverToken(ctx: Context): String = prefs(ctx).getString(KEY_SERVER_TOKEN, "") ?: ""
+    fun setServerToken(ctx: Context, token: String) {
+        prefs(ctx).edit().putString(KEY_SERVER_TOKEN, token).apply()
+    }
+
+    // Remote model catalog URL (blank = bundled list only).
+    private const val KEY_CATALOG_URL = "catalog_url"
+    fun catalogUrl(ctx: Context): String = prefs(ctx).getString(KEY_CATALOG_URL, "") ?: ""
+    fun setCatalogUrl(ctx: Context, url: String) {
+        prefs(ctx).edit().putString(KEY_CATALOG_URL, url.trim().take(300)).apply()
+    }
 }

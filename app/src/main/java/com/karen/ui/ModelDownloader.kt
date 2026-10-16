@@ -7,6 +7,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import java.io.File
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
 
 /**
  * Real GGUF downloads via Android DownloadManager into the app-private
@@ -70,6 +73,7 @@ val modelCatalog = listOf(
     )
 )
 
+/** Download terminal states (consumed once by the first poller). */
 sealed interface DownloadEvent {
     data object None : DownloadEvent
     data class Completed(val name: String) : DownloadEvent
@@ -83,6 +87,70 @@ object ModelDownloader {
         private set
     var status by mutableStateOf("")
         private set
+
+    /** Remote additions merged over [modelCatalog] (remote wins name clashes). */
+    var remoteCatalog by mutableStateOf<List<CatalogModel>>(emptyList())
+        private set
+
+    fun catalogModels(): List<CatalogModel> {
+        val remote = remoteCatalog
+        if (remote.isEmpty()) return modelCatalog
+        val names = remote.map { it.name }.toSet()
+        return remote + modelCatalog.filter { it.name !in names }
+    }
+
+    /**
+     * Fetches a remote catalog so models ship without an APK update.
+     * Expected shape: {"models":[{"name","file","url","size","quant","ram",
+     * "paramsB","reasoning","code"}]} — unknown entries are skipped, max 50.
+     */
+    suspend fun refreshRemoteCatalog(ctx: Context): String = withContext(Dispatchers.IO) {
+        val url = UserPrefs.catalogUrl(ctx).trim()
+        if (url.isBlank()) {
+            remoteCatalog = emptyList()
+            return@withContext "bundled catalog"
+        }
+        try {
+            val conn = (java.net.URL(url).openConnection() as java.net.HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 12000
+                readTimeout = 20000
+            }
+            val code = conn.responseCode
+            val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+            val text = stream.bufferedReader().use { it.readText() }
+            conn.disconnect()
+            if (code !in 200..299) return@withContext "catalog HTTP $code"
+            val arr = JSONObject(text).optJSONArray("models")
+                ?: return@withContext "no models[] in catalog JSON"
+            val out = mutableListOf<CatalogModel>()
+            for (i in 0 until minOf(arr.length(), 50)) {
+                val o = arr.optJSONObject(i) ?: continue
+                val name = o.optString("name", "").trim()
+                val file = o.optString("file", "").trim()
+                val link = o.optString("url", "").trim()
+                if (name.isBlank() || file.isBlank()) continue
+                if (!link.startsWith("http://") && !link.startsWith("https://")) continue
+                out.add(
+                    CatalogModel(
+                        name = name.take(60),
+                        fileName = file.substringAfterLast('/').take(120).ifBlank { file.take(120) },
+                        sizeLabel = o.optString("size", "≈?").take(16).ifBlank { "≈?" },
+                        quant = o.optString("quant", "?").take(16).ifBlank { "?" },
+                        ram = o.optString("ram", "?").take(16).ifBlank { "?" },
+                        url = link,
+                        paramsB = o.optDouble("paramsB", 0.0).toFloat(),
+                        reasoning = o.optBoolean("reasoning", false),
+                        code = o.optBoolean("code", false)
+                    )
+                )
+            }
+            remoteCatalog = out
+            if (out.isEmpty()) "catalog added no usable models" else "added ${out.size} remote model${if (out.size == 1) "" else "s"}"
+        } catch (e: Exception) {
+            "catalog fetch failed (${e.message})"
+        }
+    }
 
     private const val PREFS = "karen_downloads"
     private const val P_ID = "dl_id"
@@ -264,13 +332,12 @@ object ModelDownloader {
                         DownloadEvent.Failed(reasonText(reason))
                     }
                     else -> {
-                        val pct = (voiceProgress * 100).toInt()
-                        val sizeTxt = if (total > 0) {
-                            "%.1f/%.1f MB".format(done / 1048576.0, total / 1048576.0)
-                        } else {
-                            "%.1f MB".format(done / 1048576.0)
+                        val reason = c.getInt(c.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON))
+                        if (stalledOut(id, st, done)) {
+                            clearVoice(ctx)
+                            return DownloadEvent.Failed("stalled with no progress — tap to retry")
                         }
-                        voiceStatus = "Downloading $pct% · $sizeTxt"
+                        voiceStatus = describeProgress(st, reason, done, total)
                         DownloadEvent.None
                     }
                 }
@@ -363,13 +430,12 @@ object ModelDownloader {
                         DownloadEvent.Failed(reasonText(reason))
                     }
                     else -> {
-                        val pct = (progress * 100).toInt()
-                        val sizeTxt = if (total > 0) {
-                            "%.1f/%.1f MB".format(done / 1048576.0, total / 1048576.0)
-                        } else {
-                            "%.1f MB".format(done / 1048576.0)
+                        val reason = c.getInt(c.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON))
+                        if (stalledOut(id, st, done)) {
+                            clear(ctx)
+                            return DownloadEvent.Failed("stalled with no progress — tap to retry")
                         }
-                        status = "Downloading $pct% · $sizeTxt"
+                        status = describeProgress(st, reason, done, total)
                         DownloadEvent.None
                     }
                 }
@@ -409,5 +475,55 @@ object ModelDownloader {
         DownloadManager.ERROR_TOO_MANY_REDIRECTS -> "too many redirects — check link"
         DownloadManager.ERROR_UNHANDLED_HTTP_CODE -> "server rejected the request"
         else -> "failed (code $reason)"
+    }
+
+    // ---- Honest download states: queued/paused/stall, shared by weights + voice ----
+
+    private var stallId = -1L
+    private var stallBytes = 0L
+    private var stallTs = 0L
+
+    private fun describeProgress(st: Int, reason: Int, done: Long, total: Long): String {
+        val sizeTxt = if (total > 0) {
+            "%.1f/%.1f MB".format(done / 1048576.0, total / 1048576.0)
+        } else {
+            "%.1f MB".format(done / 1048576.0)
+        }
+        return when (st) {
+            DownloadManager.STATUS_PENDING -> "Queued — waiting for a download slot"
+            DownloadManager.STATUS_PAUSED -> when (reason) {
+                DownloadManager.PAUSED_QUEUED_FOR_WIFI -> "Paused — needs Wi-Fi"
+                DownloadManager.PAUSED_WAITING_FOR_NETWORK -> "Paused — no connection"
+                DownloadManager.PAUSED_WAITING_TO_RETRY -> "Paused — retrying connection"
+                else -> "Paused"
+            } + " · $sizeTxt"
+            else -> {
+                val pct = if (total > 0) (done * 100 / total).toInt().coerceIn(0, 100) else 0
+                "Downloading $pct% · $sizeTxt"
+            }
+        }
+    }
+
+    /**
+     * Stall watchdog: bytes frozen while RUNNING >90s (PENDING >3min) fails
+     * the download so Cancel/retry actually works. Paused never fails —
+     * it already says why it waits.
+     */
+    private fun stalledOut(id: Long, st: Int, done: Long): Boolean {
+        val now = System.currentTimeMillis()
+        if (id != stallId) {
+            stallId = id
+            stallBytes = done
+            stallTs = now
+            return false
+        }
+        if (done > stallBytes) {
+            stallBytes = done
+            stallTs = now
+            return false
+        }
+        val limit = if (st == DownloadManager.STATUS_PENDING) 180_000L else 90_000L
+        return (st == DownloadManager.STATUS_RUNNING || st == DownloadManager.STATUS_PENDING) &&
+            now - stallTs > limit
     }
 }

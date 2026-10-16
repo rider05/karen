@@ -1431,7 +1431,7 @@ fun WorkspaceScreen(
                         }
                     }
                     val enriched = if (web != null) {
-                        (history + ("user" to "Use these fresh web results if relevant:\n$web")).takeLast(cloudLimit)
+                        (history + ("user" to "Use these fresh web results where they help. ${WebSearch.GROUNDING_GUIDE}\n$web")).takeLast(cloudLimit)
                     } else history.takeLast(cloudLimit)
                     val reply = timedModel(dir.absolutePath, enriched.sumOf { it.second.length }) {
                         cloud.complete(
@@ -1483,7 +1483,7 @@ fun WorkspaceScreen(
                                 }
                             }
                             val withWeb = if (web != null) {
-                                (pairs + ("user" to "Use these fresh web results if relevant:\n$web")).takeLast(localLimit)
+                                (pairs + ("user" to "Use these fresh web results where they help. ${WebSearch.GROUNDING_GUIDE}\n$web")).takeLast(localLimit)
                             } else pairs.takeLast(localLimit)
                             val reply = timedModel(dir.absolutePath, withWeb.sumOf { it.second.length }) {
                                 withContext(Dispatchers.IO) {

@@ -28,6 +28,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -1024,6 +1025,156 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                             }
                         }
                     }
+                }
+            }
+
+            item {
+                Text("Local Server", color = colors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(6.dp))
+                var serverOn by remember { mutableStateOf(LocalApiServer.running) }
+                var serverPortText by remember { mutableStateOf(UserPrefs.serverPort(context).toString()) }
+                var serverLanOn by remember { mutableStateOf(UserPrefs.serverLan(context)) }
+                var serverTokenShown by remember { mutableStateOf(false) }
+                var serverTokenTick by remember { mutableStateOf(0) }
+                val serverTokenValue = remember(serverTokenTick) { LocalApiServer.token(context) }
+                val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+                // Keep the toggle honest if the server died with the process.
+                androidx.compose.runtime.LaunchedEffect(Unit) {
+                    serverOn = LocalApiServer.running
+                }
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(colors.surface)
+                        .border(1.dp, colors.border, RoundedCornerShape(14.dp))
+                        .padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                if (serverOn) "Running · ${LocalApiServer.status}" else "Stopped",
+                                color = if (serverOn) colors.accentGreen else colors.textPrimary,
+                                fontSize = 13.5.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Text(
+                                "OpenAI-compatible API for your own apps (chat + models; no streaming, no embeddings)",
+                                color = colors.textMuted,
+                                fontSize = 11.5.sp
+                            )
+                        }
+                        Switch(
+                            checked = serverOn,
+                            onCheckedChange = { want ->
+                                serverOn = if (want) {
+                                    LocalApiServer.start(context)
+                                } else {
+                                    LocalApiServer.stop()
+                                    false
+                                }
+                            },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color.White,
+                                checkedTrackColor = colors.accentGreen,
+                                uncheckedThumbColor = colors.textMuted,
+                                uncheckedTrackColor = colors.surfaceHover
+                            )
+                        )
+                    }
+                    OutlinedTextField(
+                        value = serverPortText,
+                        onValueChange = { v ->
+                            if (v.all { it.isDigit() } && v.length <= 5) {
+                                serverPortText = v
+                                v.toIntOrNull()?.let { UserPrefs.setServerPort(context, it) }
+                            }
+                        },
+                        label = { Text("Port (11434 = Ollama)", color = colors.textMuted) },
+                        singleLine = true,
+                        textStyle = androidx.compose.ui.text.TextStyle(
+                            color = colors.textPrimary,
+                            fontFamily = FontFamily.Monospace
+                        ),
+                        colors = karenFieldColors(colors),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Expose on local network", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
+                            Text(
+                                if (serverLanOn) "Anyone on your Wi-Fi with the token can call it" else "Localhost only",
+                                color = if (serverLanOn) colors.accentAmber else colors.textMuted,
+                                fontSize = 11.5.sp
+                            )
+                        }
+                        Switch(
+                            checked = serverLanOn,
+                            onCheckedChange = {
+                                serverLanOn = it
+                                UserPrefs.setServerLan(context, it)
+                                if (serverOn) {
+                                    LocalApiServer.stop()
+                                    serverOn = LocalApiServer.start(context)
+                                }
+                            },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color.White,
+                                checkedTrackColor = colors.accentAmber,
+                                uncheckedThumbColor = colors.textMuted,
+                                uncheckedTrackColor = colors.surfaceHover
+                            )
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Bearer token", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
+                            Text(
+                                if (serverTokenShown) serverTokenValue else "••••" + serverTokenValue.takeLast(4),
+                                color = colors.textMuted,
+                                fontSize = 11.5.sp,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                        TextButton(onClick = { serverTokenShown = !serverTokenShown }) {
+                            Text(if (serverTokenShown) "Hide" else "Show", color = colors.accentBlue, fontSize = 12.sp)
+                        }
+                        TextButton(onClick = {
+                            clipboard.setText(AnnotatedString(serverTokenValue))
+                            android.widget.Toast.makeText(context, "Token copied", android.widget.Toast.LENGTH_SHORT).show()
+                        }) {
+                            Text("Copy", color = colors.accentBlue, fontSize = 12.sp)
+                        }
+                        TextButton(onClick = {
+                            UserPrefs.setServerToken(context, "")
+                            serverTokenTick++
+                            if (serverOn) {
+                                LocalApiServer.stop()
+                                serverOn = LocalApiServer.start(context)
+                            }
+                        }) {
+                            Text("Regenerate", color = colors.accentAmber, fontSize = 12.sp)
+                        }
+                    }
+                    Text(
+                        "Runs while Karen is open. Example: curl -H \"Authorization: Bearer <token>\" http://127.0.0.1:${UserPrefs.serverPort(context)}/v1/models",
+                        color = colors.textMuted,
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
                 }
             }
 

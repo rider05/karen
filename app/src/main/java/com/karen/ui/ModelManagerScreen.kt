@@ -874,6 +874,66 @@ fun ModelManagerScreen(
                 Spacer(Modifier.height(6.dp))
                 Text("Available to Download", color = colors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(6.dp))
+                var catalogUrlText by remember { mutableStateOf(UserPrefs.catalogUrl(ctx)) }
+                var catalogMsg by remember { mutableStateOf<String?>(null) }
+                var catalogBusy by remember { mutableStateOf(false) }
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(colors.surface)
+                        .border(1.dp, colors.border, RoundedCornerShape(12.dp))
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "Catalog: bundled${if (ModelDownloader.remoteCatalog.isNotEmpty()) " + ${ModelDownloader.remoteCatalog.size} remote" else ""}",
+                            color = colors.textSecondary,
+                            fontSize = 12.sp
+                        )
+                        TextButton(
+                            onClick = {
+                                if (catalogBusy) return@TextButton
+                                catalogBusy = true
+                                catalogMsg = null
+                                UserPrefs.setCatalogUrl(ctx, catalogUrlText)
+                                managerScope.launch {
+                                    try {
+                                        catalogMsg = ModelDownloader.refreshRemoteCatalog(ctx)
+                                    } finally {
+                                        catalogBusy = false
+                                    }
+                                }
+                            },
+                            enabled = !catalogBusy
+                        ) {
+                            Text(if (catalogBusy) "Refreshing…" else "Refresh", color = colors.accentGreen, fontSize = 12.sp)
+                        }
+                    }
+                    OutlinedTextField(
+                        value = catalogUrlText,
+                        onValueChange = { catalogUrlText = it.take(300) },
+                        label = { Text("Remote catalog URL (blank = bundled)", color = colors.textMuted) },
+                        placeholder = { Text("https://…/models.json", color = colors.textMuted) },
+                        singleLine = true,
+                        textStyle = androidx.compose.ui.text.TextStyle(
+                            color = colors.textPrimary,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 12.sp
+                        ),
+                        colors = karenFieldColors(colors),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (catalogMsg != null) {
+                        Text(catalogMsg!!, color = colors.textMuted, fontSize = 11.5.sp)
+                    }
+                }
+                Spacer(Modifier.height(6.dp))
                 if (models.isEmpty()) {
                     Text(
                         "Nothing installed yet — pick a model below and it appears in selection once downloaded.",
@@ -885,7 +945,7 @@ fun ModelManagerScreen(
             }
 
             items(
-                if (catalogExpanded) modelCatalog else modelCatalog.take(3),
+                if (catalogExpanded) ModelDownloader.catalogModels() else ModelDownloader.catalogModels().take(3),
                 key = { it.name }
             ) { entry ->
                 val alreadyInstalled = models.any { it.name == entry.name }
@@ -957,7 +1017,7 @@ fun ModelManagerScreen(
             }
 
             // Collapse: 3 cards by default, expandable to the full catalog.
-            if (modelCatalog.size > 3) {
+            if (ModelDownloader.catalogModels().size > 3) {
                 item {
                     TextButton(
                         onClick = { catalogExpanded = !catalogExpanded },
@@ -971,7 +1031,7 @@ fun ModelManagerScreen(
                         )
                         Spacer(Modifier.width(4.dp))
                         Text(
-                            if (catalogExpanded) "Show less" else "Show all ${modelCatalog.size} models",
+                            if (catalogExpanded) "Show less" else "Show all ${ModelDownloader.catalogModels().size} models",
                             color = colors.accentGreen,
                             fontSize = 12.5.sp,
                             fontWeight = FontWeight.Medium

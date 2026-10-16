@@ -18,8 +18,24 @@ object WebSearch {
     private val TRIGGERS = listOf(
         "latest", "news", "today's", "current price", "price of", "weather",
         "who won", "score", "stock price", "release date", "happening",
-        "right now", "this week", "announced", "breaking"
+        "right now", "this week", "announced", "breaking",
+        "tonight", "tomorrow", "yesterday", "this month", "this year",
+        "this morning", "this evening", "recently", "recent", "live ",
+        "trending", "prices", "cost of", "how much", "stock", "market",
+        "forecast", "temperature outside", "rain", "storm", "launched",
+        "who is", "who was", "what happened", "status of",
+        "schedule", "timings", "upcoming", "updates", "match", "winner",
+        "championship", "as of"
     )
+
+    /**
+     * Grounding rule for retrieved context (web results, vault text):
+     * use it where it helps, name what the sources actually say, and say
+     * plainly when the answer isn't in them.
+     */
+    const val GROUNDING_GUIDE = "Use the provided context only where it helps answer. " +
+        "Name what the sources actually say (file or source names). " +
+        "If the answer is not in them, say so plainly instead of guessing."
 
     /** Conservative on-device trigger: explicit intent or fresh-info keywords. */
     fun needsSearch(text: String): Boolean {

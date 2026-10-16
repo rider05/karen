@@ -2178,7 +2178,7 @@ fun ModelSelectorSheet(
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.padding(bottom = 4.dp)
             )
-            (if (sheetCatalogExpanded) modelCatalog else modelCatalog.take(3)).forEach { entry ->
+            (if (sheetCatalogExpanded) ModelDownloader.catalogModels() else ModelDownloader.catalogModels().take(3)).forEach { entry ->
                 val alreadyInstalled = entry.name in installed
                 val isActive = ModelDownloader.activeName == entry.name
                 Column(
@@ -2259,7 +2259,7 @@ fun ModelSelectorSheet(
                     }
                 }
             }
-            if (modelCatalog.size > 3) {
+            if (ModelDownloader.catalogModels().size > 3) {
                 TextButton(
                     onClick = { sheetCatalogExpanded = !sheetCatalogExpanded },
                     modifier = Modifier.fillMaxWidth()
@@ -2272,7 +2272,7 @@ fun ModelSelectorSheet(
                     )
                     Spacer(Modifier.width(4.dp))
                     Text(
-                        if (sheetCatalogExpanded) "Show less" else "Show all ${modelCatalog.size} models",
+                        if (sheetCatalogExpanded) "Show less" else "Show all ${ModelDownloader.catalogModels().size} models",
                         color = colors.accentGreen,
                         fontSize = 12.5.sp,
                         fontWeight = FontWeight.Medium

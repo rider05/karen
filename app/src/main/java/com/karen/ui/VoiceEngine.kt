@@ -41,13 +41,26 @@ object VoiceEngine {
     fun needleSupportedAbi(): Boolean =
         android.os.Build.SUPPORTED_ABIS.any { it == "arm64-v8a" || it == "armeabi-v7a" }
 
-    /** False until a needle/sherpa bridge .so is bundled (see above). */
-    fun engineReady(): Boolean = false
+    /**
+     * True when a voice runtime is live: ORT + Silero VAD today.
+     * (Whistle STT still needs its Needle engine drop-in; see above.)
+     */
+    fun engineReady(ctx: Context): Boolean =
+        OrtEngine.ortAvailable && hasSilero(ctx)
+
+    /** True when VAD can score right now (loads the session on demand). */
+    fun vadReady(ctx: Context): Boolean =
+        OrtEngine.vadReady || OrtEngine.ensureVad(ctx)
 
     /** One-line engine state for Model Manager rows. */
     fun status(ctx: Context, entry: ModelDownloader.VoiceModel): String {
         val file = ModelDownloader.voiceFile(ctx, entry.fileName)
         if (!file.exists() || file.length() <= 0) return "Not downloaded"
+        if (entry.fileName == "silero_vad.onnx") {
+            if (!OrtEngine.ortAvailable) return "Downloaded · ORT missing on this device"
+            return if (vadReady(ctx)) "Ready · on-device voice detection"
+            else "Downloaded · VAD failed to load"
+        }
         if (!needleSupportedAbi() && entry.engine.startsWith("Cactus")) {
             return "Downloaded · needs Needle engine (arm64 device)"
         }

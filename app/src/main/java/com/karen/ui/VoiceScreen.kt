@@ -227,13 +227,17 @@ fun VoiceScreen(
     // Warm the TTS engine and start listening on entry (Gemini-style).
     androidx.compose.runtime.LaunchedEffect(Unit) {
         TtsManager.warmup(personaCtx)
+        voiceScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            VoiceEngine.vadReady(personaCtx)
+        }
         kotlinx.coroutines.delay(350)
         if (!voiceBusy && !TtsManager.speaking && !isMuted) voiceStt.startListening()
     }
 
-    // Barge-in watch: sustained loud mic input while speaking interrupts.
-    // No echo cancellation on-device, so the bar is set high and needs
-    // ~0.8s of continuous voice — TTS echo alone should not trip it.
+    // Barge-in watch: Silero VAD voice probability while speaking
+    // interrupts; raw loudness is only the fallback when VAD is absent.
+    // No echo cancellation on-device, so either path needs sustained
+    // voice — TTS echo alone should not trip it.
     androidx.compose.runtime.LaunchedEffect(TtsManager.speaking) {
         if (!TtsManager.speaking) return@LaunchedEffect
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
@@ -244,6 +248,8 @@ fun VoiceScreen(
                         android.Manifest.permission.RECORD_AUDIO
                     ) != android.content.pm.PackageManager.PERMISSION_GRANTED
                 ) return@withContext
+                val useVad = VoiceEngine.vadReady(personaCtx)
+                val window = if (useVad) OrtEngine.vadWindowSize().takeIf { it > 0 } ?: 512 else 1600
                 val sr = 16000
                 val minBuf = android.media.AudioRecord.getMinBufferSize(
                     sr,
@@ -256,27 +262,49 @@ fun VoiceScreen(
                     sr,
                     android.media.AudioFormat.CHANNEL_IN_MONO,
                     android.media.AudioFormat.ENCODING_PCM_16BIT,
-                    minBuf * 2
+                    maxOf(minBuf * 2, window * 4)
                 )
                 if (rec.state != android.media.AudioRecord.STATE_INITIALIZED) return@withContext
                 rec.startRecording()
                 kotlinx.coroutines.delay(500)
-                val buf = ShortArray(1600)
-                var loud = 0
+                val buf = ShortArray(window)
+                val carry = mutableListOf<Short>()
+                var voiced = 0
+                // VAD reacts in ~0.2s (6 windows); legacy loudness needs ~0.8s.
+                val need = if (useVad) 6 else 8
                 while (TtsManager.speaking && !cancelVoice) {
                     val n = rec.read(buf, 0, buf.size)
-                    if (n > 0) {
-                        var sum = 0L
-                        for (i in 0 until n) {
-                            val v = buf[i].toInt()
-                            sum += (v * v).toLong()
-                        }
-                        val rms = kotlin.math.sqrt(sum.toDouble() / n)
-                        if (rms > 2000) loud++ else loud = 0
-                        if (loud >= 8) break
+                    if (n <= 0) continue
+                    var sum = 0L
+                    for (i in 0 until n) {
+                        val v = buf[i].toInt()
+                        sum += (v * v).toLong()
                     }
+                    val rms = kotlin.math.sqrt(sum.toDouble() / n)
+                    val isVoice = if (useVad) {
+                        // Cheap energy gate first: silence never reaches ORT.
+                        if (rms < 250) {
+                            carry.clear()
+                            false
+                        } else {
+                            for (i in 0 until n) carry.add(buf[i])
+                            var heard = false
+                            while (carry.size >= window) {
+                                val frame = ShortArray(window) { carry[it] }
+                                repeat(window) { carry.removeAt(0) }
+                                if (OrtEngine.vadProb(OrtEngine.pcm16ToFloat(frame)) >= 0.5f) {
+                                    heard = true
+                                }
+                            }
+                            heard
+                        }
+                    } else {
+                        rms > 2000
+                    }
+                    if (isVoice) voiced++ else voiced = 0
+                    if (voiced >= need) break
                 }
-                if (loud >= 8 && TtsManager.speaking && !cancelVoice) {
+                if (voiced >= need && TtsManager.speaking && !cancelVoice) {
                     kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
                         interruptVoice()
                     }

@@ -1072,7 +1072,7 @@ fun ModelManagerScreen(
                 title = { Text("Download Model") },
                 text = {
                     Column {
-                        Text("Paste a direct GGUF download URL:", fontSize = 13.sp)
+                        Text("Paste a direct model URL (.gguf → weights, .onnx → voice models):", fontSize = 13.sp)
                         Spacer(Modifier.height(8.dp))
                         OutlinedTextField(
                             value = url,
@@ -1086,11 +1086,20 @@ fun ModelManagerScreen(
                 confirmButton = {
                     TextButton(onClick = {
                         if (url.isNotBlank()) {
-                            val fileName = url.substringAfterLast('/').substringBefore('?').ifBlank { "remote.gguf" }
-                            val displayName = fileName.removeSuffix(".gguf").ifBlank { fileName }
+                            val clean = url.trim()
+                            val fileName = clean.substringAfterLast('/').substringBefore('?')
+                            val isOnnx = fileName.lowercase().endsWith(".onnx")
+                            val safeName = fileName.ifBlank { if (isOnnx) "remote.onnx" else "remote.gguf" }
+                            val displayName = safeName.removeSuffix(".gguf").removeSuffix(".onnx").ifBlank { safeName }
                             if (ModelDownloader.activeName != null) {
                                 android.widget.Toast.makeText(ctx, "One download at a time", android.widget.Toast.LENGTH_SHORT).show()
-                            } else if (ModelDownloader.start(ctx, displayName, fileName, url.trim())) {
+                            } else if (isOnnx) {
+                                if (ModelDownloader.startVoiceUrl(ctx, displayName, safeName, clean)) {
+                                    android.widget.Toast.makeText(ctx, "Downloading $displayName (voice model)", android.widget.Toast.LENGTH_SHORT).show()
+                                } else {
+                                    android.widget.Toast.makeText(ctx, "Could not start download", android.widget.Toast.LENGTH_SHORT).show()
+                                }
+                            } else if (ModelDownloader.start(ctx, displayName, safeName, clean)) {
                                 android.widget.Toast.makeText(ctx, "Downloading $displayName", android.widget.Toast.LENGTH_SHORT).show()
                             } else {
                                 android.widget.Toast.makeText(ctx, "Could not start download", android.widget.Toast.LENGTH_SHORT).show()

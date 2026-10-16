@@ -218,7 +218,7 @@ object ModelDownloader {
             "Silero VAD", "silero_vad.onnx", "≈2 MB",
             "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
             "sherpa-onnx/ORT",
-            "Voice-activity detection · needs ORT engine"
+            "Voice-activity detection · runs on bundled ORT"
         )
     )
 
@@ -239,6 +239,32 @@ object ModelDownloader {
         (ctx.getExternalFilesDir("voices") ?: File(ctx.filesDir, "voices")).apply { mkdirs() }
 
     fun voiceFile(ctx: Context, fileName: String): File = File(voicesDir(ctx), fileName)
+
+    /** URL pull for voice-domain .onnx weights (lands in voices/). */
+    fun startVoiceUrl(ctx: Context, displayName: String, fileName: String, url: String): Boolean {
+        if (activeName != null || activeVoiceName != null) return false
+        return try {
+            val safe = fileName.replace(Regex("[^A-Za-z0-9._-]"), "_").takeLast(80).ifBlank { "remote.onnx" }
+            val req = DownloadManager.Request(Uri.parse(url))
+                .setTitle("Karen voice: $displayName")
+                .setDescription("Downloading voice model")
+                .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE)
+                .setDestinationInExternalFilesDir(ctx, "voices", safe)
+                .setAllowedOverMetered(true)
+            val dm = ctx.getSystemService(DownloadManager::class.java) ?: return false
+            val id = dm.enqueue(req)
+            voiceDownloadId = id
+            dlPrefs(ctx).edit()
+                .putLong(V_ID, id).putString(V_NAME, displayName).putString(V_FILE, safe)
+                .apply()
+            activeVoiceName = displayName
+            voiceProgress = 0f
+            voiceStatus = "Starting…"
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
 
     fun startVoice(ctx: Context, entry: VoiceModel): Boolean {
         if (activeName != null || activeVoiceName != null) return false

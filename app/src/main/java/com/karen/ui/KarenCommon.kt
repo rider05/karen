@@ -2857,7 +2857,7 @@ fun ChatGPTDrawerContent(
                     modifier = Modifier.size(18.dp)
                 )
             }
-            IconButton(onClick = { onNavigate("Hardware"); onCloseDrawer() }, modifier = Modifier.size(32.dp)) {
+            IconButton(onClick = { onNavigate("Settings"); onCloseDrawer() }, modifier = Modifier.size(32.dp)) {
                 Icon(Icons.Default.Settings, contentDescription = "Settings", tint = colors.textMuted, modifier = Modifier.size(18.dp))
             }
         }

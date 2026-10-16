@@ -1532,57 +1532,118 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
         }
 
         if (editing) {
-            AlertDialog(
-                onDismissRequest = { editing = false },
-                containerColor = colors.surface,
-                titleContentColor = colors.textPrimary,
-                textContentColor = colors.textSecondary,
-                confirmButton = {
-                    TextButton(onClick = {
-                        if (editName.isNotBlank()) {
-                            UserPrefs.save(context, editName.trim(), editAge, editType)
+            androidx.compose.ui.window.Dialog(onDismissRequest = { editing = false }) {
+                val canSave = editName.isNotBlank()
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(colors.surface)
+                        .border(1.dp, colors.border, RoundedCornerShape(20.dp))
+                        .padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    // Header: live avatar preview + title.
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(48.dp)
+                                .clip(CircleShape)
+                                .background(colors.accentGreen),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                editName.firstOrNull()?.uppercase() ?: "-",
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 20.sp
+                            )
                         }
-                        editing = false
-                    }) { Text("Save") }
-                },
-                dismissButton = { TextButton(onClick = { editing = false }) { Text("Cancel") } },
-                title = { Text("Edit Profile") },
-                text = {
-                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        OutlinedTextField(
-                            value = editName,
-                            onValueChange = { editName = it },
-                            label = { Text("Name", color = colors.textMuted) },
-                            singleLine = true,
-                            textStyle = androidx.compose.ui.text.TextStyle(color = colors.textPrimary),
-                            colors = karenFieldColors(colors)
-                        )
-                        OutlinedTextField(
-                            value = editAge,
-                            onValueChange = { if (it.all { c -> c.isDigit() } && it.length <= 3) editAge = it },
-                            label = { Text("Age", color = colors.textMuted) },
-                            singleLine = true,
-                            textStyle = androidx.compose.ui.text.TextStyle(color = colors.textPrimary),
-                            colors = karenFieldColors(colors)
-                        )
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            listOf("Student", "Personal", "Developer", "Researcher", "Professional").forEach { t ->
-                                val selected = editType == t
-                                Box(
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(if (selected) colors.accentGreen.copy(alpha = 0.2f) else colors.surfaceHover)
-                                        .border(1.dp, if (selected) colors.accentGreen else colors.border, RoundedCornerShape(8.dp))
-                                        .clickable { editType = t }
-                                        .padding(horizontal = 8.dp, vertical = 4.dp)
-                                ) {
-                                    Text(t, color = if (selected) colors.accentGreen else colors.textPrimary, fontSize = 11.sp)
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("Edit Profile", color = colors.textPrimary, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+                            Text("Personalize your Karen", color = colors.textMuted, fontSize = 12.sp)
+                        }
+                    }
+                    HorizontalDivider(color = colors.border, thickness = 0.5.dp)
+                    OutlinedTextField(
+                        value = editName,
+                        onValueChange = { editName = it },
+                        label = { Text("Name", color = colors.textMuted) },
+                        leadingIcon = { Icon(Icons.Default.Person, contentDescription = null, tint = colors.textMuted) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        textStyle = androidx.compose.ui.text.TextStyle(color = colors.textPrimary),
+                        colors = karenFieldColors(colors)
+                    )
+                    OutlinedTextField(
+                        value = editAge,
+                        onValueChange = { if (it.all { c -> c.isDigit() } && it.length <= 3) editAge = it },
+                        label = { Text("Age", color = colors.textMuted) },
+                        leadingIcon = { Icon(Icons.Default.Cake, contentDescription = null, tint = colors.textMuted) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        textStyle = androidx.compose.ui.text.TextStyle(color = colors.textPrimary),
+                        colors = karenFieldColors(colors)
+                    )
+                    Text("Profile type", color = colors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+                    androidx.compose.foundation.layout.FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        listOf("Student", "Personal", "Developer", "Researcher", "Professional").forEach { t ->
+                            val selected = editType == t
+                            Row(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(if (selected) colors.accentGreen.copy(alpha = 0.2f) else colors.surfaceHover)
+                                    .border(1.dp, if (selected) colors.accentGreen else colors.border, RoundedCornerShape(10.dp))
+                                    .clickable { editType = t }
+                                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                if (selected) {
+                                    Icon(Icons.Default.Check, contentDescription = null, tint = colors.accentGreen, modifier = Modifier.size(14.dp))
+                                    Spacer(Modifier.width(4.dp))
                                 }
+                                Text(
+                                    t,
+                                    color = if (selected) colors.accentGreen else colors.textPrimary,
+                                    fontSize = 12.5.sp,
+                                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
+                                )
                             }
                         }
                     }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TextButton(onClick = { editing = false }) {
+                            Text("Cancel", color = colors.textMuted)
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Button(
+                            onClick = {
+                                UserPrefs.save(context, editName.trim(), editAge, editType)
+                                editing = false
+                            },
+                            enabled = canSave,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = colors.accentGreen,
+                                contentColor = Color.White,
+                                disabledContainerColor = colors.surfaceHover,
+                                disabledContentColor = colors.textMuted
+                            ),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Text("Save")
+                        }
+                    }
                 }
-            )
+            }
         }
     }
 }

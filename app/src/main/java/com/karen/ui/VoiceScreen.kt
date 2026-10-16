@@ -81,7 +81,10 @@ fun VoiceScreen(
                 val pick = if (!UserPrefs.autoRoute(personaCtx)) {
                     pinned
                 } else {
-                    routeModel(text, locals, keyed, UserPrefs.autoCloud(personaCtx))?.modelName ?: pinned
+                    routeModel(
+                        text, locals, keyed, UserPrefs.autoCloud(personaCtx),
+                        UserPrefs.preferredLocalModel(personaCtx), UserPrefs.preferredApiModel(personaCtx)
+                    )?.modelName ?: pinned
                 }
                 val customs = UserPrefs.customProviders(personaCtx)
                 val cloud = pick?.let { findCloudProviderByName(it, customs) }

@@ -364,4 +364,18 @@ object UserPrefs {
     fun setCatalogUrl(ctx: Context, url: String) {
         prefs(ctx).edit().putString(KEY_CATALOG_URL, url.trim().take(300)).apply()
     }
+
+    // Preferred on-device model for local calls (blank = no preference).
+    private const val KEY_PREFERRED_LOCAL = "preferred_local_model"
+    fun preferredLocalModel(ctx: Context): String = prefs(ctx).getString(KEY_PREFERRED_LOCAL, "") ?: ""
+    fun setPreferredLocalModel(ctx: Context, name: String) {
+        prefs(ctx).edit().putString(KEY_PREFERRED_LOCAL, name.trim().take(80)).apply()
+    }
+
+    // Preferred cloud model for API calls (blank = no preference).
+    private const val KEY_PREFERRED_API = "preferred_api_model"
+    fun preferredApiModel(ctx: Context): String = prefs(ctx).getString(KEY_PREFERRED_API, "") ?: ""
+    fun setPreferredApiModel(ctx: Context, name: String) {
+        prefs(ctx).edit().putString(KEY_PREFERRED_API, name.trim().take(80)).apply()
+    }
 }

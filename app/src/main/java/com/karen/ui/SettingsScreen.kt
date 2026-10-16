@@ -255,6 +255,95 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                         color = colors.textMuted,
                         fontSize = 11.5.sp
                     )
+                    // Preferred models: favored defaults for local and API calls.
+                    var preferredLocal by remember { mutableStateOf(UserPrefs.preferredLocalModel(context)) }
+                    var preferredApi by remember { mutableStateOf(UserPrefs.preferredApiModel(context)) }
+                    var localMenu by remember { mutableStateOf(false) }
+                    var apiMenu by remember { mutableStateOf(false) }
+                    val localOptions = remember {
+                        listOf("") + UserPrefs.models(context).filter { !isCloudProviderName(it) }
+                    }
+                    val apiOptions = remember {
+                        listOf("") + allCloudProviders(context)
+                            .filter { UserPrefs.apiKey(context, it.id).isNotBlank() }
+                            .map { it.name }
+                    }
+                    fun preferredLabel(value: String, kind: String): String =
+                        if (value.isBlank()) "None (auto)" else value
+                    listOf(
+                        Triple(
+                            "Preferred on-device model",
+                            "Local fallback, server default, and routing favorite",
+                            0
+                        ),
+                        Triple("Preferred cloud API", "Routing favorite when a cloud model fits", 1)
+                    ).forEach { (title, sub, which) ->
+                        val current = if (which == 0) preferredLocal else preferredApi
+                        val expanded = if (which == 0) localMenu else apiMenu
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(colors.surfaceHover.copy(alpha = 0.55f))
+                                    .border(1.dp, colors.border.copy(alpha = 0.6f), RoundedCornerShape(12.dp))
+                                    .clickable { if (which == 0) localMenu = true else apiMenu = true }
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(title, color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
+                                    Text(
+                                        preferredLabel(current, title) + (if (which == 0) "" else " · keyed only"),
+                                        color = if (current.isBlank()) colors.textMuted else colors.accentGreen,
+                                        fontSize = 11.5.sp,
+                                        fontFamily = FontFamily.Monospace
+                                    )
+                                }
+                                Icon(
+                                    Icons.Default.KeyboardArrowDown,
+                                    contentDescription = "Choose",
+                                    tint = colors.textMuted,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                            DropdownMenu(
+                                expanded = expanded,
+                                onDismissRequest = { if (which == 0) localMenu = false else apiMenu = false },
+                                modifier = Modifier.background(colors.surface)
+                            ) {
+                                (if (which == 0) localOptions else apiOptions).forEach { option ->
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                if (option.isBlank()) "None (auto)" else option,
+                                                color = if (option == current) colors.accentGreen else colors.textPrimary,
+                                                fontSize = 13.sp
+                                            )
+                                        },
+                                        onClick = {
+                                            if (which == 0) {
+                                                preferredLocal = option
+                                                UserPrefs.setPreferredLocalModel(context, option)
+                                                localMenu = false
+                                            } else {
+                                                preferredApi = option
+                                                UserPrefs.setPreferredApiModel(context, option)
+                                                apiMenu = false
+                                            }
+                                        }
+                                    )
+                                }
+                            }
+                            Spacer(Modifier.height(2.dp))
+                            Text(
+                                sub,
+                                color = colors.textMuted,
+                                fontSize = 11.5.sp
+                            )
+                        }
+                    }
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()

@@ -135,19 +135,27 @@ fun routeModel(
     prompt: String,
     installedLocals: List<String>,
     keyedClouds: List<CloudProvider>,
-    allowCloud: Boolean
+    allowCloud: Boolean,
+    /** Display name favored for local picks (blank = none). */
+    preferredLocal: String = "",
+    /** Display name favored for cloud picks (blank = none). */
+    preferredApi: String = ""
 ): RouteDecision? {
     if (installedLocals.isEmpty() && (!allowCloud || keyedClouds.isEmpty())) return null
     val intent = detectIntent(prompt)
     val reason = intentReason(intent)
-    val bestLocal = installedLocals.maxByOrNull { scoreLocal(it, intent) }
+    val bestLocal = installedLocals.maxByOrNull {
+        scoreLocal(it, intent) + if (it == preferredLocal) 0.5 else 0.0
+    }
     val bestLocalSize = bestLocal
         ?.let { name -> modelCatalog.find { it.name == name }?.paramsB ?: 1f }
         ?: 0f
     if (!allowCloud || keyedClouds.isEmpty()) {
         return bestLocal?.let { RouteDecision(it, reason) }
     }
-    val bestCloud = keyedClouds.maxByOrNull { scoreCloud(it.id, intent) }?.name
+    val bestCloud = keyedClouds.maxByOrNull {
+        scoreCloud(it.id, intent) + if (it.name == preferredApi) 8 else 0
+    }?.name
     val pick = when {
         bestLocal == null -> bestCloud ?: return null
         bestCloud == null -> bestLocal

@@ -297,7 +297,10 @@ fun ChatScreen(
         val locals = UserPrefs.models(context)
             .filter { !isCloudProviderName(it) && !isEmbeddingModel(it) && ModelDownloader.isRunnableWeight(context, it) }
         val keyed = allCloudProviders(context).filter { UserPrefs.apiKey(context, it.id).isNotBlank() }
-        val decision = routeModel(prompt, locals, keyed, UserPrefs.autoCloud(context))
+        val decision = routeModel(
+            prompt, locals, keyed, UserPrefs.autoCloud(context),
+            UserPrefs.preferredLocalModel(context), UserPrefs.preferredApiModel(context)
+        )
         if (decision != null) {
             if (decision.modelName != lastRouted) {
                 lastRouted = decision.modelName
@@ -954,10 +957,14 @@ fun ChatScreen(
         // real on-device inference for downloaded weights, else the mock.
         // Auto routing swaps in the best model for this prompt.
         val routed = effectiveModel(userText.ifBlank { "chat" })
+        val runnableLocals = UserPrefs.models(context).filter {
+            !isCloudProviderName(it) && !isEmbeddingModel(it) && ModelDownloader.isRunnableWeight(context, it)
+        }
         val sendModel = if (forceLocal) {
-            UserPrefs.models(context).firstOrNull {
-                !isCloudProviderName(it) && !isEmbeddingModel(it) && ModelDownloader.isRunnableWeight(context, it)
-            } ?: routed
+            val preferred = UserPrefs.preferredLocalModel(context).takeIf {
+                it in runnableLocals
+            }
+            preferred ?: runnableLocals.firstOrNull() ?: routed
         } else routed
         val cloud = if (forceLocal) null else findCloudProviderByName(sendModel, UserPrefs.customProviders(context))
         val cloudKey = cloud?.let { UserPrefs.apiKey(context, it.id) }.orEmpty()

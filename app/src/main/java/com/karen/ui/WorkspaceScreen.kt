@@ -1107,7 +1107,10 @@ fun WorkspaceScreen(
         val locals = UserPrefs.models(ctx)
             .filter { !isCloudProviderName(it) && !isEmbeddingModel(it) && ModelDownloader.isRunnableWeight(ctx, it) }
         val keyed = allCloudProviders(ctx).filter { UserPrefs.apiKey(ctx, it.id).isNotBlank() }
-        val decision = routeModel(prompt, locals, keyed, UserPrefs.autoCloud(ctx))
+        val decision = routeModel(
+            prompt, locals, keyed, UserPrefs.autoCloud(ctx),
+            UserPrefs.preferredLocalModel(ctx), UserPrefs.preferredApiModel(ctx)
+        )
         if (decision != null) {
             if (decision.modelName != lastRouted) {
                 lastRouted = decision.modelName

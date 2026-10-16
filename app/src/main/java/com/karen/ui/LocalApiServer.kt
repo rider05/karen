@@ -222,7 +222,10 @@ object LocalApiServer {
                     )
                     return
                 }
-                else -> installed.firstOrNull()
+                else -> {
+                    val preferred = UserPrefs.preferredLocalModel(ctx).takeIf { it in installed }
+                    preferred ?: installed.firstOrNull()
+                }
             }
             if (pick == null) {
                 writeJson(

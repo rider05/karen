@@ -1983,18 +1983,17 @@ fun ChatScreen(
                     }
                 }
             }
-            // Slash tool menu (ChatGPT/OpenCode style): "/…" lists phone
-            // tools above the composer; picking one inserts "/name ".
-            val slashQuery = if (input.text.startsWith("/") && ' ' !in input.text) {
-                input.text.removePrefix("/").trimStart()
-            } else null
+            // Slash tool menu (ChatGPT/OpenCode style): a trailing "/…"
+            // token anywhere in the text lists phone tools above the
+            // composer; picking one replaces the token with "/name ".
+            val slashToken = Regex("(?:^|\\s)/([A-Za-z_][A-Za-z0-9_]*)$").find(input.text)
+            val slashQuery = slashToken?.groupValues?.getOrNull(1)
             if (slashQuery != null) {
-                val slashSpecs = remember(slashQuery) {
+                val slashSpecs = remember(slashQuery, slashToken?.value) {
                     val all = ToolSpecs.load(context)
                     val q = slashQuery.lowercase()
                     all.filter { q.isBlank() || it.name.contains(q) || it.desc.lowercase().contains(q) }
                         .sortedWith(compareBy({ !it.name.startsWith(q) }, { it.name }))
-                        .take(8)
                 }
                 if (slashSpecs.isNotEmpty()) {
                     Column(
@@ -2007,55 +2006,68 @@ fun ChatScreen(
                             .padding(vertical = 4.dp)
                     ) {
                         Text(
-                            text = "TOOLS · tap to insert",
+                            text = "TOOLS (${slashSpecs.size}) · tap to insert",
                             color = colors.textMuted,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
                         )
-                        slashSpecs.forEach { spec ->
-                            val tierTint = when (spec.tier) {
-                                "T0" -> colors.accentGreen
-                                "T2", "T3" -> colors.accentAmber
-                                else -> colors.accentBlue
-                            }
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable { setInputEnd("/${spec.name} ") }
-                                    .padding(horizontal = 12.dp, vertical = 7.dp)
-                            ) {
-                                Box(
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 280.dp)
+                        ) {
+                            items(slashSpecs, key = { it.name }) { spec ->
+                                val tierTint = when (spec.tier) {
+                                    "T0" -> colors.accentGreen
+                                    "T2", "T3" -> colors.accentAmber
+                                    else -> colors.accentBlue
+                                }
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
                                     modifier = Modifier
-                                        .size(7.dp)
-                                        .clip(androidx.compose.foundation.shape.CircleShape)
-                                        .background(tierTint)
-                                )
-                                Spacer(Modifier.width(8.dp))
-                                Text(
-                                    text = "/${spec.name}",
-                                    color = colors.accentGreen,
-                                    fontSize = 13.sp,
-                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                                Spacer(Modifier.width(8.dp))
-                                Text(
-                                    text = spec.desc,
-                                    color = colors.textSecondary,
-                                    fontSize = 12.sp,
-                                    maxLines = 1,
-                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                                    modifier = Modifier.weight(1f)
-                                )
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            val tok = slashToken?.value.orEmpty()
+                                            val at = input.text.lastIndexOf(tok)
+                                            // Keep a preceding space; drop only the token.
+                                            val cut = if (at >= 0) at + (if (tok.startsWith("/")) 0 else 1) else -1
+                                            val base = if (cut >= 0) input.text.substring(0, cut) else input.text
+                                            setInputEnd(base + "/${spec.name} ")
+                                        }
+                                        .padding(horizontal = 12.dp, vertical = 7.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(7.dp)
+                                            .clip(androidx.compose.foundation.shape.CircleShape)
+                                            .background(tierTint)
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(
+                                        text = "/${spec.name}",
+                                        color = colors.accentGreen,
+                                        fontSize = 13.sp,
+                                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(
+                                        text = spec.desc,
+                                        color = colors.textSecondary,
+                                        fontSize = 12.sp,
+                                        maxLines = 1,
+                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
                             }
                         }
                     }
                 }
             }
             // Inserted "/tool …" reminder chip (args are plain text after the name).
-            val slashActive = Regex("^/([A-Za-z_][A-Za-z0-9_]*)\\s")
+            val slashActive = Regex("(?:^|\\s)/([A-Za-z_][A-Za-z0-9_]*)\\s")
                 .find(input.text)?.groupValues?.getOrNull(1)
                 ?.let { ToolSpecs.byName(context, it) }
             if (slashActive != null) {

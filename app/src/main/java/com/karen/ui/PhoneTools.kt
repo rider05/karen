@@ -224,10 +224,10 @@ object ToolSpecs {
     }
 }
 
-/** Matches a leading "/tool rest" command. Null when not a slash call. */
+/** Matches a "/tool rest" command at the start or after a space. Null otherwise. */
 fun matchSlash(ctx: Context, text: String): Pair<ToolSpec, String>? {
-    val m = Regex("^/([A-Za-z_][A-Za-z0-9_]*)\\s*([\\s\\S]*)$")
-        .matchEntire(text.trim()) ?: return null
+    val m = Regex("(?:^|\\s)/([A-Za-z_][A-Za-z0-9_]*)\\s*([\\s\\S]*)$")
+        .find(text.trim()) ?: return null
     val spec = ToolSpecs.byName(ctx, m.groupValues[1]) ?: return null
     return spec to m.groupValues[2].trim()
 }

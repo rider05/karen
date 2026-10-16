@@ -1986,9 +1986,10 @@ fun ChatScreen(
             // Slash tool menu (ChatGPT/OpenCode style): a trailing "/…"
             // token anywhere in the text lists phone tools above the
             // composer; picking one replaces the token with "/name ".
-            val slashToken = Regex("(?:^|\\s)/([A-Za-z_][A-Za-z0-9_]*)$").find(input.text)
-            val slashQuery = slashToken?.groupValues?.getOrNull(1)
-            if (slashQuery != null) {
+            // A bare trailing "/" lists everything.
+            val slashToken = Regex("(?:^|\\s)/([A-Za-z_][A-Za-z0-9_]*)?$").find(input.text)
+            val slashQuery = slashToken?.groupValues?.getOrNull(1) ?: ""
+            if (slashToken != null) {
                 val slashSpecs = remember(slashQuery, slashToken?.value) {
                     val all = ToolSpecs.load(context)
                     val q = slashQuery.lowercase()

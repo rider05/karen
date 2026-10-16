@@ -1553,8 +1553,8 @@ fun UserMessageBubble(
  */
 @Composable
 fun ChatGPTFloatingComposer(
-    value: String,
-    onValueChange: (String) -> Unit,
+    value: androidx.compose.ui.text.input.TextFieldValue,
+    onValueChange: (androidx.compose.ui.text.input.TextFieldValue) -> Unit,
     onSend: () -> Unit,
     onAttachClick: () -> Unit,
     onMicClick: () -> Unit,
@@ -1569,7 +1569,7 @@ fun ChatGPTFloatingComposer(
     modifier: Modifier = Modifier
 ) {
     val colors = LocalKarenColors.current
-    val hasText = value.isNotBlank()
+    val hasText = value.text.isNotBlank()
     val canSend = hasText || attachmentsPreview.isNotEmpty()
 
     val infiniteTransition = rememberInfiniteTransition(label = "composer_mic_pulse")
@@ -1664,7 +1664,7 @@ fun ChatGPTFloatingComposer(
                     .padding(vertical = 4.dp),
                 contentAlignment = Alignment.CenterStart
             ) {
-                if (value.isEmpty()) {
+                if (value.text.isEmpty()) {
                     Text(
                         text = if (isListening) {
                             if (listeningText.isNotEmpty()) listeningText else "Listening... speak now"

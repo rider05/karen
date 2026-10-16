@@ -21,6 +21,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.karen.formatSize
@@ -193,7 +195,15 @@ fun ChatScreen(
     val coroutineScope = rememberCoroutineScope()
     val listState = rememberLazyListState()
 
-    var input by remember { mutableStateOf("") }
+    var input by remember { mutableStateOf(TextFieldValue("")) }
+
+    /** Sets the composer text with the cursor parked at the end. */
+    fun setInputEnd(text: String) {
+        input = TextFieldValue(
+            text,
+            TextRange(text.length)
+        )
+    }
     var showModelSheet by remember { mutableStateOf(false) }
     var showAttachmentSheet by remember { mutableStateOf(false) }
     var isGenerating by remember { mutableStateOf(false) }
@@ -218,7 +228,18 @@ fun ChatScreen(
 
     val voiceStt = rememberVoiceStt(
         onResult = { speechText ->
-            input = if (input.isBlank()) speechText else "$input $speechText"
+            input = if (input.text.isBlank()) {
+                TextFieldValue(
+                    speechText,
+                    TextRange(speechText.length)
+                )
+            } else {
+                val combined = "${input.text} $speechText"
+                TextFieldValue(
+                    combined,
+                    TextRange(combined.length)
+                )
+            }
         }
     )
 
@@ -377,10 +398,10 @@ fun ChatScreen(
 
     /** Parks the current composer text to run after the in-flight reply. */
     fun enqueueCurrent() {
-        val userText = input.trim()
+        val userText = input.text.trim()
         if (userText.isBlank() && attachments.isEmpty()) return
         val sentAttachments = attachments
-        input = ""
+        input = TextFieldValue("")
         attachments = emptyList()
         queue.add(QueuedPrompt(userText.ifBlank { sentAttachments.joinToString(", ") { it.name } }, sentAttachments))
     }
@@ -1737,7 +1758,7 @@ fun ChatScreen(
                             .clip(RoundedCornerShape(20.dp))
                             .background(colors.surface)
                             .border(1.dp, colors.border.copy(alpha = 0.6f), RoundedCornerShape(20.dp))
-                            .clickable { input = suggestion }
+                            .clickable { setInputEnd(suggestion) }
                             .padding(horizontal = 14.dp, vertical = 9.dp)
                     ) {
                         Icon(
@@ -1893,7 +1914,7 @@ fun ChatScreen(
             }
             // "@file" vault menu (OpenCode style): "@…" lists vault files
             // above the composer; picking one inserts "@filename ".
-            val mentionMatch = Regex("@([\\w.\\-]*)$").find(input)
+            val mentionMatch = Regex("@([\\w.\\-]*)$").find(input.text)
             if (mentionMatch != null) {
                 val mq = mentionMatch.groupValues[1].lowercase()
                 val mentionFiles = remember(mq) {
@@ -1924,7 +1945,8 @@ fun ChatScreen(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clickable {
-                                        input = input.removeSuffix("@" + mentionMatch.groupValues[1]) + "@${f.name} "
+                                        val base = input.text.removeSuffix("@" + mentionMatch.groupValues[1])
+                                        setInputEnd(base + "@${f.name} ")
                                     }
                                     .padding(horizontal = 12.dp, vertical = 7.dp)
                             ) {
@@ -1963,8 +1985,8 @@ fun ChatScreen(
             }
             // Slash tool menu (ChatGPT/OpenCode style): "/…" lists phone
             // tools above the composer; picking one inserts "/name ".
-            val slashQuery = if (input.startsWith("/") && ' ' !in input) {
-                input.removePrefix("/").trimStart()
+            val slashQuery = if (input.text.startsWith("/") && ' ' !in input.text) {
+                input.text.removePrefix("/").trimStart()
             } else null
             if (slashQuery != null) {
                 val slashSpecs = remember(slashQuery) {
@@ -2001,7 +2023,7 @@ fun ChatScreen(
                                 verticalAlignment = Alignment.CenterVertically,
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clickable { input = "/${spec.name} " }
+                                    .clickable { setInputEnd("/${spec.name} ") }
                                     .padding(horizontal = 12.dp, vertical = 7.dp)
                             ) {
                                 Box(
@@ -2034,7 +2056,7 @@ fun ChatScreen(
             }
             // Inserted "/tool …" reminder chip (args are plain text after the name).
             val slashActive = Regex("^/([A-Za-z_][A-Za-z0-9_]*)\\s")
-                .find(input)?.groupValues?.getOrNull(1)
+                .find(input.text)?.groupValues?.getOrNull(1)
                 ?.let { ToolSpecs.byName(context, it) }
             if (slashActive != null) {
                 Row(
@@ -2056,9 +2078,9 @@ fun ChatScreen(
                 value = input,
                 onValueChange = { input = it },
                 onSend = {
-                val rawText = input.trim()
+                val rawText = input.text.trim()
                 if (rawText.isNotBlank() || attachments.isNotEmpty()) {
-                    input = ""
+                    input = TextFieldValue("")
                     val sentAttachments = attachments
                     attachments = emptyList()
                     // Deterministic tool routing first (no model, no API);

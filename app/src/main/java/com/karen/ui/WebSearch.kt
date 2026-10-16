@@ -1,5 +1,6 @@
 package com.karen.ui
 
+import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -68,6 +69,59 @@ object WebSearch {
         } catch (_: Exception) {
             emptyList()
         }.take(5)
+    }
+
+    /**
+     * Keyed search with Exa first (exa.ai key in Settings → Privacy),
+     * falling back to the keyless path. Same shape, richer snippets.
+     */
+    suspend fun searchWithKey(ctx: Context, query: String): List<Result> =
+        withContext(Dispatchers.IO) {
+            val key = UserPrefs.apiKey(ctx, "exa")
+            if (key.isNotBlank()) {
+                try {
+                    val hits = exaSearch(key, query)
+                    if (hits.isNotEmpty()) return@withContext hits.take(5)
+                } catch (_: Exception) {
+                }
+            }
+            search(query)
+        }
+
+    /** Exa neural search: POST api.exa.ai/search with live text snippets. */
+    fun exaSearch(apiKey: String, query: String): List<Result> {
+        val body = JSONObject()
+            .put("query", query.take(300))
+            .put("numResults", 5)
+            .put("type", "auto")
+            .put(
+                "contents",
+                JSONObject().put("text", JSONObject().put("maxCharacters", 600))
+            )
+        val conn = (URL("https://api.exa.ai/search").openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 12000
+            readTimeout = 25000
+            doOutput = true
+            setRequestProperty("x-api-key", apiKey)
+            setRequestProperty("Content-Type", "application/json")
+        }
+        conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+        val code = conn.responseCode
+        val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+        val text = stream.bufferedReader().use { it.readText() }
+        conn.disconnect()
+        if (code == 401 || code == 403) throw IllegalArgumentException("Exa key rejected (HTTP $code)")
+        if (code == 429) throw IllegalStateException("Exa quota exhausted (HTTP 429)")
+        if (code !in 200..299) throw IllegalStateException("Exa HTTP $code")
+        val arr = JSONObject(text).optJSONArray("results") ?: return emptyList()
+        return (0 until arr.length()).mapNotNull { i ->
+            val o = arr.optJSONObject(i) ?: return@mapNotNull null
+            val title = o.optString("title", "").ifBlank { domainOf(o.optString("url", "")) }
+            val snippet = o.optString("text", "").trim().take(500)
+            if (snippet.isBlank()) null
+            else Result(title.ifBlank { "Result" }, snippet, domainOf(o.optString("url", "")))
+        }
     }
 
     /** Compact block appended to the model prompt (or shown directly by the mock). */

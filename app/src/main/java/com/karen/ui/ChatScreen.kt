@@ -1003,7 +1003,7 @@ fun ChatScreen(
                 if (allowed) {
                     setStreamingText(aid, "Searching the web…")
                     web = try {
-                        WebSearch.search(WebSearch.cleanQuery(userText))
+                        WebSearch.searchWithKey(context, WebSearch.cleanQuery(userText))
                             .takeIf { it.isNotEmpty() }
                             ?.let(WebSearch::formatForModel)
                     } catch (_: Exception) { null }

@@ -1389,7 +1389,7 @@ fun WorkspaceScreen(
             var web: String? = null
             if (UserPrefs.webSearchEnabled(ctx) && UserPrefs.webSearchAsked(ctx) && WebSearch.needsSearch(t)) {
                 web = try {
-                    WebSearch.search(WebSearch.cleanQuery(t))
+                    WebSearch.searchWithKey(ctx, WebSearch.cleanQuery(t))
                         .takeIf { it.isNotEmpty() }
                         ?.let(WebSearch::formatForModel)
                 } catch (_: Exception) {

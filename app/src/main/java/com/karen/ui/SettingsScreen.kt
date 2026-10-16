@@ -31,6 +31,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -701,6 +703,80 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                             },
                             colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = colors.accentGreen, uncheckedThumbColor = colors.textMuted, uncheckedTrackColor = colors.surfaceHover)
                         )
+                    }
+                    var exaKeyInput by remember { mutableStateOf("") }
+                    var exaSaved by remember { mutableStateOf(UserPrefs.apiKey(context, "exa").isNotBlank()) }
+                    var exaVisible by remember { mutableStateOf(false) }
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(colors.surfaceHover.copy(alpha = 0.55f))
+                            .border(1.dp, colors.border.copy(alpha = 0.6f), RoundedCornerShape(12.dp))
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Column {
+                            Text("Exa search key (optional)", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
+                            Text(
+                                if (exaSaved) "Exa answers first · key stored on-device" else "Neural search with live snippets (exa.ai) · falls back to keyless",
+                                color = if (exaSaved) colors.accentGreen else colors.textMuted,
+                                fontSize = 11.5.sp,
+                                fontFamily = if (exaSaved) FontFamily.Monospace else null
+                            )
+                        }
+                        if (!exaSaved) {
+                            OutlinedTextField(
+                                value = exaKeyInput,
+                                onValueChange = { exaKeyInput = it.trim().take(200) },
+                                label = { Text("Paste Exa API key", color = colors.textMuted) },
+                                singleLine = true,
+                                textStyle = androidx.compose.ui.text.TextStyle(
+                                    color = colors.textPrimary,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 12.sp
+                                ),
+                                colors = karenFieldColors(colors),
+                                visualTransformation = if (exaVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                                trailingIcon = {
+                                    IconButton(onClick = { exaVisible = !exaVisible }, modifier = Modifier.size(28.dp)) {
+                                        Icon(
+                                            if (exaVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                            contentDescription = if (exaVisible) "Hide key" else "Show key",
+                                            tint = colors.textMuted,
+                                            modifier = Modifier.size(15.dp)
+                                        )
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                TextButton(onClick = {
+                                    if (exaKeyInput.isNotBlank()) {
+                                        UserPrefs.saveApiKey(context, "exa", exaKeyInput)
+                                        exaKeyInput = ""
+                                        exaSaved = true
+                                    }
+                                }) { Text("Save", color = colors.accentGreen, fontSize = 12.sp) }
+                            }
+                        } else {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    "••••" + UserPrefs.apiKey(context, "exa").takeLast(4),
+                                    color = colors.textMuted,
+                                    fontSize = 12.sp,
+                                    fontFamily = FontFamily.Monospace
+                                )
+                                TextButton(onClick = {
+                                    UserPrefs.clearApiKey(context, "exa")
+                                    exaSaved = false
+                                }) { Text("Remove", color = colors.accentRed, fontSize = 12.sp) }
+                            }
+                        }
                     }
                 }
             }

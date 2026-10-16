@@ -13,6 +13,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 
@@ -42,6 +43,23 @@ object AppUpdate {
 
     fun storedSha(ctx: Context): String = prefs(ctx).getString(KEY_SHA, "").orEmpty()
     fun lastCheckedAt(ctx: Context): Long = prefs(ctx).getLong(KEY_CHECKED_AT, 0L)
+
+    /** File of a previously downloaded update, if it is still on disk. */
+    fun pendingApk(ctx: Context): java.io.File? {
+        val path = prefs(ctx).getString(KEY_PENDING_APK, "").orEmpty()
+        if (path.isBlank()) return null
+        val file = java.io.File(path)
+        return if (file.exists() && file.length() > 1_000_000) file else null
+    }
+
+    /** Cooperative pause flag read by the download loops below. */
+    @Volatile
+    var downloadPaused: Boolean = false
+        private set
+
+    fun setDownloadPaused(paused: Boolean) {
+        downloadPaused = paused
+    }
 
     fun currentVersion(ctx: Context): String {
         return try {
@@ -117,6 +135,7 @@ object AppUpdate {
     ): File? = withContext(Dispatchers.IO) {
         val dir = File(ctx.getExternalFilesDir(null), "updates").apply { mkdirs() }
         val dest = File(dir, "karen-debug.apk")
+        downloadPaused = false
         try {
             val total = probeLength()
             val file = if (total != null && total > 8_000_000) {
@@ -190,6 +209,7 @@ object AppUpdate {
                     val buf = ByteArray(1024 * 1024)
                     var done = 0L
                     while (true) {
+                        while (downloadPaused) delay(200)
                         val n = input.read(buf)
                         if (n < 0) break
                         out.write(buf, 0, n)
@@ -244,6 +264,7 @@ object AppUpdate {
                                     val buf = ByteArray(1024 * 1024)
                                     var remaining = end - start + 1
                                     while (remaining > 0) {
+                                        while (downloadPaused) delay(200)
                                         val n = input.read(buf, 0, minOf(buf.size.toLong(), remaining).toInt())
                                         if (n < 0) break
                                         raf.write(buf, 0, n)

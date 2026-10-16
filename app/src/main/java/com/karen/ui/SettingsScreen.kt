@@ -1349,9 +1349,11 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                 var updateStatus by remember { mutableStateOf("Installed: ${AppUpdate.currentVersion(context)}") }
                 var checking by remember { mutableStateOf(false) }
                 var downloading by remember { mutableStateOf(false) }
+                var paused by remember { mutableStateOf(false) }
                 var progress by remember { mutableStateOf(0f) }
                 var pendingSha by remember { mutableStateOf<String?>(null) }
                 var pendingDate by remember { mutableStateOf("") }
+                var downloadedFile by remember { mutableStateOf(AppUpdate.pendingApk(context)) }
                 val updateScope = rememberCoroutineScope()
                 Column(
                     modifier = Modifier
@@ -1372,6 +1374,12 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                                 .clip(RoundedCornerShape(3.dp)),
                             color = colors.accentGreen,
                             trackColor = colors.surfaceHover
+                        )
+                        Text(
+                            "${(progress.coerceIn(0f, 1f) * 100).toInt()}%${if (paused) " · paused" else ""}",
+                            color = colors.textMuted,
+                            fontSize = 11.sp,
+                            fontFamily = FontFamily.Monospace
                         )
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1416,11 +1424,14 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                             Text(if (checking) "Checking…" else "Check for update", fontSize = 12.sp)
                         }
                         val sha = pendingSha
-                        if (sha != null) {
+                        val downloaded = downloadedFile
+                        if (sha != null && (downloaded == null || !downloaded.exists())) {
                             Button(
                                 onClick = {
                                     if (checking || downloading) return@Button
                                     downloading = true
+                                    paused = false
+                                    AppUpdate.setDownloadPaused(false)
                                     progress = 0f
                                     updateStatus = "Downloading ${AppUpdate.APK_PATH}…"
                                     updateScope.launch {
@@ -1429,12 +1440,15 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                                             val file = AppUpdate.download(context, sha, { p -> progress = p }, errors)
                                             if (file != null) {
                                                 pendingSha = null
-                                                updateStatus = AppUpdate.installAndReopen(context, file)
+                                                downloadedFile = file
+                                                updateStatus = "Download complete — tap Install to update."
                                             } else {
                                                 updateStatus = "Download failed: ${errors.firstOrNull() ?: "unknown error"}"
                                             }
                                         } finally {
                                             downloading = false
+                                            paused = false
+                                            AppUpdate.setDownloadPaused(false)
                                         }
                                     }
                                 },
@@ -1445,7 +1459,41 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                                 shape = RoundedCornerShape(10.dp),
                                 enabled = !checking && !downloading
                             ) {
-                                Text("Download & install", fontSize = 12.sp)
+                                Text("Download", fontSize = 12.sp)
+                            }
+                        }
+                        if (downloading) {
+                            OutlinedButton(
+                                onClick = {
+                                    val next = !paused
+                                    paused = next
+                                    AppUpdate.setDownloadPaused(next)
+                                    updateStatus = if (next) {
+                                        "Paused at ${(progress.coerceIn(0f, 1f) * 100).toInt()}% — tap Resume to continue."
+                                    } else {
+                                        "Downloading ${AppUpdate.APK_PATH}…"
+                                    }
+                                },
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Text(if (paused) "Resume" else "Pause", fontSize = 12.sp)
+                            }
+                        }
+                        if (downloaded != null && downloaded.exists() && !downloading) {
+                            Button(
+                                onClick = {
+                                    updateScope.launch {
+                                        updateStatus = AppUpdate.installAndReopen(context, downloaded)
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = colors.accentGreen,
+                                    contentColor = Color.White
+                                ),
+                                shape = RoundedCornerShape(10.dp),
+                                enabled = !checking
+                            ) {
+                                Text("Install", fontSize = 12.sp)
                             }
                         }
                     }

@@ -44,6 +44,7 @@ import com.karen.rememberVoiceStt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -56,7 +57,18 @@ data class SessionSnapshot(
     var title: String,
     var createdAt: Long = System.currentTimeMillis(),
     val chat: MutableList<ProjectChat> = mutableListOf(),
-    val terminal: MutableList<String> = mutableListOf()
+    val terminal: MutableList<String> = mutableListOf(),
+    val agentTasks: MutableList<AgentTask> = mutableListOf()
+)
+
+/** Sub-agent work item: status advances pending → running → done/failed. */
+enum class AgentStatus { PENDING, RUNNING, DONE, FAILED }
+
+data class AgentTask(
+    val id: String,
+    val title: String,
+    var status: AgentStatus = AgentStatus.PENDING,
+    var detail: String = ""
 )
 
 data class Project(
@@ -73,6 +85,8 @@ data class Project(
     var activeSessionId: String = "s1",
     /** Inactive conversations (active one lives in the buffers above). */
     val sessionStore: MutableMap<String, SessionSnapshot> = mutableMapOf(),
+    /** Live agent-task board for the active session (mirrored on switch). */
+    val agentTasks: MutableList<AgentTask> = mutableStateListOf(),
     /** Bumped on session switch/new/delete/rename to refresh the list UI. */
     val sessionTick: MutableState<Long> = mutableStateOf(0L)
 )
@@ -568,6 +582,202 @@ internal fun modelErrorText(e: Exception): String {
 /** Fix rounds per build turn: scaffold once, then repair until clean. */
 private const val MAX_AGENT_FIXES = 3
 
+/** Sub-agent work split: at most 4 tasks, 1 model call each. */
+private const val MAX_AGENT_TASKS = 4
+
+/** One planned build task: title, scope hint, and dependency (-1 = free). */
+private data class AgentPlan(val title: String, val scope: String, val after: Int)
+
+/** Everything a build turn's agents need (avoids 12-param plumbing). */
+private data class AgentCtx(
+    val project: Project,
+    val prompt: String,
+    val dir: File,
+    val cloud: CloudProvider?,
+    val cloudKey: String,
+    val weightFile: File?,
+    val effort: String,
+    val threads: Int,
+    val modelName: String,
+    val windowTokens: Int,
+    val modelOverride: String?,
+    val isCancelled: () -> Boolean,
+    val note: (String) -> Unit,
+    val markStep: (Int) -> Unit
+)
+
+private val agentWriteLock = Any()
+
+private fun parseAgentPlan(raw: String?): List<AgentPlan> {
+    if (raw.isNullOrBlank()) return emptyList()
+    return raw.lines().mapNotNull { line ->
+        val m = Regex("^\\s*(\\d+)[.)]\\s*(.+?)\\s*$").matchEntire(line.trim())
+            ?: return@mapNotNull null
+        val parts = m.groupValues[2].split("::").map { it.trim() }
+        val title = parts.getOrNull(0).orEmpty().take(80)
+        if (title.isBlank()) return@mapNotNull null
+        val scope = parts.getOrNull(1).orEmpty().take(120)
+        val after = Regex("after\\s+(\\d+)").find(parts.getOrNull(2).orEmpty())
+            ?.groupValues?.getOrNull(1)?.toIntOrNull()?.minus(1) ?: -1
+        AgentPlan(title, scope, after)
+    }.take(MAX_AGENT_TASKS)
+}
+
+/** Orchestrator: one planner call splits the request for sub-agent turns. */
+private suspend fun planAgentTasks(c: AgentCtx): List<AgentPlan> {
+    if (c.isCancelled()) return emptyList()
+    val raw = try {
+        callWorkspaceModel(
+            c.cloud, c.cloudKey, c.weightFile, c.effort, c.threads,
+            c.modelName, c.windowTokens, c.modelOverride,
+            "You are a build planner. Output only numbered task lines.",
+            listOf(
+                "user" to "Break this app request into 2-4 concrete build tasks that sub-agents " +
+                    "can execute in order or in parallel.\nRequest: ${c.prompt.take(800)}\n\n" +
+                    "Reply with ONLY lines in this exact shape (no prose, no fences):\n" +
+                    "1. Short task title :: files or area it touches :: after -\n" +
+                    "Use 'after -' when independent, or 'after 1' when blocked on task 1."
+            )
+        )
+    } catch (_: Exception) {
+        null
+    }
+    val parsed = parseAgentPlan(raw)
+    if (parsed.isEmpty()) {
+        return listOf(AgentPlan("Build: ${c.prompt.trim().take(48)}", "", -1))
+    }
+    return parsed
+}
+
+private fun setAgentStatus(project: Project, index: Int, status: AgentStatus, detail: String) {
+    val cur = project.agentTasks.getOrNull(index) ?: return
+    project.agentTasks[index] = cur.copy(status = status, detail = detail.take(160))
+}
+
+/** One sub-agent turn: scoped file generation, applied and verified. */
+private suspend fun runAgentTask(c: AgentCtx, plan: AgentPlan, index: Int, total: Int) {
+    setAgentStatus(c.project, index, AgentStatus.RUNNING, "sub-agent working…")
+    if (c.isCancelled()) {
+        setAgentStatus(c.project, index, AgentStatus.FAILED, "cancelled")
+        return
+    }
+    try {
+        val tree = withContext(Dispatchers.IO) {
+            try {
+                projectTreeSummary(c.dir)
+            } catch (_: Exception) {
+                "(tree unavailable)"
+            }
+        }
+        val reply = callWorkspaceModel(
+            c.cloud, c.cloudKey, c.weightFile, c.effort, c.threads,
+            c.modelName, c.windowTokens, c.modelOverride,
+            "You are sub-agent ${index + 1} of $total for Karen Workspace. Reply using this exact format:\n" +
+                "///FILE: relative/path/File.ext\n<complete file content>\n///END\n" +
+                "Rules: output ONLY the complete files for YOUR task below (up to 6 files, no fences, no prose).",
+            listOf(
+                "user" to "Task: ${plan.title}\n" +
+                    (if (plan.scope.isNotBlank()) "Scope: ${plan.scope}\n" else "") +
+                    "Existing project structure:\n$tree\n\n" +
+                    "Original request: ${c.prompt.take(800)}"
+            )
+        )
+        if (c.isCancelled()) {
+            setAgentStatus(c.project, index, AgentStatus.FAILED, "cancelled")
+            return
+        }
+        if (reply.isNullOrBlank()) {
+            setAgentStatus(c.project, index, AgentStatus.FAILED, "empty reply")
+            c.note("Agent task ${index + 1}/$total (${plan.title}): empty reply.")
+            return
+        }
+        val files = parseScaffold(reply)
+        if (files.isEmpty()) {
+            setAgentStatus(c.project, index, AgentStatus.FAILED, "produced no files")
+            c.note("Agent task ${index + 1}/$total (${plan.title}): produced no files.")
+            return
+        }
+        val written = withContext(Dispatchers.IO) {
+            synchronized(agentWriteLock) {
+                files.map { (rel, content) ->
+                    val target = safeScaffoldPath(c.project, rel)
+                        ?: return@map rel to false
+                    try {
+                        target.parentFile?.mkdirs()
+                        target.writeText(content)
+                        val s = WorkspaceUsage.forDir(File(c.project.dir).absolutePath)
+                        s.filesWritten++
+                        s.bytesWritten += content.length
+                        rel to true
+                    } catch (_: Exception) {
+                        rel to false
+                    }
+                }
+            }
+        }
+        c.project.filesVersion = System.currentTimeMillis()
+        val missing = written.filter { !it.second }.map { it.first }
+        if (missing.isEmpty()) {
+            setAgentStatus(
+                c.project, index, AgentStatus.DONE,
+                "${written.size} file(s) verified on disk"
+            )
+            c.note("Agent task ${index + 1}/$total (${plan.title}): ${written.size} file(s) verified on disk.")
+        } else {
+            setAgentStatus(c.project, index, AgentStatus.FAILED, "missing: ${missing.take(3).joinToString(", ")}")
+            c.note("Agent task ${index + 1}/$total (${plan.title}): missing ${missing.size} file(s).")
+        }
+    } catch (e: Exception) {
+        setAgentStatus(c.project, index, AgentStatus.FAILED, modelErrorText(e).removePrefix("⚠ "))
+        c.note("Agent task ${index + 1}/$total (${plan.title}): ${modelErrorText(e)}")
+    }
+    saveProjectState(c.project)
+}
+
+/**
+ * Runs the assignment: planner splits, waves of independent sub-agents
+ * build concurrently, dependents wait. Returns true when every task
+ * finished DONE (drives the final QA verdict downstream).
+ */
+private suspend fun runAgentBuild(c: AgentCtx): Boolean {
+    val plans = planAgentTasks(c)
+    if (c.isCancelled()) return false
+    if (plans.isEmpty()) return false
+    c.project.agentTasks.clear()
+    plans.forEachIndexed { i, p ->
+        c.project.agentTasks.add(AgentTask("t${System.currentTimeMillis()}_$i", p.title))
+    }
+    saveProjectState(c.project)
+    c.note("Agent: ${plans.size} task(s) planned — sub-agents building.")
+    val done = java.util.Collections.synchronizedSet(mutableSetOf<Int>())
+    var remaining = plans.indices.toMutableSet()
+    while (remaining.isNotEmpty() && !c.isCancelled()) {
+        val wave = remaining.filter { i ->
+            val a = plans[i].after
+            a < 0 || a >= plans.size || a in done
+        }
+        if (wave.isEmpty()) {
+            c.note("Agent: circular task dependency — remaining tasks skipped.")
+            break
+        }
+        coroutineScope {
+            wave.map { i ->
+                async {
+                    try {
+                        runAgentTask(c, plans[i], i, plans.size)
+                    } finally {
+                        done.add(i)
+                    }
+                }
+            }.awaitAll()
+        }
+        remaining.removeAll(wave.toSet())
+    }
+    saveProjectState(c.project)
+    return c.project.agentTasks.isNotEmpty() &&
+        c.project.agentTasks.all { it.status == AgentStatus.DONE }
+}
+
 private suspend fun scaffoldWithModel(
     project: Project,
     userText: String,
@@ -713,6 +923,8 @@ private fun stashSession(project: Project) {
     e.chat.addAll(project.chat)
     e.terminal.clear()
     e.terminal.addAll(project.terminalLog)
+    e.agentTasks.clear()
+    e.agentTasks.addAll(project.agentTasks.map { it.copy() })
 }
 
 private fun loadSnapshotInto(project: Project, e: SessionSnapshot) {
@@ -720,6 +932,8 @@ private fun loadSnapshotInto(project: Project, e: SessionSnapshot) {
     project.chat.addAll(e.chat)
     project.terminalLog.clear()
     project.terminalLog.addAll(e.terminal)
+    project.agentTasks.clear()
+    project.agentTasks.addAll(e.agentTasks.map { it.copy() })
 }
 
 fun switchProjectSession(project: Project, id: String) {
@@ -741,6 +955,7 @@ fun newProjectSession(project: Project) {
     project.activeSessionId = id
     project.chat.clear()
     project.terminalLog.clear()
+    project.agentTasks.clear()
     project.sessionTick.value = System.currentTimeMillis()
     saveProjectState(project)
 }
@@ -791,6 +1006,11 @@ private fun saveSessions(project: Project) {
             File(sdir, "terminal.txt").writeText(
                 s.terminal.takeLast(200).joinToString("\n") { enc(it) }
             )
+            File(sdir, "agent.txt").writeText(
+                s.agentTasks.takeLast(40).joinToString("\n") {
+                    "${it.id}\t${enc(it.title)}\t${it.status.name}\t${enc(it.detail)}"
+                }
+            )
         }
     } catch (_: Exception) {
     }
@@ -814,7 +1034,21 @@ private fun loadSessions(project: Project): Boolean {
             } ?: emptyList()
             val term = File(sdir, "terminal.txt").takeIf { it.exists() }?.readLines()?.map { dec(it) }
                 ?: emptyList()
-            project.sessionStore[p[0]] = SessionSnapshot(dec(p[1]).ifBlank { "Session" }, p[2].toLongOrNull() ?: 0L, chat.toMutableList(), term.toMutableList())
+            val agents = File(sdir, "agent.txt").takeIf { it.exists() }?.readLines()?.mapNotNull { l ->
+                val q = l.split('\t')
+                if (q.size < 3) null
+                else AgentTask(
+                    q[0],
+                    dec(q[1]),
+                    try {
+                        AgentStatus.valueOf(q[2])
+                    } catch (_: Exception) {
+                        AgentStatus.PENDING
+                    },
+                    if (q.size > 3) dec(q[3]) else ""
+                )
+            } ?: emptyList()
+            project.sessionStore[p[0]] = SessionSnapshot(dec(p[1]).ifBlank { "Session" }, p[2].toLongOrNull() ?: 0L, chat.toMutableList(), term.toMutableList(), agents.toMutableList())
         }
         if (project.sessionStore.isEmpty()) return false
         if (project.sessionStore.none { it.key == project.activeSessionId }) {
@@ -1078,6 +1312,21 @@ fun WorkspaceScreen(
     val projects = remember {
         mutableStateListOf<Project>().apply {
             UserPrefs.projects(ctx).forEach { (n, d) -> add(Project(n, d)) }
+            // Self-heal: re-adopt Karen project dirs the registry lost.
+            try {
+                val root = File(ctx.filesDir, "projects")
+                val known = map { it.dir }.toSet()
+                root.listFiles()
+                    ?.filter { it.isDirectory && it.name !in setOf(".karen") }
+                    ?.filter { File(it, ".karen").isDirectory }
+                    ?.filter { it.absolutePath !in known }
+                    ?.sortedBy { it.name.lowercase() }
+                    ?.forEach { add(Project(it.name, it.absolutePath)) }
+                if (size > UserPrefs.projects(ctx).size) {
+                    UserPrefs.saveProjects(ctx, map { it.name to it.dir })
+                }
+            } catch (_: Exception) {
+            }
         }
     }
     var selected by remember { mutableStateOf<Project?>(null) }
@@ -1155,6 +1404,7 @@ fun WorkspaceScreen(
     fun startNewSession(project: Project) {
         project.chat.clear()
         project.terminalLog.clear()
+        project.agentTasks.clear()
         chatInput = ""
         saveProjectState(project)
         android.widget.Toast.makeText(ctx, "New session started in ${project.name}", android.widget.Toast.LENGTH_SHORT).show()
@@ -1270,19 +1520,26 @@ fun WorkspaceScreen(
                     val weightForCalls = ModelDownloader.weightFileFor(ctx, sendModel)
                     markStep(0)
                     markStep(1)
-                    val scaffoldMsg = scaffoldWithModel(
-                        project, t, cloudScaffold, cwCloudKey,
-                        weightFile = weightForCalls,
-                        effort = effort, threads = threads,
-                        selectedModelName = sendModel,
-                        windowTokens = windowTokens,
-                        modelOverride = modelOverride,
-                        sendStartMs = sendStartMs,
-                        quiet = true
+                    // Orchestrator + sub-agents: the planner splits the
+                    // request, task waves build concurrently, then the
+                    // verify-fix loop below runs final QA.
+                    project.agentTasks.clear()
+                    val agentCtx = AgentCtx(
+                        project = project, prompt = t, dir = dir,
+                        cloud = cloudScaffold, cloudKey = cwCloudKey,
+                        weightFile = weightForCalls, effort = effort,
+                        threads = threads, modelName = sendModel,
+                        windowTokens = windowTokens, modelOverride = modelOverride,
+                        isCancelled = { cancelChat },
+                        note = { s -> note(s) },
+                        markStep = { i -> markStep(i) }
                     )
-                    note("Scaffold: $scaffoldMsg")
+                    val agentDone = runAgentBuild(agentCtx)
                     project.filesVersion = System.currentTimeMillis()
                     markStep(2)
+                    if (!agentDone && !cancelChat) {
+                        note("Agent: some tasks need attention — see Plan tab.")
+                    }
                     // Agent loop: verify on disk + checks, repair until clean
                     // or the fix budget runs out. Each round lands in the
                     // Terminal tab; the thread gets one verdict line.
@@ -3093,8 +3350,75 @@ private fun PlanCanvasView(project: Project) {
                 fontSize = 11.5.sp,
                 modifier = Modifier.padding(top = 2.dp)
             )
-            if (project.steps.isEmpty() && project.tasks.isEmpty()) {
+            if (project.steps.isEmpty() && project.tasks.isEmpty() && project.agentTasks.isEmpty()) {
                 Text("No data found — send a message and the plan appears here.", color = colors.textMuted, fontSize = 12.sp)
+            }
+        }
+        if (project.agentTasks.isNotEmpty()) {
+            item {
+                Text(
+                    "Agent tasks · ${project.agentTasks.count { it.status == AgentStatus.DONE }}/${project.agentTasks.size} done",
+                    color = colors.textPrimary,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+            }
+            items(project.agentTasks.size) { i ->
+                val at = project.agentTasks[i]
+                val tint = when (at.status) {
+                    AgentStatus.DONE -> colors.accentGreen
+                    AgentStatus.RUNNING -> colors.accentBlue
+                    AgentStatus.FAILED -> colors.accentRed
+                    else -> colors.textMuted
+                }
+                val label = when (at.status) {
+                    AgentStatus.DONE -> "done"
+                    AgentStatus.RUNNING -> "running"
+                    AgentStatus.FAILED -> "failed"
+                    else -> "pending"
+                }
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(colors.surface)
+                        .border(1.dp, colors.border, RoundedCornerShape(12.dp))
+                        .padding(12.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(8.dp)
+                                .clip(CircleShape)
+                                .background(tint)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            at.title,
+                            color = colors.textPrimary,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Text(
+                            label,
+                            color = tint,
+                            fontSize = 10.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                    if (at.detail.isNotBlank()) {
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            at.detail,
+                            color = colors.textMuted,
+                            fontSize = 11.5.sp,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                }
             }
         }
         items(project.steps.size) { i ->

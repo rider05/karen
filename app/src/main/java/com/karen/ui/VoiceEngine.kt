@@ -52,14 +52,15 @@ object VoiceEngine {
     fun vadReady(ctx: Context): Boolean =
         OrtEngine.vadReady || OrtEngine.ensureVad(ctx)
 
-    /** One-line engine state for Model Manager rows. */
+    /** One-line engine state for Model Manager rows. Pure file checks only —
+     *  session loading happens off the Main thread (Voice warms it on open). */
     fun status(ctx: Context, entry: ModelDownloader.VoiceModel): String {
         val file = ModelDownloader.voiceFile(ctx, entry.fileName)
         if (!file.exists() || file.length() <= 0) return "Not downloaded"
         if (entry.fileName == "silero_vad.onnx") {
             if (!OrtEngine.ortAvailable) return "Downloaded · ORT missing on this device"
-            return if (vadReady(ctx)) "Ready · on-device voice detection"
-            else "Downloaded · VAD failed to load"
+            return if (OrtEngine.isVadLoaded()) "Ready · on-device voice detection"
+            else "Downloaded · activates in Voice mode"
         }
         if (!needleSupportedAbi() && entry.engine.startsWith("Cactus")) {
             return "Downloaded · needs Needle engine (arm64 device)"

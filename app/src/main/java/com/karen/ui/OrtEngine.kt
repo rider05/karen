@@ -139,6 +139,9 @@ object OrtEngine {
         vadModelPath = null
     }
 
+    /** True when VAD is already loaded (no side effects — safe on Main). */
+    fun isVadLoaded(): Boolean = synchronized(lock) { vadSession != null }
+
     fun closeVad() {
         synchronized(lock) { closeVadLocked() }
     }

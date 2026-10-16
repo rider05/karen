@@ -141,6 +141,11 @@ fun ModelManagerScreen(
             ModelDownloader.voiceFile(ctx, fileName).delete()
         } catch (_: Exception) {
         }
+        // Drop any live ORT session for the deleted file.
+        try {
+            OrtEngine.closeVad()
+        } catch (_: Exception) {
+        }
         UserPrefs.saveVoiceModels(ctx, UserPrefs.voiceModels(ctx).filter { it != name })
         reloadVoices()
     }

@@ -58,7 +58,13 @@ fun scoreCloud(providerId: String, intent: TaskIntent): Int = when (intent) {
         "gemini" -> 70
         "grok" -> 65
         "mistral" -> 60
+        "cerebras" -> 68
+        "githubmodels" -> 66
         "groq" -> 55
+        "sambanova" -> 58
+        "nvidia" -> 58
+        "huggingface" -> 56
+        "zai" -> 56
         else -> 50
     }
     TaskIntent.CODE -> when (providerId) {
@@ -70,6 +76,12 @@ fun scoreCloud(providerId: String, intent: TaskIntent): Int = when (intent) {
         "grok" -> 70
         "gemini" -> 70
         "groq" -> 60
+        "cerebras" -> 66
+        "githubmodels" -> 64
+        "sambanova" -> 62
+        "nvidia" -> 62
+        "huggingface" -> 60
+        "zai" -> 58
         else -> 50
     }
     TaskIntent.LONG -> when (providerId) {
@@ -81,12 +93,24 @@ fun scoreCloud(providerId: String, intent: TaskIntent): Int = when (intent) {
         "grok" -> 60
         "mistral" -> 60
         "groq" -> 55
+        "huggingface" -> 68
+        "githubmodels" -> 64
+        "cerebras" -> 62
+        "nvidia" -> 60
+        "sambanova" -> 58
+        "zai" -> 56
         else -> 50
     }
     TaskIntent.SIMPLE -> when (providerId) {
         "groq" -> 90
+        "cerebras" -> 88
         "gemini" -> 85
+        "sambanova" -> 80
+        "githubmodels" -> 78
         "openai" -> 75
+        "nvidia" -> 75
+        "huggingface" -> 72
+        "zai" -> 72
         "deepseek" -> 70
         "anthropic" -> 70
         "openrouter" -> 70

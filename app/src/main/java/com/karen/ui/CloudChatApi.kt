@@ -41,7 +41,13 @@ val cloudProviders = listOf(
     CloudProvider("grok", "xAI Grok", "console.x.ai", "Grok 3 + mini via API", "https://api.x.ai/v1", "grok-3", CloudProtocol.OPENAI),
     CloudProvider("openrouter", "OpenRouter", "openrouter.ai/keys", "One key → 200+ models gateway", "https://openrouter.ai/api/v1", "openrouter/auto", CloudProtocol.OPENAI, reasoning = true),
     CloudProvider("deepseek", "DeepSeek", "platform.deepseek.com", "DeepSeek V3 + R1 via API", "https://api.deepseek.com", "deepseek-chat", CloudProtocol.OPENAI),
-    CloudProvider("groq", "Groq", "console.groq.com", "Ultra-low-latency LPU inference", "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile", CloudProtocol.OPENAI)
+    CloudProvider("groq", "Groq", "console.groq.com", "Ultra-low-latency LPU inference", "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile", CloudProtocol.OPENAI),
+    CloudProvider("cerebras", "Cerebras", "cloud.cerebras.ai", "Free tier · ultra-fast inference", "https://api.cerebras.ai/v1", "llama-3.3-70b", CloudProtocol.OPENAI),
+    CloudProvider("sambanova", "SambaNova", "cloud.sambanova.ai", "Free tier · fast open models", "https://api.sambanova.ai/v1", "Meta-Llama-3.3-70B-Instruct", CloudProtocol.OPENAI),
+    CloudProvider("huggingface", "Hugging Face", "huggingface.co/settings/tokens", "Free credits · 1000s of models", "https://router.huggingface.co/v1", "meta-llama/Llama-3.1-8B-Instruct", CloudProtocol.OPENAI),
+    CloudProvider("githubmodels", "GitHub Models", "github.com/settings/tokens", "Free with GitHub account · GPT/Llama/Mistral", "https://models.github.ai/inference", "openai/gpt-4o-mini", CloudProtocol.OPENAI),
+    CloudProvider("nvidia", "NVIDIA NIM", "build.nvidia.com", "Free tier · 100+ open models", "https://integrate.api.nvidia.com/v1", "meta/llama-3.1-8b-instruct", CloudProtocol.OPENAI),
+    CloudProvider("zai", "Zhipu GLM", "z.ai", "Free Flash tier · GLM models", "https://api.z.ai/api/paas/v4", "glm-4-flash", CloudProtocol.OPENAI)
 )
 
 /** Supported model ids per provider for the key dialog (default first). */
@@ -53,7 +59,13 @@ val providerModels: Map<String, List<String>> = mapOf(
     "grok" to listOf("grok-3", "grok-3-mini"),
     "openrouter" to listOf("openrouter/auto"),
     "deepseek" to listOf("deepseek-chat", "deepseek-reasoner"),
-    "groq" to listOf("llama-3.3-70b-versatile", "llama-3.1-8b-instant")
+    "groq" to listOf("llama-3.3-70b-versatile", "llama-3.1-8b-instant"),
+    "cerebras" to listOf("llama-3.3-70b", "qwen-3-235b-a22b-instruct-2507"),
+    "sambanova" to listOf("Meta-Llama-3.3-70B-Instruct", "Meta-Llama-3.1-8B-Instruct"),
+    "huggingface" to listOf("meta-llama/Llama-3.1-8B-Instruct", "Qwen/Qwen2.5-7B-Instruct"),
+    "githubmodels" to listOf("openai/gpt-4o-mini", "meta/Llama-3.3-70B-Instruct"),
+    "nvidia" to listOf("meta/llama-3.1-8b-instruct", "mistralai/mixtral-8x7b-instruct-v0.1"),
+    "zai" to listOf("glm-4-flash", "glm-4-plus")
 )
 
 /** Dropdown marker for free-typed model ids (OpenRouter takes any model id). */
@@ -86,7 +98,13 @@ val modelContextWindows: Map<String, Int> = mapOf(
     "deepseek-chat" to 64000,
     "deepseek-reasoner" to 64000,
     "llama-3.3-70b-versatile" to 128000,
-    "llama-3.1-8b-instant" to 128000
+    "llama-3.1-8b-instant" to 128000,
+    "llama-3.3-70b" to 128000,
+    "Meta-Llama-3.3-70B-Instruct" to 128000,
+    "meta-llama/Llama-3.1-8B-Instruct" to 128000,
+    "openai/gpt-4o-mini" to 128000,
+    "meta/llama-3.1-8b-instruct" to 128000,
+    "glm-4-flash" to 128000
 )
 
 /** Context window for a cloud model id, or 0 when unknown. */

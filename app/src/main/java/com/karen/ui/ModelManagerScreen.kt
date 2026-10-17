@@ -6,8 +6,10 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.ClickableText
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -507,40 +509,85 @@ fun ModelManagerScreen(
                         Text("Connected APIs", color = colors.textMuted, fontSize = 10.5.sp, fontWeight = FontWeight.SemiBold)
                         Spacer(Modifier.height(6.dp))
                         val providerByName = allProviders().associateBy { it.name }
-                        connectedApis.chunked(3).forEach { rowApis ->
-                            Row(
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                rowApis.forEach { api ->
-                                    val providerId = providerByName[api]?.id
-                                    val hasKey = providerId != null && UserPrefs.apiKey(ctx, providerId).isNotBlank()
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .clip(RoundedCornerShape(8.dp))
-                                            .background(colors.accentBlue.copy(alpha = 0.12f))
-                                            .padding(horizontal = 8.dp, vertical = 4.dp)
-                                    ) {
-                                        if (hasKey) {
-                                            Icon(Icons.Default.Lock, contentDescription = "Key stored", tint = colors.accentGreen, modifier = Modifier.size(11.dp))
-                                            Spacer(Modifier.width(4.dp))
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 200.dp)
+                                .verticalScroll(rememberScrollState()),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            connectedApis.forEach { apiName ->
+                                val provider = providerByName[apiName]
+                                val providerId = provider?.id
+                                val hasKey = providerId != null && UserPrefs.apiKey(ctx, providerId).isNotBlank()
+                                val modelName = if (providerId != null) UserPrefs.apiModel(ctx, providerId).ifBlank { provider?.defaultModel ?: "" } else ""
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(colors.surface)
+                                        .border(1.dp, colors.border, RoundedCornerShape(10.dp))
+                                        .clickable {
+                                            if (providerId != null) {
+                                                selectedProvider = provider
+                                                apiKeyInput = UserPrefs.apiKey(ctx, providerId)
+                                                apiModelInput = modelName
+                                                modelCustom = false
+                                                modelMenu = false
+                                                liveModels = null
+                                                liveError = false
+                                                keyVisible = false
+                                                apiStep = 1
+                                                fetchLiveModels()
+                                                showApiDialog = true
+                                            }
                                         }
+                                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(32.dp)
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(colors.accentBlue.copy(alpha = 0.12f)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            if (hasKey) Icons.Default.CheckCircle else Icons.Default.Cloud,
+                                            contentDescription = null,
+                                            tint = if (hasKey) colors.accentGreen else colors.accentBlue,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                    Spacer(Modifier.width(10.dp))
+                                    Column(Modifier.weight(1f)) {
                                         Text(
-                                            api,
-                                            color = colors.accentBlue,
+                                            apiName,
+                                            color = colors.textPrimary,
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            maxLines = 1,
+                                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            if (hasKey) modelName else "Tap to connect",
+                                            color = if (hasKey) colors.accentGreen else colors.textMuted,
                                             fontSize = 10.5.sp,
-                                            fontWeight = FontWeight.Medium,
+                                            fontFamily = FontFamily.Monospace,
                                             maxLines = 1,
                                             overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                                         )
                                     }
+                                    Icon(
+                                        Icons.Default.ChevronRight,
+                                        contentDescription = "Configure",
+                                        tint = colors.textMuted,
+                                        modifier = Modifier.size(16.dp)
+                                    )
                                 }
-                                repeat(3 - rowApis.size) { Spacer(Modifier.weight(1f)) }
                             }
-                            Spacer(Modifier.height(6.dp))
                         }
+                        Spacer(Modifier.height(8.dp))
                     }
                     Spacer(Modifier.height(8.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1206,7 +1253,11 @@ fun ModelManagerScreen(
                 textContentColor = colors.textSecondary,
                 title = { Text(if (apiStep == 0) "Connect Cloud API" else if (apiStep == 2) "Custom API" else (provider?.name ?: "API key")) },
                 text = {
-                    Column {
+                    Column(
+                        modifier = Modifier
+                            .heightIn(max = 480.dp)
+                            .verticalScroll(rememberScrollState())
+                    ) {
                         if (apiStep == 0) {
                             Text("Select a provider, then paste its API key (stored only on this device):", fontSize = 13.sp)
                             Spacer(Modifier.height(10.dp))

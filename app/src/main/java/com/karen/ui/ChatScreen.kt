@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -483,7 +484,12 @@ fun ChatScreen(
             val last = info.visibleItemsInfo.lastOrNull() ?: return
             if (last.index < total - 1) return
             val beyondPx = (last.offset + last.size) - info.viewportEndOffset
-            if (beyondPx <= 200) listState.scrollToItem(total - 1)
+            // Only auto-scroll when the user is near the bottom. Use scrollBy
+            // (relative nudge) instead of scrollToItem (which re-anchors to
+            // the item top and jumps the user upward during streaming).
+            if (beyondPx in 1..500) {
+                listState.scrollBy(beyondPx.toFloat())
+            }
         } catch (_: Exception) {}
     }
 

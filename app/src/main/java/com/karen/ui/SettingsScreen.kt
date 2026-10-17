@@ -1341,27 +1341,45 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                             )
                         )
                     }
-                    if (serverLanOn) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(Modifier.weight(1f)) {
-                                Text("Hello World page", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
+                    // Always visible: tells you exactly what other devices
+                    // should open, and what is still missing when they can't.
+                    val pageUrl = remember(serverOn, serverLanOn, serverPortText) { LocalApiServer.lanUrl(context) }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Hello World page", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
+                            Text(
+                                pageUrl,
+                                color = if (serverOn && serverLanOn) colors.accentGreen else colors.textMuted,
+                                fontSize = 11.5.sp,
+                                fontFamily = FontFamily.Monospace
+                            )
+                            if (!serverLanOn) {
                                 Text(
-                                    LocalApiServer.lanUrl(context),
-                                    color = if (serverOn) colors.accentGreen else colors.textMuted,
-                                    fontSize = 11.5.sp,
-                                    fontFamily = FontFamily.Monospace
+                                    "Enable \"Expose on local network\" to open it from other devices",
+                                    color = colors.accentAmber,
+                                    fontSize = 11.sp
                                 )
+                            } else if (pageUrl.contains("127.0.0.1")) {
+                                Text(
+                                    "No Wi-Fi LAN address — connect the phone to Wi-Fi first",
+                                    color = colors.accentAmber,
+                                    fontSize = 11.sp
+                                )
+                            } else if (!serverOn) {
+                                Text("Start the server above to open it", color = colors.textMuted, fontSize = 11.sp)
+                            } else {
+                                Text("No token needed — open this on any device on the same Wi-Fi", color = colors.textMuted, fontSize = 11.sp)
                             }
-                            TextButton(onClick = {
-                                clipboard.setText(AnnotatedString(LocalApiServer.lanUrl(context)))
-                                android.widget.Toast.makeText(context, "Address copied — open it in any browser", android.widget.Toast.LENGTH_SHORT).show()
-                            }) {
-                                Text("Copy", color = colors.accentBlue, fontSize = 12.sp)
-                            }
+                        }
+                        TextButton(onClick = {
+                            clipboard.setText(AnnotatedString(pageUrl))
+                            android.widget.Toast.makeText(context, "Address copied — open it in any browser", android.widget.Toast.LENGTH_SHORT).show()
+                        }) {
+                            Text("Copy", color = colors.accentBlue, fontSize = 12.sp)
                         }
                     }
                     Row(

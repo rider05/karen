@@ -1,12 +1,15 @@
 package com.karen.ui
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.wifi.WifiManager
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import java.io.BufferedInputStream
 import java.io.ByteArrayOutputStream
+import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
@@ -52,7 +55,7 @@ object LocalApiServer {
     }
 
     /** Browser address other devices on the same Wi-Fi can open. */
-    fun lanUrl(ctx: Context): String = "http://${wifiIp(ctx)}:${UserPrefs.serverPort(ctx)}"
+    fun lanUrl(ctx: Context): String = "http://${lanIp(ctx)}:${UserPrefs.serverPort(ctx)}"
 
     fun start(ctx: Context): Boolean {
         if (running) return true
@@ -155,7 +158,12 @@ object LocalApiServer {
             // Bearer auth is mandatory for API routes.
             val auth = headers["authorization"].orEmpty()
             if (auth != "Bearer ${token(ctx)}") {
-                writeJson(socket, 401, JSONObject().put("error", errorObj("invalid bearer token")))
+                // Browser visits get a readable HTML hint; API clients get JSON.
+                if (method == "GET" && headers["accept"].orEmpty().contains("text/html")) {
+                    writeHtml(socket, authHintPage(), 401)
+                } else {
+                    writeJson(socket, 401, JSONObject().put("error", errorObj("invalid bearer token")))
+                }
                 socket.close()
                 return
             }
@@ -383,9 +391,15 @@ object LocalApiServer {
         out.flush()
     }
 
-    private fun writeHtml(socket: Socket, html: String) {
+    private fun writeHtml(socket: Socket, html: String, code: Int = 200) {
         val body = html.toByteArray(Charsets.UTF_8)
-        val head = "HTTP/1.1 200 OK\r\n" +
+        val status = when (code) {
+            200 -> "OK"
+            401 -> "Unauthorized"
+            404 -> "Not Found"
+            else -> "Error"
+        }
+        val head = "HTTP/1.1 $code $status\r\n" +
             "Content-Type: text/html; charset=utf-8\r\n" +
             "Content-Length: ${body.size}\r\n" +
             "Connection: close\r\n\r\n"
@@ -395,8 +409,43 @@ object LocalApiServer {
         out.flush()
     }
 
+    /** Friendly browser page for token-protected routes (never shows the token). */
+    private fun authHintPage(): String = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Karen — Token required</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+         background: #0c0e12; color: #e2e2e8; min-height: 100vh; display: flex;
+         align-items: center; justify-content: center; margin: 0; }
+  .card { background: #1a1c20; border: 1px solid #283042; border-radius: 16px;
+          padding: 32px; max-width: 460px; width: 88%; }
+  h1 { font-size: 19px; margin: 0 0 6px; }
+  p { color: #94a3b8; font-size: 13.5px; line-height: 1.55; margin: 8px 0; }
+  code { font-family: 'JetBrains Mono', monospace; background: #0c0e12;
+         border: 1px solid #283042; border-radius: 6px; padding: 1px 6px; font-size: 12.5px; }
+  .badge { display: inline-block; background: rgba(245,158,11,0.14); color: #f59e0b;
+           border-radius: 20px; padding: 3px 12px; font-size: 11.5px; font-weight: 600; margin-bottom: 14px; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="badge">TOKEN REQUIRED</div>
+  <h1>This is the Karen API</h1>
+  <p>Only model/API routes need the bearer token. The status page does not:</p>
+  <p>Status page → <code>/</code></p>
+  <p>API calls → send <code>Authorization: Bearer &lt;token&gt;</code>.
+     Find the token in Karen → Settings → Local Server → Bearer token.</p>
+</div>
+</body>
+</html>
+""".trimIndent()
+
     private fun landingPage(ctx: Context): String {
-        val ip = wifiIp(ctx)
+        val ip = lanIp(ctx)
         val port = UserPrefs.serverPort(ctx)
         val models = UserPrefs.models(ctx).filter { !isCloudProviderName(it) }
         return """
@@ -483,14 +532,55 @@ object LocalApiServer {
         """.trimIndent()
     }
 
-    private fun wifiIp(ctx: Context): String {
-        return try {
-            val wm = ctx.applicationContext.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
-            val ip = wm.connectionInfo.ipAddress
-            if (ip == 0) "127.0.0.1" else
-                "${(ip and 0xFF)}.${(ip shr 8 and 0xFF)}.${(ip shr 16 and 0xFF)}.${(ip shr 24 and 0xFF)}"
+    /**
+     * IPv4 address other LAN devices can reach: active Wi-Fi from
+     * ConnectivityManager first (the legacy WifiManager read returns 0 on
+     * many modern builds), the legacy read next, then a raw interface scan
+     * (covers hotspot/tethering where wlan0 is unset).
+     */
+    private fun lanIp(ctx: Context): String {
+        val app = ctx.applicationContext
+        try {
+            val cm = app.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val net = cm.activeNetwork
+            val caps = net?.let { cm.getNetworkCapabilities(it) }
+            if (caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+                val hit = cm.getLinkProperties(net)?.linkAddresses?.firstOrNull {
+                    val a = it.address
+                    a is Inet4Address && !a.isLoopbackAddress && !a.isLinkLocalAddress
+                }?.address?.hostAddress
+                if (!hit.isNullOrBlank()) return hit
+            }
         } catch (_: Exception) {
-            "127.0.0.1"
         }
+        try {
+            val wm = app.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            val ip = wm.connectionInfo.ipAddress
+            if (ip != 0) {
+                return "${ip and 0xFF}.${ip shr 8 and 0xFF}.${ip shr 16 and 0xFF}.${ip shr 24 and 0xFF}"
+            }
+        } catch (_: Exception) {
+        }
+        try {
+            val sites = mutableListOf<Pair<String, String>>()
+            val nifs = java.net.NetworkInterface.getNetworkInterfaces()
+            while (nifs.hasMoreElements()) {
+                val nif = nifs.nextElement() ?: continue
+                if (!nif.isUp || nif.isLoopback) continue
+                val name = nif.name.lowercase()
+                if (!name.startsWith("wlan") && !name.startsWith("eth") &&
+                    !name.startsWith("ap") && !name.startsWith("swlan")
+                ) continue
+                for (ia in nif.inetAddresses) {
+                    val a = ia as? Inet4Address ?: continue
+                    if (a.isLoopbackAddress || a.isLinkLocalAddress) continue
+                    sites.add(name to (a.hostAddress ?: continue))
+                }
+            }
+            sites.firstOrNull { it.first.startsWith("wlan") }?.let { return it.second }
+            sites.firstOrNull()?.let { return it.second }
+        } catch (_: Exception) {
+        }
+        return "127.0.0.1"
     }
 }

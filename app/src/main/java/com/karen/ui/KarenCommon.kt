@@ -2636,7 +2636,7 @@ fun ChatGPTDrawerContent(
                 }
                 Spacer(Modifier.height(6.dp))
                 DrawerSectionHeader(
-                    title = "Managers · v2.2 preview",
+                    title = "Data & Backup",
                     collapsed = managersCollapsed,
                     onToggle = { managersCollapsed = !managersCollapsed }
                 )

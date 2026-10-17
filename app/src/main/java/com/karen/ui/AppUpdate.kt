@@ -19,7 +19,7 @@ import org.json.JSONArray
 
 /**
  * In-app update from the tracked APK in git:
- * https://github.com/rider05/karen/blob/main/apks/karen-debug.apk
+ * https://github.com/rider05/karen/blob/main/apks/karen.apk
  *
  * Check compares the latest commit touching that path (GitHub API) with
  * the sha stored at the last updater install. Download pulls the raw file
@@ -29,9 +29,9 @@ import org.json.JSONArray
 object AppUpdate {
     const val REPO = "rider05/karen"
     const val APK_PATH = "apks/karen.apk"
-    const val RAW_URL = "https://github.com/rider05/karen/raw/main/apks/karen-debug.apk"
+    const val RAW_URL = "https://github.com/rider05/karen/raw/main/apks/karen.apk"
     private const val COMMITS_URL =
-        "https://api.github.com/repos/rider05/karen/commits?path=apks/karen-debug.apk&per_page=1"
+        "https://api.github.com/repos/rider05/karen/commits?path=apks/karen.apk&per_page=1"
 
     private const val PREFS = "karen_app_update"
     private const val KEY_SHA = "apk_sha"

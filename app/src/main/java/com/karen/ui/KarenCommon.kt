@@ -2426,7 +2426,7 @@ private fun DrawerSectionHeader(
             fontWeight = FontWeight.SemiBold
         )
         Icon(
-            imageVector = if (collapsed) Icons.Default.KeyboardArrowDown else Icons.Default.KeyboardArrowUp,
+            imageVector = if (collapsed) Icons.Default.KeyboardArrowLeft else Icons.Default.KeyboardArrowDown,
             contentDescription = if (collapsed) "Expand $title" else "Collapse $title",
             tint = colors.textMuted,
             modifier = Modifier.size(16.dp)

@@ -38,6 +38,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.io.File
+import android.content.Context
 import android.util.Base64
 import com.karen.rememberDeviceTelemetry
 import com.karen.rememberVoiceStt
@@ -531,6 +532,7 @@ private fun isTruncatedScaffold(reply: String): Boolean {
  */
 /** One workspace model call (cloud or local) shared by scaffold + fix rounds. */
 private suspend fun callWorkspaceModel(
+    ctx: Context,
     cloud: CloudProvider?,
     cloudKey: String,
     weightFile: File?,
@@ -543,14 +545,18 @@ private suspend fun callWorkspaceModel(
     history: List<Pair<String, String>>
 ): String? {
     if (cloud != null && cloudKey.isNotBlank()) {
-        return cloud.complete(
-            cloudKey,
-            history,
-            maxTokensFor(effort),
-            thinkingBudget = if (cloud.reasoning) thinkingBudgetFor(effort) else null,
-            historyLimit = historyTurnsFor(windowTokens),
-            model = modelOverride
-        )
+        // A stored model id the provider doesn't know is dropped and retried
+        // on the default instead of failing the whole build.
+        return cloud.withModelFallback(ctx, modelOverride) { useModel ->
+            cloud.complete(
+                cloudKey,
+                history,
+                maxTokensFor(effort),
+                thinkingBudget = if (cloud.reasoning) thinkingBudgetFor(effort) else null,
+                historyLimit = historyTurnsFor(windowTokens),
+                model = useModel
+            )
+        }
     }
     if (weightFile != null && KarenLlama.ready) {
         val ok = withContext(Dispatchers.IO) {
@@ -590,6 +596,7 @@ private data class AgentPlan(val title: String, val scope: String, val after: In
 
 /** Everything a build turn's agents need (avoids 12-param plumbing). */
 private data class AgentCtx(
+    val appCtx: Context,
     val project: Project,
     val prompt: String,
     val dir: File,
@@ -628,7 +635,7 @@ private suspend fun planAgentTasks(c: AgentCtx): List<AgentPlan> {
     if (c.isCancelled()) return emptyList()
     val raw = try {
         callWorkspaceModel(
-            c.cloud, c.cloudKey, c.weightFile, c.effort, c.threads,
+            c.appCtx, c.cloud, c.cloudKey, c.weightFile, c.effort, c.threads,
             c.modelName, c.windowTokens, c.modelOverride,
             "You are a build planner. Output only numbered task lines.",
             listOf(
@@ -670,7 +677,7 @@ private suspend fun runAgentTask(c: AgentCtx, plan: AgentPlan, index: Int, total
             }
         }
         val reply = callWorkspaceModel(
-            c.cloud, c.cloudKey, c.weightFile, c.effort, c.threads,
+            c.appCtx, c.cloud, c.cloudKey, c.weightFile, c.effort, c.threads,
             c.modelName, c.windowTokens, c.modelOverride,
             "You are sub-agent ${index + 1} of $total for Karen Workspace. Reply using this exact format:\n" +
                 "///FILE: relative/path/File.ext\n<complete file content>\n///END\n" +
@@ -779,6 +786,7 @@ private suspend fun runAgentBuild(c: AgentCtx): Boolean {
 }
 
 private suspend fun scaffoldWithModel(
+    ctx: Context,
     project: Project,
     userText: String,
     cloud: CloudProvider?,
@@ -811,7 +819,7 @@ private suspend fun scaffoldWithModel(
 
     suspend fun callModel(history: List<Pair<String, String>>): String? =
         callWorkspaceModel(
-            cloud, cloudKey, weightFile, effort, threads,
+            ctx, cloud, cloudKey, weightFile, effort, threads,
             selectedModelName, windowTokens, modelOverride, system, history
         )
 
@@ -1525,6 +1533,7 @@ fun WorkspaceScreen(
                     // verify-fix loop below runs final QA.
                     project.agentTasks.clear()
                     val agentCtx = AgentCtx(
+                        appCtx = ctx,
                         project = project, prompt = t, dir = dir,
                         cloud = cloudScaffold, cloudKey = cwCloudKey,
                         weightFile = weightForCalls, effort = effort,
@@ -1575,7 +1584,7 @@ fun WorkspaceScreen(
                             )
                             timedModel(dir.absolutePath, fixHistory.sumOf { it.second.length }) {
                                 callWorkspaceModel(
-                                    cloudScaffold, cwCloudKey, weightForCalls, effort, threads,
+                                    ctx, cloudScaffold, cwCloudKey, weightForCalls, effort, threads,
                                     sendModel, windowTokens, modelOverride,
                                     "You are a code repair engine for Karen Workspace. Reply using this exact format:\n" +
                                         "///FILE: relative/path/File.ext\n<complete file content>\n///END\n" +
@@ -1694,14 +1703,16 @@ fun WorkspaceScreen(
                         (history + ("user" to "Use these fresh web results where they help. ${WebSearch.GROUNDING_GUIDE}\n$web")).takeLast(cloudLimit)
                     } else history.takeLast(cloudLimit)
                     val reply = timedModel(dir.absolutePath, enriched.sumOf { it.second.length }) {
-                        cloud.complete(
-                            cloudKey,
-                            enriched,
-                            maxTokensFor(effort),
-                            thinkingBudget = if (cloud.reasoning) thinkingBudgetFor(effort) else null,
-                            historyLimit = cloudLimit,
-                            model = UserPrefs.apiModel(ctx, cloud.id).ifBlank { null }
-                        )
+                        cloud.withModelFallback(ctx, UserPrefs.apiModel(ctx, cloud.id)) { useModel ->
+                            cloud.complete(
+                                cloudKey,
+                                enriched,
+                                maxTokensFor(effort),
+                                thinkingBudget = if (cloud.reasoning) thinkingBudgetFor(effort) else null,
+                                historyLimit = cloudLimit,
+                                model = useModel
+                            )
+                        }
                     } ?: ""
                     if (cancelChat) {
                         project.chat.add(ProjectChat("assistant", "(stopped)"))
@@ -1819,6 +1830,7 @@ fun WorkspaceScreen(
                         val cloud = findCloudProviderByName(selectedModel, UserPrefs.customProviders(ctx))
                         val cloudKey = cloud?.let { UserPrefs.apiKey(ctx, it.id) }.orEmpty()
                         val scaffold = scaffoldWithModel(
+                            ctx,
                             target,
                             "Create a small but complete Gradle hello-world project",
                             cloud, cloudKey,

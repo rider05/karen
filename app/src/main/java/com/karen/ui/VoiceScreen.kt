@@ -101,27 +101,31 @@ fun VoiceScreen(
                 }
                 if (cloud != null && key.isNotBlank()) {
                     try {
-                        cloud.completeStreaming(
-                            key,
-                            listOf("user" to "$VOICE_REPLY_STYLE\n\n$text"),
-                            maxTokensFor("Low"),
-                            thinkingBudget = null,
-                            historyLimit = 4,
-                            model = UserPrefs.apiModel(personaCtx, cloud.id).ifBlank { null },
-                            onToken = ::onPiece,
-                            isCancelled = { cancelVoice }
-                        )
-                    } catch (_: Exception) {
-                        // Streaming blocked: fall back to one shot.
-                        val once = try {
-                            cloud.complete(
+                        cloud.withModelFallback(personaCtx, UserPrefs.apiModel(personaCtx, cloud.id)) { useModel ->
+                            cloud.completeStreaming(
                                 key,
                                 listOf("user" to "$VOICE_REPLY_STYLE\n\n$text"),
                                 maxTokensFor("Low"),
                                 thinkingBudget = null,
                                 historyLimit = 4,
-                                model = UserPrefs.apiModel(personaCtx, cloud.id).ifBlank { null }
+                                model = useModel,
+                                onToken = ::onPiece,
+                                isCancelled = { cancelVoice }
                             )
+                        }
+                    } catch (_: Exception) {
+                        // Streaming blocked: fall back to one shot.
+                        val once = try {
+                            cloud.withModelFallback(personaCtx, UserPrefs.apiModel(personaCtx, cloud.id)) { useModel ->
+                                cloud.complete(
+                                    key,
+                                    listOf("user" to "$VOICE_REPLY_STYLE\n\n$text"),
+                                    maxTokensFor("Low"),
+                                    thinkingBudget = null,
+                                    historyLimit = 4,
+                                    model = useModel
+                                )
+                            }
                         } catch (_: Exception) {
                             ""
                         }

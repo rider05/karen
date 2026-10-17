@@ -862,39 +862,43 @@ fun ChatScreen(
                     setStreamingText(aid, (liveView() + "\n\nContinuing… (part ${rounds + 1})").trim())
                 }
                 val res = try {
-                    provider.completeStreamingResult(
-                        key,
-                        roundHistory,
-                        maxTokensFor(effort),
-                        thinkingBudget = if (provider.reasoning) thinkingBudgetFor(effort) else null,
-                        historyLimit = limit,
-                        model = UserPrefs.apiModel(context, provider.id).ifBlank { null },
-                        onToken = { piece ->
-                            live.append(piece)
-                            val now = System.currentTimeMillis()
-                            if (now - lastUiMs > 60) {
-                                lastUiMs = now
-                                val snap = liveView()
-                                coroutineScope.launch {
-                                    streamingContent = true
-                                    setStreamingText(aid, snap)
-                                    scrollToBottomIfNear()
+                    provider.withModelFallback(context, UserPrefs.apiModel(context, provider.id)) { useModel ->
+                        provider.completeStreamingResult(
+                            key,
+                            roundHistory,
+                            maxTokensFor(effort),
+                            thinkingBudget = if (provider.reasoning) thinkingBudgetFor(effort) else null,
+                            historyLimit = limit,
+                            model = useModel,
+                            onToken = { piece ->
+                                live.append(piece)
+                                val now = System.currentTimeMillis()
+                                if (now - lastUiMs > 60) {
+                                    lastUiMs = now
+                                    val snap = liveView()
+                                    coroutineScope.launch {
+                                        streamingContent = true
+                                        setStreamingText(aid, snap)
+                                        scrollToBottomIfNear()
+                                    }
                                 }
-                            }
-                        },
-                        isCancelled = { cancelGeneration }
-                    )
+                            },
+                            isCancelled = { cancelGeneration }
+                        )
+                    }
                 } catch (e: Exception) {
                     if (cancelGeneration) break
                     // Endpoints that reject SSE: retry this round in one shot.
-                    provider.completeResult(
-                        key,
-                        roundHistory,
-                        maxTokensFor(effort),
-                        thinkingBudget = if (provider.reasoning) thinkingBudgetFor(effort) else null,
-                        historyLimit = limit,
-                        model = UserPrefs.apiModel(context, provider.id).ifBlank { null }
-                    )
+                    provider.withModelFallback(context, UserPrefs.apiModel(context, provider.id)) { useModel ->
+                        provider.completeResult(
+                            key,
+                            roundHistory,
+                            maxTokensFor(effort),
+                            thinkingBudget = if (provider.reasoning) thinkingBudgetFor(effort) else null,
+                            historyLimit = limit,
+                            model = useModel
+                        )
+                    }
                 }
                 if (cancelGeneration) break
                 fullReply.append(res.text)
@@ -923,14 +927,16 @@ fun ChatScreen(
                     val followHistory = (styled + ("user" to
                         "Use this document text to answer the request. ${WebSearch.GROUNDING_GUIDE} Do not emit ///TOOL lines:\n${settled.docText}")
                         ).takeLast(limit)
-                    val ans = provider.completeResult(
-                        key,
-                        followHistory,
-                        maxTokensFor(effort),
-                        thinkingBudget = if (provider.reasoning) thinkingBudgetFor(effort) else null,
-                        historyLimit = limit,
-                        model = UserPrefs.apiModel(context, provider.id).ifBlank { null }
-                    ).text.trim()
+                    val ans = provider.withModelFallback(context, UserPrefs.apiModel(context, provider.id)) { useModel ->
+                        provider.completeResult(
+                            key,
+                            followHistory,
+                            maxTokensFor(effort),
+                            thinkingBudget = if (provider.reasoning) thinkingBudgetFor(effort) else null,
+                            historyLimit = limit,
+                            model = useModel
+                        )
+                    }.text.trim()
                     if (ans.isNotBlank() && !cancelGeneration) {
                         val clean = stripToolCalls(ans, extractToolCalls(ans)).trim()
                         if (clean.isNotBlank()) {

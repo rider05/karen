@@ -1567,6 +1567,18 @@ fun ModelManagerScreen(
                                     colors = karenFieldColors(colors),
                                     modifier = Modifier.fillMaxWidth()
                                 )
+                                // Ids absent from the live list 404 at call time:
+                                // warn before the user saves a broken override.
+                                val typedCustom = apiModelInput.trim()
+                                val knownLive = live?.map { it.id }
+                                if (typedCustom.isNotBlank() && knownLive != null && typedCustom !in knownLive) {
+                                    Spacer(Modifier.height(6.dp))
+                                    Text(
+                                        "Not in ${provider.name}'s live list — requests will fail with a 404. Check spelling or tap the refresh icon.",
+                                        color = colors.accentAmber,
+                                        fontSize = 11.sp
+                                    )
+                                }
                             }
                             Spacer(Modifier.height(10.dp))
                             OutlinedTextField(

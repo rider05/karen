@@ -245,6 +245,40 @@ data class VisionImage(val base64: String, val mime: String = "image/jpeg")
 fun CloudProvider.modelOrDefault(override: String?): String =
     if (override.isNullOrBlank()) defaultModel else override.trim()
 
+/** True when the provider rejected the stored model id as non-existent. */
+fun CloudApiException.isUnknownModel(): Boolean {
+    if (status != 404) return false
+    val m = message.orEmpty().lowercase()
+    return "no endpoints found" in m || "model not found" in m ||
+        ("does not exist" in m && "model" in m)
+}
+
+/**
+ * Runs [call] with [override] as the model id. When the provider rejects that
+ * id as non-existent (OpenRouter: "No endpoints found"), the stale override is
+ * cleared from Model Manager and the call is retried once on the default
+ * model, so one bad id can never brick a whole provider.
+ */
+suspend fun <T> CloudProvider.withModelFallback(
+    ctx: Context,
+    override: String?,
+    call: suspend (model: String?) -> T
+): T {
+    val stored = override?.takeIf { it.isNotBlank() }
+    return try {
+        call(stored)
+    } catch (e: CloudApiException) {
+        if (stored == null || !e.isUnknownModel()) throw e
+        UserPrefs.setApiModel(ctx, id, "")
+        android.widget.Toast.makeText(
+            ctx,
+            "$name has no model \"$stored\" — switched back to $defaultModel",
+            android.widget.Toast.LENGTH_LONG
+        ).show()
+        call(null)
+    }
+}
+
 suspend fun CloudProvider.complete(
     apiKey: String,
     history: List<Pair<String, String>>,

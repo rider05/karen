@@ -760,9 +760,11 @@ fun ChatScreen(
     /** Prompt shaping: explainer guide, liked-style memory, custom instructions, phone tools. */
     fun shapingSuffix(prompt: String): String {
         val custom = UserPrefs.customInstructions(context).trim().take(500)
+        val memoryOn = UserPrefs.memoryEnabled(context)
         val parts = listOf(
             if (wantsExplainer(prompt, context)) EXPLAINER_STYLE_GUIDE else "",
-            StyleMemory.currentHint(context),
+            if (memoryOn) StyleMemory.currentHint(context) else "",
+            if (memoryOn) MemoryFacts.promptBlock(context) else "",
             ToolSpecs.promptBlock(context, prompt),
             if (custom.isNotBlank()) "User instructions: $custom" else ""
         ).filter { it.isNotBlank() }

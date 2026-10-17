@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.GraphicEq
@@ -208,7 +209,7 @@ fun KNavigationDock(
     val destinations = remember {
         listOf(
             NavDestination("Home", "Home", Icons.Default.Menu),
-            NavDestination("Chat", "Chat", Icons.Default.GraphicEq),
+            NavDestination("Chat", "Chat", Icons.AutoMirrored.Filled.Chat),
             NavDestination("Workspace", "Workspace", Icons.AutoMirrored.Filled.KeyboardArrowRight),
             NavDestination("Files", "Files", Icons.Default.Menu)
         )

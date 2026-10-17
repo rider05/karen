@@ -16,6 +16,8 @@ object StyleMemory {
     private const val K_WIN_MSG = "win_msg"
 
     private const val WINDOW_MS = 30L * 24 * 60 * 60 * 1000
+    private const val WINDOW_DAYS = 30
+    private const val DAY_MS = 24L * 60 * 60 * 1000
     private const val WINDOW_MSGS = 300
     private const val MAX_LIKES = 10
     private const val MAX_DISLIKES = 5
@@ -118,5 +120,70 @@ object StyleMemory {
         return "Background style guidance (apply silently — never mention, acknowledge, or restate it): ${sb.toString().trim()} " +
             "Match reply length to the message: greetings and small talk get one or two short sentences; " +
             "full detail only for substantive questions.".take(420)
+    }
+
+    /** Read-only view for the Memory & Preferences screen. */
+    data class Stats(
+        val likes: Int,
+        val dislikes: Int,
+        val summary: List<String>,
+        val feedback: List<String>,
+        val windowUsed: Int,
+        val windowDaysLeft: Int
+    ) {
+        val totalSignals: Int get() = likes + dislikes
+    }
+
+    fun stats(ctx: Context): Stats {
+        pruneIfExpired(ctx)
+        val p = prefs(ctx)
+        val likes = p.getString(K_LIKES, "").orEmpty().split(";;").filter { it.isNotBlank() }
+        val dislikes = p.getString(K_DISLIKES, "").orEmpty().split(";;").filter { it.isNotBlank() }
+        val summary = mutableListOf<String>()
+        if (likes.isNotEmpty()) {
+            val buckets = likes.mapNotNull { it.split("|").getOrNull(2) }
+            buckets.groupingBy { it }.eachCount().maxByOrNull { it.value }?.key?.let { top ->
+                summary.add(
+                    when (top) {
+                        "short" -> "Prefers short replies"
+                        "detailed" -> "Prefers detailed answers"
+                        else -> "Prefers medium-length replies"
+                    }
+                )
+            }
+            val flags = likes.flatMap { (it.split("|").getOrNull(3) ?: "").split(",") }
+                .filter { it.isNotBlank() }
+                .groupingBy { it }.eachCount()
+                .filter { it.value * 2 >= likes.size }.keys
+            if (flags.isNotEmpty()) {
+                summary.add("Likes " + flags.joinToString(", ") {
+                    when (it) {
+                        "code" -> "code examples"
+                        "tables" -> "tables"
+                        "lists" -> "lists"
+                        "headings" -> "headings"
+                        else -> it
+                    }
+                })
+            }
+        }
+        val hasWindow = p.contains(K_WIN_TS)
+        val used = if (hasWindow) (UserPrefs.totalMessages(ctx) - p.getInt(K_WIN_MSG, 0)).coerceAtLeast(0) else 0
+        val daysLeft = if (!hasWindow) WINDOW_DAYS else
+            ((WINDOW_MS - (System.currentTimeMillis() - p.getLong(K_WIN_TS, 0L))).coerceAtLeast(0L) / DAY_MS)
+                .coerceIn(0L, WINDOW_DAYS.toLong()).toInt()
+        return Stats(
+            likes = likes.size,
+            dislikes = dislikes.size,
+            summary = summary,
+            feedback = dislikes.map { it.substringAfter("|").take(160) },
+            windowUsed = used,
+            windowDaysLeft = daysLeft
+        )
+    }
+
+    /** Forget all learned signals from this device. */
+    fun clear(ctx: Context) {
+        prefs(ctx).edit().clear().apply()
     }
 }

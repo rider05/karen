@@ -126,6 +126,14 @@ object UserPrefs {
         prefs(ctx).edit().putBoolean(KEY_EXPLAINER, enabled).apply()
     }
 
+    // Memory & Preferences: whether learned style + confirmed facts are
+    // injected into prompts. Off = memory stays on disk but is ignored.
+    private const val KEY_MEMORY_ENABLED = "memory_enabled"
+    fun memoryEnabled(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_MEMORY_ENABLED, true)
+    fun setMemoryEnabled(ctx: Context, enabled: Boolean) {
+        prefs(ctx).edit().putBoolean(KEY_MEMORY_ENABLED, enabled).apply()
+    }
+
     // Auto model routing: pick the best installed/connected model per task.
     private const val KEY_AUTO_ROUTE = "auto_route"
     fun autoRoute(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_AUTO_ROUTE, true)

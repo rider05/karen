@@ -129,6 +129,34 @@ object OrtEngine {
         return out
     }
 
+    /**
+     * Loads [file] with the real ORT session runtime and describes its graph
+     * (input/output names + shapes). Returns a human report — also on failure;
+     * null only when the ORT natives are missing on this device.
+     */
+    fun describe(file: File): String? = try {
+        when {
+            !ortAvailable -> null
+            !file.exists() -> "file missing on disk"
+            else -> {
+                val environment = env ?: OrtEnvironment.getEnvironment().also { env = it }
+                val opts = OrtSession.SessionOptions().apply {
+                    setIntraOpNumThreads(1)
+                    setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+                }
+                environment.createSession(file.absolutePath, opts).use { session ->
+                    fun shape(info: ai.onnxruntime.NodeInfo?): String =
+                        (info?.info as? ai.onnxruntime.TensorInfo)?.shape?.joinToString("x") ?: "?"
+                    val ins = session.inputInfo.entries.joinToString(", ") { (k, v) -> k + " [" + shape(v) + "]" }
+                    val outs = session.outputInfo.entries.joinToString(", ") { (k, v) -> k + " [" + shape(v) + "]" }
+                    "ORT session OK · in: $ins · out: $outs"
+                }
+            }
+        }
+    } catch (e: Exception) {
+        "ORT failed: " + (e.message ?: e.javaClass.simpleName).take(140)
+    }
+
     private fun closeVadLocked() {
         try {
             vadSession?.close()

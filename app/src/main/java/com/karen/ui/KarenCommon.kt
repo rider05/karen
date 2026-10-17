@@ -2625,6 +2625,9 @@ fun ChatGPTDrawerContent(
                             DrawerNavItem("Local Models (GGUF)", Icons.Default.Memory, currentScreen == "ModelManager") {
                                 onNavigate("ModelManager"); onCloseDrawer()
                             }
+                            DrawerNavItem("Network Nodes", Icons.Default.Router, currentScreen == "Nodes") {
+                                onNavigate("Nodes"); onCloseDrawer()
+                            }
                             DrawerNavItem("Performance & TTFT", Icons.Default.Speed, currentScreen == "Performance") {
                                 onNavigate("Performance"); onCloseDrawer()
                             }

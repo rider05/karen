@@ -15,6 +15,7 @@ import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -24,15 +25,42 @@ import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
 
+/** One device that ever talked to the local server (the app's "nodes"). */
+data class NodeInfo(
+    val ip: String,
+    val name: String,
+    val kind: String,
+    val firstSeen: Long,
+    val lastSeen: Long,
+    val requests: Int
+)
+
+/** One model artifact actually found on disk, with its real runtime verdict. */
+data class LocalModelFile(
+    val name: String,
+    val path: String,
+    val format: String,
+    val sizeBytes: Long,
+    val runtime: String,
+    val runnable: Boolean,
+    val note: String,
+    val source: String
+)
+
 /**
  * On-device OpenAI-compatible API (Thinai-style local server, no new deps).
  *
  * Plain ServerSocket HTTP/1.1 on localhost:11434 by default:
- *   GET  /                    browser dashboard — chat with the on-device model
- *   GET  /v1/models            installed weights actually on this phone
+ *   GET  /                    browser dashboard — chat + on-device model files
+ *   GET  /v1/models            installed weights + runnable .gguf files
+ *   GET  /v1/files             every model file found on disk (fmt + runtime)
  *   POST /v1/chat/completions  runs the loaded local GGUF (stream:true → SSE)
+ *   POST /v1/probe             loads a file with its real runtime (ORT/GGUF)
  *   POST /v1/embeddings        501 — no embedding runtime ships on-device
  *   GET  /api/tags             Ollama-shaped model list
+ *
+ * Every device that talks to the server is tracked as a "node" (name + IP +
+ * last seen) and listed in the app's Network Nodes screen.
  *
  * Bearer token auth is mandatory (generated on first start, regenerable in
  * Settings). LAN bind is an explicit opt-in with a warning. The server lives
@@ -49,6 +77,181 @@ object LocalApiServer {
         private set
     var requestCount by mutableStateOf(0)
         private set
+
+    /** Devices that ever talked to the server — shown as nodes in the app. */
+    var nodeSnapshot by mutableStateOf<List<NodeInfo>>(emptyList())
+        private set
+    private val nodes = ConcurrentHashMap<String, NodeInfo>()
+    private val nodeNames = ConcurrentHashMap<String, String>()
+    private val dnsInFlight = ConcurrentHashMap.newKeySet<String>()
+
+    /** Clears node history (Network Nodes screen → "Clear"). */
+    fun clearNodes() {
+        nodes.clear()
+        nodeSnapshot = emptyList()
+    }
+
+    private fun recordNode(remoteIp: String?, path: String, userAgent: String, headerName: String) {
+        try {
+            val ip = remoteIp ?: return
+            if (ip == "127.0.0.1" || ip == "::1" || ip == "0:0:0:0:0:0:0:1") return
+            val now = System.currentTimeMillis()
+            val prev = nodes[ip]
+            val kind = if (path == "/" || path == "/index.html" || userAgent.contains("Mozilla/")) "Dashboard" else "API"
+            if (headerName.isNotBlank()) nodeNames[ip] = headerName.take(40)
+            val name = nodeNames[ip] ?: prev?.name ?: ("Device " + ip.substringAfterLast('.'))
+            nodes[ip] = NodeInfo(
+                ip = ip,
+                name = name,
+                kind = kind,
+                firstSeen = prev?.firstSeen ?: now,
+                lastSeen = now,
+                requests = (prev?.requests ?: 0) + 1
+            )
+            nodeSnapshot = nodes.values.sortedByDescending { it.lastSeen }
+            if (nodeNames[ip] == null) {
+                resolveNodeName(ip)
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    /** Reverse-DNS the node name in the background (never blocks a request). */
+    private fun resolveNodeName(ip: String) {
+        val sc = scope ?: return
+        if (!dnsInFlight.add(ip)) return
+        sc.launch(Dispatchers.IO) {
+            try {
+                val addr = InetAddress.getByName(ip)
+                val host = addr.canonicalHostName
+                if (host.isNotBlank() && host != ip) {
+                    val clean = host.substringBefore('.').take(40)
+                    nodeNames[ip] = clean
+                    nodes[ip]?.let {
+                        nodes[ip] = it.copy(name = clean)
+                        nodeSnapshot = nodes.values.sortedByDescending { n -> n.lastSeen }
+                    }
+                }
+            } catch (_: Exception) {
+            } finally {
+                dnsInFlight.remove(ip)
+            }
+        }
+    }
+
+    // ---- On-device model file scan (real files, real runtimes) --------------
+
+    private var scanAt = 0L
+    private var scanList: List<LocalModelFile> = emptyList()
+
+    /**
+     * Walks the app's model dir and the public Download/Documents folders for
+     * model artifacts (.gguf/.onnx/.tflite/…), tagging each with the runtime
+     * that can actually open it. Cached for 5 s — called per request.
+     */
+    fun scanModelFiles(ctx: Context, force: Boolean = false): List<LocalModelFile> {
+        val now = System.currentTimeMillis()
+        if (!force && scanAt > 0 && now - scanAt < 5000) return scanList
+        val found = mutableMapOf<String, LocalModelFile>()
+        val dirs = mutableListOf<Pair<File, String>>()
+        try {
+            dirs += ModelDownloader.modelsDir(ctx) to "Karen models"
+        } catch (_: Exception) {
+        }
+        try {
+            ctx.getExternalFilesDir(null)?.let { dirs += it to "App storage" }
+        } catch (_: Exception) {
+        }
+        try {
+            val pub = android.os.Environment.getExternalStorageDirectory()
+            if (pub != null) {
+                listOf("Download", "Downloads", "Documents", "Models", "Karen").forEach { sub ->
+                    val d = File(pub, sub)
+                    try {
+                        if (d.isDirectory) dirs += d to sub
+                    } catch (_: Exception) {
+                    }
+                }
+            }
+        } catch (_: Exception) {
+        }
+        for ((dir, source) in dirs) {
+            try {
+                val level1 = dir.listFiles() ?: continue
+                for (f in level1) {
+                    val name = f.name ?: continue
+                    if (f.isDirectory) {
+                        if (name.startsWith(".") || name.equals("Android", true)) continue
+                        try {
+                            f.listFiles()?.take(200)?.forEach { sub -> addScanHit(found, sub, source) }
+                        } catch (_: Exception) {
+                        }
+                    } else {
+                        addScanHit(found, f, source)
+                    }
+                }
+            } catch (_: Exception) {
+            }
+        }
+        val list = found.values.sortedWith(
+            compareByDescending<LocalModelFile> { it.runnable }
+                .thenByDescending { it.sizeBytes }
+        )
+        scanList = list
+        scanAt = now
+        return list
+    }
+
+    private fun addScanHit(out: MutableMap<String, LocalModelFile>, f: File, source: String) {
+        try {
+            if (!f.isFile) return
+            val name = f.name ?: return
+            val ext = name.substringAfterLast('.', "").lowercase()
+            val format = when (ext) {
+                "gguf" -> "GGUF"
+                "ggml" -> "GGML"
+                "onnx" -> "ONNX"
+                "tflite" -> "TFLITE"
+                "task" -> "TASK"
+                "safetensors" -> "SAFETENSORS"
+                else -> return
+            }
+            val size = f.length()
+            if (size <= 0) return
+            val (runtime, runnable, note) = when (format) {
+                "GGUF" -> if (ggufMagicOk(f)) {
+                    Triple("llama.cpp", true, "")
+                } else {
+                    Triple("llama.cpp", false, "not a valid GGUF (bad file header)")
+                }
+                "GGML" -> Triple("none", false, "legacy GGML — convert to GGUF to run")
+                "ONNX" -> Triple("onnxruntime", false, "loadable via probe — no chat pipeline")
+                else -> Triple("none", false, "no runtime bundled for this format")
+            }
+            out[f.absolutePath] = LocalModelFile(
+                name = name,
+                path = f.absolutePath,
+                format = format,
+                sizeBytes = size,
+                runtime = runtime,
+                runnable = runnable,
+                note = note,
+                source = source
+            )
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun ggufMagicOk(f: File): Boolean = try {
+        f.inputStream().use { ins ->
+            val b = ByteArray(4)
+            ins.read(b, 0, 4) == 4 &&
+                b[0] == 'G'.code.toByte() && b[1] == 'G'.code.toByte() &&
+                b[2] == 'U'.code.toByte() && b[3] == 'F'.code.toByte()
+        }
+    } catch (_: Exception) {
+        false
+    }
 
     private var socket: ServerSocket? = null
     private var scope: CoroutineScope? = null
@@ -197,6 +400,18 @@ object LocalApiServer {
                 }
             } else null
 
+            // Every request counts its device as a node (shown in the app).
+            recordNode(
+                remoteIp = try {
+                    socket.inetAddress?.hostAddress
+                } catch (_: Exception) {
+                    null
+                },
+                path = path,
+                userAgent = headers["user-agent"].orEmpty(),
+                headerName = headers["x-karen-node"].orEmpty()
+            )
+
             // Dashboard — no auth required; model/API calls from it need the token.
             if (method == "GET" && (path == "/" || path == "/index.html")) {
                 writeHtml(socket, dashboardPage(ctx))
@@ -220,17 +435,59 @@ object LocalApiServer {
             when {
                 method == "GET" && path == "/v1/models" -> {
                     val data = JSONArray()
+                    val seen = mutableSetOf<String>()
+                    val installedPaths = mutableSetOf<String>()
                     UserPrefs.models(ctx).filter { !isCloudProviderName(it) }.forEach { name ->
+                        seen.add(name.lowercase())
+                        ModelDownloader.weightFileFor(ctx, name)?.let { installedPaths.add(it.absolutePath) }
                         data.put(
                             JSONObject().put("id", name)
                                 .put("object", "model")
                                 .put("owned_by", "karen")
+                                .put("source", "installed")
                         )
+                    }
+                    // Real .gguf files found on disk run through the same runtime
+                    // (skip files already represented by an installed model).
+                    scanModelFiles(ctx).filter { it.runnable }.forEach { f ->
+                        if (installedPaths.contains(f.path)) return@forEach
+                        if (seen.add(f.name.lowercase())) {
+                            data.put(
+                                JSONObject().put("id", f.name)
+                                    .put("object", "model")
+                                    .put("owned_by", "karen")
+                                    .put("source", "file")
+                                    .put("path", f.path)
+                            )
+                        }
                     }
                     writeJson(
                         socket, 200,
                         JSONObject().put("object", "list").put("data", data)
                     )
+                }
+                method == "GET" && path == "/v1/files" -> {
+                    val data = JSONArray()
+                    scanModelFiles(ctx).forEach { f ->
+                        data.put(
+                            JSONObject().put("name", f.name)
+                                .put("path", f.path)
+                                .put("format", f.format)
+                                .put("size", f.sizeBytes)
+                                .put("runtime", f.runtime)
+                                .put("runnable", f.runnable)
+                                .put("note", f.note)
+                                .put("source", f.source)
+                        )
+                    }
+                    writeJson(socket, 200, JSONObject().put("object", "list").put("data", data))
+                }
+                method == "POST" && path == "/v1/probe" -> {
+                    if (body == null) {
+                        writeJson(socket, 400, JSONObject().put("error", errorObj("JSON body required")))
+                    } else {
+                        probeModelFile(ctx, socket, body)
+                    }
                 }
                 method == "GET" && path == "/api/tags" -> {
                     val models = JSONArray()
@@ -336,37 +593,93 @@ object LocalApiServer {
         }
     }
 
-    /** Resolves the requested model; on failure writes the error and returns null. */
+    /**
+     * Resolves the requested model — installed names first, then runnable
+     * .gguf files found on disk; on failure writes the error and returns null.
+     */
     private fun pickModel(ctx: Context, socket: Socket, body: JSONObject): Pair<String, File>? {
         val want = body.optString("model", "").trim()
         val installed = UserPrefs.models(ctx).filter { !isCloudProviderName(it) }
-        val pick = when {
-            want.isNotBlank() && want in installed -> want
-            want.isNotBlank() -> {
+        var pick: String? = null
+        var file: File? = null
+
+        val inst = installed.firstOrNull { it.equals(want, ignoreCase = true) }
+        if (inst != null) {
+            pick = inst
+            file = ModelDownloader.weightFileFor(ctx, inst)
+        } else if (want.isNotBlank()) {
+            val hit = scanModelFiles(ctx).firstOrNull {
+                it.runnable &&
+                    (it.name.equals(want, ignoreCase = true) || it.path.equals(want, ignoreCase = true))
+            }
+            if (hit != null) {
+                pick = hit.name
+                file = File(hit.path)
+            } else {
                 writeJson(
                     socket, 404,
-                    JSONObject().put("error", errorObj("model '$want' not on device — download it in Model Manager"))
+                    JSONObject().put(
+                        "error",
+                        errorObj("model '$want' not found — download it in Model Manager or copy a .gguf onto the phone (see /v1/files)")
+                    )
                 )
                 return null
             }
-            else -> {
-                val preferred = UserPrefs.preferredLocalModel(ctx).takeIf { it in installed }
-                preferred ?: installed.firstOrNull()
+        } else {
+            val preferred = UserPrefs.preferredLocalModel(ctx).let { p ->
+                installed.firstOrNull { it.equals(p, ignoreCase = true) }
+            }
+            val firstInstalled = preferred ?: installed.firstOrNull()
+            if (firstInstalled != null) {
+                pick = firstInstalled
+                file = ModelDownloader.weightFileFor(ctx, firstInstalled)
+            } else {
+                val hit = scanModelFiles(ctx).firstOrNull { it.runnable }
+                if (hit != null) {
+                    pick = hit.name
+                    file = File(hit.path)
+                }
             }
         }
-        if (pick == null) {
-            writeJson(
-                socket, 503,
-                JSONObject().put("error", errorObj("no local model installed — download one in Model Manager"))
-            )
-            return null
-        }
-        val file = ModelDownloader.weightFileFor(ctx, pick)
-        if (file == null || !KarenLlama.ready) {
-            writeJson(socket, 503, JSONObject().put("error", errorObj("runtime not ready")))
+
+        if (pick == null || file == null || !KarenLlama.ready) {
+            val msg = if (pick == null) {
+                "no local model installed — download one in Model Manager or copy a .gguf onto the phone"
+            } else {
+                "runtime not ready"
+            }
+            writeJson(socket, 503, JSONObject().put("error", errorObj(msg)))
             return null
         }
         return pick to file
+    }
+
+    /** Loads a listed file with its real runtime and reports what happened. */
+    private fun probeModelFile(ctx: Context, socket: Socket, body: JSONObject) {
+        val want = body.optString("path", "").trim()
+        val hit = scanModelFiles(ctx).firstOrNull {
+            it.path.equals(want, ignoreCase = true) || it.name.equals(want, ignoreCase = true)
+        }
+        if (hit == null) {
+            writeJson(socket, 404, JSONObject().put("error", errorObj("no such file — refresh the file list")))
+            return
+        }
+        val report = when (hit.format) {
+            "GGUF" -> if (ggufMagicOk(File(hit.path))) {
+                "GGUF header OK — loadable by llama.cpp (" + hit.sizeBytes / (1024 * 1024) + " MB)"
+            } else {
+                "GGUF header invalid — llama.cpp will refuse this file"
+            }
+            "ONNX" -> OrtEngine.describe(File(hit.path)) ?: "onnxruntime unavailable on this device"
+            "TFLITE", "TASK" -> "no TFLite runtime is bundled in Karen — file listed only"
+            "GGML" -> "legacy GGML — convert to GGUF first"
+            else -> "no runtime bundled for " + hit.format
+        }
+        writeJson(
+            socket, 200,
+            JSONObject().put("name", hit.name).put("format", hit.format)
+                .put("ok", report.contains("OK", ignoreCase = true)).put("report", report)
+        )
     }
 
     /** OpenAI-style turns from the request body into parallel role/text lists. */
@@ -653,6 +966,20 @@ object LocalApiServer {
            border-top: 1px solid #283042; }
   footer textarea { flex: 1; resize: none; height: 54px; border-radius: 12px;
                     background: #0f1116; padding: 15px 14px; }
+  details.files { background: #111317; border-bottom: 1px solid #1e252e; }
+  details.files summary { cursor: pointer; padding: 9px 18px; font-size: 12px; color: #94a3b8; list-style: none; }
+  details.files summary::-webkit-details-marker { display: none; }
+  details.files summary:hover { color: #e2e2e8; }
+  .filelist { max-height: 240px; overflow-y: auto; padding: 0 18px 12px; display: flex; flex-direction: column; gap: 6px; }
+  .frow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 10px; border: 1px solid #283042; border-radius: 10px; background: #14171f; }
+  .fname { flex: 1; min-width: 140px; font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #e2e2e8; word-break: break-all; }
+  .fmeta { font-size: 10.5px; color: #64748b; font-family: 'JetBrains Mono', monospace; white-space: nowrap; }
+  .badge { font-size: 10px; font-weight: 600; border-radius: 10px; padding: 2px 8px; white-space: nowrap; }
+  .badge.ok { background: rgba(16,163,127,0.15); color: #10A37F; }
+  .badge.mid { background: rgba(56,189,248,0.12); color: #38bdf8; }
+  .badge.off { background: rgba(148,163,184,0.12); color: #94a3b8; }
+  .frow button { padding: 5px 10px; font-size: 11px; border-radius: 7px; }
+  .probe { font-size: 11px; color: #94a3b8; font-family: 'JetBrains Mono', monospace; padding: 2px 6px 4px; word-break: break-word; }
   .toast { position: fixed; bottom: 96px; left: 50%; transform: translateX(-50%);
            background: #1b2029; border: 1px solid #38bdf8; color: #cce5ff;
            padding: 9px 16px; border-radius: 20px; font-size: 12.5px; opacity: 0;
@@ -675,6 +1002,10 @@ object LocalApiServer {
   <select id="model" style="min-width:180px"><option value="">(pick model)</option></select>
   <button class="ghost" onclick="loadModels()">Refresh</button>
 </div>
+<details class="files" id="filesPanel">
+  <summary id="filesSummary">On-device model files — loading…</summary>
+  <div class="filelist" id="fileList"></div>
+</details>
 <main id="chat"></main>
 <div class="hint">Enter sends · Shift+Enter makes a new line · Stop cancels generation</div>
 <footer>
@@ -684,8 +1015,26 @@ object LocalApiServer {
 </footer>
 <div class="toast" id="toast"></div>
 <script>
-var S = { token: localStorage.getItem('karen_token') || '', busy: false, ctrl: null, log: [] };
+var S = { token: localStorage.getItem('karen_token') || '', busy: false, ctrl: null, log: [], node: nodeName() };
 function el(id) { return document.getElementById(id); }
+function nodeName() {
+  var ua = navigator.userAgent, os = 'Device', br = 'Browser';
+  if (ua.indexOf('Windows') >= 0) os = 'Windows';
+  else if (ua.indexOf('Android') >= 0) os = 'Android';
+  else if (ua.indexOf('iPhone') >= 0 || ua.indexOf('iPad') >= 0) os = 'iOS';
+  else if (ua.indexOf('Mac OS') >= 0) os = 'Mac';
+  else if (ua.indexOf('Linux') >= 0) os = 'Linux';
+  if (ua.indexOf('Edg/') >= 0) br = 'Edge';
+  else if (ua.indexOf('Firefox/') >= 0) br = 'Firefox';
+  else if (ua.indexOf('Chrome/') >= 0) br = 'Chrome';
+  else if (ua.indexOf('Safari/') >= 0) br = 'Safari';
+  return os + ' · ' + br;
+}
+function headers(json) {
+  var h = { 'Authorization': 'Bearer ' + S.token, 'X-Karen-Node': S.node };
+  if (json) h['Content-Type'] = 'application/json';
+  return h;
+}
 function toast(m) { var t = el('toast'); t.textContent = m; t.classList.add('show');
   setTimeout(function () { t.classList.remove('show'); }, 2400); }
 function setStatus(ok, text) { el('dot').className = ok ? 'dot' : 'dot off'; el('statusText').textContent = text; }
@@ -695,7 +1044,7 @@ function saveToken() { S.token = el('token').value.trim();
   localStorage.setItem('karen_token', S.token);
   toast(S.token ? 'Token saved' : 'Token cleared'); loadModels(); }
 function loadModels() {
-  fetch('/v1/models', { headers: { 'Authorization': 'Bearer ' + S.token } }).then(function (r) {
+  fetch('/v1/models', { headers: headers(false) }).then(function (r) {
     if (r.status === 401) { setStatus(false, 'token needed'); return null; }
     if (!r.ok) { setStatus(false, 'HTTP ' + r.status); return null; }
     return r.json();
@@ -708,7 +1057,89 @@ function loadModels() {
     ms.forEach(function (m) { var o = document.createElement('option'); o.value = m; o.textContent = m; sel.appendChild(o); });
     if (cur && ms.indexOf(cur) >= 0) { sel.value = cur; } else if (ms.length) { sel.value = ms[0]; }
     setStatus(true, 'online · ' + ms.length + ' model(s)');
+    loadFiles();
   }).catch(function () { setStatus(false, 'unreachable'); });
+}
+function fmtSize(n) {
+  if (n > 1073741824) return (n / 1073741824).toFixed(2) + ' GB';
+  if (n > 1048576) return (n / 1048576).toFixed(1) + ' MB';
+  return Math.max(1, Math.round(n / 1024)) + ' KB';
+}
+function loadFiles() {
+  fetch('/v1/files', { headers: headers(false) }).then(function (r) {
+    if (r.status === 401) { el('filesSummary').textContent = 'On-device model files — save the token to list'; return null; }
+    if (!r.ok) { el('filesSummary').textContent = 'On-device model files — HTTP ' + r.status; return null; }
+    return r.json();
+  }).then(function (j) {
+    if (!j) return;
+    var fs = j.data || [];
+    var box = el('fileList');
+    box.innerHTML = '';
+    el('filesSummary').textContent = 'On-device model files (' + fs.length + ') — GGUF runs via llama.cpp, ONNX via onnxruntime';
+    if (!fs.length) {
+      var d = document.createElement('div');
+      d.className = 'fmeta';
+      d.textContent = 'No .gguf / .onnx / .tflite files found in the app model folder or Download/Documents.';
+      box.appendChild(d);
+      return;
+    }
+    fs.forEach(function (f) {
+      var row = document.createElement('div');
+      row.className = 'frow';
+      var nm = document.createElement('span');
+      nm.className = 'fname';
+      nm.textContent = f.name;
+      row.appendChild(nm);
+      var fb = document.createElement('span');
+      fb.className = 'badge mid';
+      fb.textContent = f.format;
+      row.appendChild(fb);
+      var sz = document.createElement('span');
+      sz.className = 'fmeta';
+      sz.textContent = fmtSize(f.size);
+      row.appendChild(sz);
+      var rb = document.createElement('span');
+      rb.className = 'badge ' + (f.runnable ? 'ok' : (f.runtime === 'none' ? 'off' : 'mid'));
+      rb.textContent = f.runtime;
+      row.appendChild(rb);
+      if (f.runnable) {
+        var use = document.createElement('button');
+        use.textContent = 'Use';
+        use.onclick = function () { useModel(f.name); };
+        row.appendChild(use);
+      }
+      var test = document.createElement('button');
+      test.className = 'ghost';
+      test.textContent = 'Test';
+      test.onclick = function () { probe(f.path, row); };
+      row.appendChild(test);
+      box.appendChild(row);
+    });
+  }).catch(function () {
+    el('filesSummary').textContent = 'On-device model files — unavailable';
+  });
+}
+function useModel(name) {
+  var sel = el('model'), found = false;
+  for (var i = 0; i < sel.options.length; i++) {
+    if (sel.options[i].value === name) { sel.selectedIndex = i; found = true; break; }
+  }
+  if (found) { toast('Selected ' + name); }
+  else { toast('Refreshing models — then pick ' + name); loadModels(); }
+}
+function probe(path, row) {
+  var done = function (text) {
+    var d = document.createElement('div');
+    d.className = 'probe';
+    d.textContent = text;
+    if (row.parentNode) { row.parentNode.insertBefore(d, row.nextSibling); }
+  };
+  fetch('/v1/probe', { method: 'POST', headers: headers(true), body: JSON.stringify({ path: path }) }).then(function (r) {
+    return r.json();
+  }).then(function (j) {
+    var msg = j.report || (j.error && j.error.message) || 'no report';
+    done((j.ok ? 'OK — ' : '') + msg);
+  }).catch(function () { done('probe failed'); });
 }
 function stopGen() { if (S.ctrl) { S.ctrl.abort(); } }
 function send() {
@@ -726,7 +1157,7 @@ function send() {
   var full = '';
   fetch('/v1/chat/completions', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + S.token },
+    headers: headers(true),
     body: JSON.stringify({ model: model, messages: S.log.slice(-12), stream: true, max_tokens: 1024 }),
     signal: S.ctrl.signal
   }).then(function (r) {
@@ -780,7 +1211,7 @@ el('input').addEventListener('keydown', function (e) {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
 });
 el('token').value = S.token;
-add('sys', 'Hello from Karen — connected to $ip:$port. ${models.size} local model(s) on this phone. Paste the token from Settings → Local Server, pick a model, then ask away.');
+add('sys', 'Hello from Karen — connected to $ip:$port. ${models.size} installed model(s). Paste the token from Settings → Local Server, then pick a model — .gguf files found on disk can run too (expand the On-device model files panel below).');
 loadModels();
 </script>
 </body>

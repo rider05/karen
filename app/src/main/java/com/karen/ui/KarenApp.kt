@@ -112,6 +112,7 @@ fun KarenApp(startScreen: String = "Home") {
             "Files" -> "Vault"
             "Memory" -> "Memory"
             "ModelManager" -> "Models"
+            "Nodes" -> "Network"
             "Performance" -> "Performance"
             "Hardware" -> "Performance"
             "StudyBook" -> "Study"
@@ -212,6 +213,9 @@ fun KarenApp(startScreen: String = "Home") {
                             )
                             "ModelManager" -> ModelManagerScreen(
                                 onOpenDrawer = { coroutineScope.launch { drawerState.open() } },
+                                onNavigateToHome = { currentScreen = "Home" }
+                            )
+                            "Nodes" -> NodesScreen(
                                 onNavigateToHome = { currentScreen = "Home" }
                             )
                             "Performance" -> PerformanceScreen(

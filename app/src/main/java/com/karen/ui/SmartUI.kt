@@ -6,8 +6,10 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -39,8 +41,8 @@ import kotlin.math.sin
 // ---------------------------------------------------------------------------
 
 /**
- * Line chart with optional area fill. Points are normalised to 0..1.
- * `labels` are shown under evenly spaced ticks (max 6).
+ * Line chart with area fill, grid lines, Y-axis labels, and touch tooltip.
+ * Points are normalised to 0..1. `labels` shown under evenly spaced ticks (max 6).
  */
 @Composable
 fun KLineChart(
@@ -49,16 +51,21 @@ fun KLineChart(
     modifier: Modifier = Modifier,
     lineColor: Color = LocalKarenColors.current.accentGreen,
     fillColor: Color = LocalKarenColors.current.accentGreen.copy(alpha = 0.12f),
-    height: androidx.compose.ui.unit.Dp = 140.dp
+    height: androidx.compose.ui.unit.Dp = 140.dp,
+    showGrid: Boolean = true,
+    showYLabels: Boolean = true,
+    yLabelCount: Int = 4
 ) {
     val colors = LocalKarenColors.current
     if (points.isEmpty()) return
+    val maxVal = points.max().takeIf { it > 0f } ?: 1f
     val animated = points.mapIndexed { i, p ->
         val state = remember { mutableStateOf(0f) }
         LaunchedEffect(Unit) { state.value = p }
         val v by animateFloatAsState(state.value, tween(600 + i * 40), label = "kLine$i")
         v
     }
+    var touchIndex by remember { mutableStateOf<Int?>(null) }
     Column(modifier.fillMaxWidth()) {
         Canvas(
             Modifier
@@ -68,15 +75,30 @@ fun KLineChart(
                 .background(colors.surface)
                 .border(1.dp, colors.border, RoundedCornerShape(8.dp))
                 .padding(12.dp)
+                .pointerInput(points) {
+                    detectTapGestures { offset ->
+                        val n = animated.size
+                        if (n < 2) return@detectTapGestures
+                        val stepX = size.width / (n - 1)
+                        touchIndex = ((offset.x / stepX).toInt()).coerceIn(0, n - 1)
+                    }
+                }
         ) {
             val w = size.width
             val h = size.height
             val n = animated.size
             if (n < 2) return@Canvas
             val stepX = w / (n - 1)
+            // Grid lines + Y labels.
+            if (showGrid) {
+                for (g in 0..yLabelCount) {
+                    val y = h * g / yLabelCount
+                    drawLine(colors.border.copy(alpha = 0.4f), Offset(0f, y), Offset(w, y), strokeWidth = 0.5f)
+                }
+            }
             val path = Path().apply {
-                moveTo(0f, h - animated[0] * h)
-                for (i in 1 until n) lineTo(i * stepX, h - animated[i] * h)
+                moveTo(0f, h - (animated[0] / maxVal) * h)
+                for (i in 1 until n) lineTo(i * stepX, h - (animated[i] / maxVal) * h)
             }
             val fill = Path().apply {
                 addPath(path)
@@ -88,9 +110,33 @@ fun KLineChart(
             drawPath(path, lineColor, style = Stroke(width = 3f, cap = StrokeCap.Round))
             // End dot.
             val lastX = (n - 1) * stepX
-            val lastY = h - animated.last() * h
+            val lastY = h - (animated.last() / maxVal) * h
             drawCircle(lineColor, 5f, Offset(lastX, lastY))
+            // Touch crosshair.
+            touchIndex?.let { ti ->
+                val cx = ti * stepX
+                val cy = h - (animated[ti] / maxVal) * h
+                drawLine(lineColor.copy(alpha = 0.4f), Offset(cx, 0f), Offset(cx, h), strokeWidth = 1f)
+                drawCircle(lineColor, 6f, Offset(cx, cy))
+                drawCircle(Color.White, 3f, Offset(cx, cy))
+            }
         }
+        // Y-axis labels.
+        if (showYLabels) {
+            Spacer(Modifier.height(2.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                (0..yLabelCount).reversed().forEach { g ->
+                    val v = maxVal * g / yLabelCount
+                    Text(
+                        if (v >= 1000) "${(v / 1000).toInt()}k" else "${v.toInt()}",
+                        color = colors.textMuted,
+                        fontFamily = LocalKarenType.current.mono,
+                        fontSize = 8.sp
+                    )
+                }
+            }
+        }
+        // X labels.
         if (labels.isNotEmpty()) {
             Spacer(Modifier.height(4.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -106,11 +152,26 @@ fun KLineChart(
                 }
             }
         }
+        // Touch tooltip.
+        touchIndex?.let { ti ->
+            if (ti in points.indices) {
+                Spacer(Modifier.height(4.dp))
+                val label = labels.getOrElse(ti) { "Point ${ti + 1}" }
+                Text(
+                    "$label: ${points[ti].toInt()}",
+                    color = lineColor,
+                    fontFamily = LocalKarenType.current.mono,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+        }
     }
 }
 
 /**
- * Vertical bar chart. `labels` align under bars (max 8).
+ * Vertical bar chart with value labels on top, grid lines, and rounded bars.
+ * `labels` align under bars (max 8).
  */
 @Composable
 fun KBarChart(
@@ -118,7 +179,9 @@ fun KBarChart(
     labels: List<String> = emptyList(),
     modifier: Modifier = Modifier,
     barColor: Color = LocalKarenColors.current.accentGreen,
-    height: androidx.compose.ui.unit.Dp = 140.dp
+    height: androidx.compose.ui.unit.Dp = 140.dp,
+    showValues: Boolean = true,
+    showGrid: Boolean = true
 ) {
     val colors = LocalKarenColors.current
     if (values.isEmpty()) return
@@ -135,17 +198,46 @@ fun KBarChart(
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.Bottom
         ) {
+            // Grid lines drawn behind bars.
+            if (showGrid) {
+                Canvas(Modifier.fillMaxSize()) {
+                    for (g in 0..4) {
+                        val y = size.height * g / 4
+                        drawLine(
+                            colors.border.copy(alpha = 0.3f),
+                            Offset(0f, y), Offset(size.width, y),
+                            strokeWidth = 0.5f
+                        )
+                    }
+                }
+            }
             values.take(8).forEach { v ->
                 val frac = (v / maxV).coerceIn(0f, 1f)
                 val h by animateFloatAsState(frac, tween(500), label = "kBar")
-                Box(
-                    Modifier
-                        .weight(1f)
-                        .fillMaxHeight(h)
-                        .padding(horizontal = 3.dp)
-                        .clip(RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp))
-                        .background(barColor)
-                )
+                Column(
+                    modifier = Modifier.weight(1f).fillMaxHeight(h),
+                    verticalArrangement = Arrangement.Bottom,
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    if (showValues && frac > 0.15f) {
+                        Text(
+                            "${v.toInt()}",
+                            color = colors.textPrimary,
+                            fontFamily = LocalKarenType.current.mono,
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1
+                        )
+                    }
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 3.dp)
+                            .weight(1f)
+                            .clip(RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp))
+                            .background(barColor)
+                    )
+                }
             }
         }
         if (labels.isNotEmpty()) {
@@ -170,13 +262,14 @@ fun KBarChart(
 
 /**
  * Donut chart (pie with a hole). `slices` are (label, value, color).
- * Shows a legend with percentages to the right.
+ * Shows a legend with values + percentages. Optional center total label.
  */
 @Composable
 fun KPieChart(
     slices: List<Triple<String, Float, Color>>,
     modifier: Modifier = Modifier,
-    size: androidx.compose.ui.unit.Dp = 120.dp
+    size: androidx.compose.ui.unit.Dp = 120.dp,
+    centerLabel: String? = null
 ) {
     val colors = LocalKarenColors.current
     if (slices.isEmpty()) return
@@ -190,22 +283,41 @@ fun KPieChart(
             .padding(14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Canvas(Modifier.size(size)) {
-            val pad = 8f
-            val arcSize = Size(size.toPx() - pad * 2, size.toPx() - pad * 2)
-            var startAngle = -90f
-            slices.forEach { (_, value, color) ->
-                val sweep = (value / total) * 360f
-                drawArc(
-                    color = color,
-                    startAngle = startAngle,
-                    sweepAngle = sweep,
-                    useCenter = false,
-                    topLeft = Offset(pad, pad),
-                    size = arcSize,
-                    style = Stroke(width = 18f, cap = StrokeCap.Butt)
-                )
-                startAngle += sweep
+        Box(Modifier.size(size), contentAlignment = Alignment.Center) {
+            Canvas(Modifier.size(size)) {
+                val pad = 8f
+                val arcSize = Size(size.toPx() - pad * 2, size.toPx() - pad * 2)
+                var startAngle = -90f
+                slices.forEach { (_, value, color) ->
+                    val sweep = (value / total) * 360f
+                    drawArc(
+                        color = color,
+                        startAngle = startAngle,
+                        sweepAngle = sweep,
+                        useCenter = false,
+                        topLeft = Offset(pad, pad),
+                        size = arcSize,
+                        style = Stroke(width = 18f, cap = StrokeCap.Butt)
+                    )
+                    startAngle += sweep
+                }
+            }
+            if (centerLabel != null) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        centerLabel,
+                        color = colors.textPrimary,
+                        fontFamily = LocalKarenType.current.mono,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1
+                    )
+                    Text(
+                        "total",
+                        color = colors.textMuted,
+                        fontSize = 9.sp
+                    )
+                }
             }
         }
         Spacer(Modifier.width(14.dp))
@@ -223,7 +335,7 @@ fun KPieChart(
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        "${((value / total) * 100).toInt()}%",
+                        "${value.toInt()} · ${((value / total) * 100).toInt()}%",
                         color = colors.textMuted,
                         fontFamily = LocalKarenType.current.mono,
                         fontSize = 11.sp
@@ -239,8 +351,8 @@ fun KPieChart(
 // ---------------------------------------------------------------------------
 
 /**
- * KPI card: label, big value, optional trend arrow and delta, plus a
- * mini sparkline. Used in dashboards and summary rows.
+ * KPI card: label, big value, optional icon, subtitle, trend arrow and
+ * delta, plus a mini sparkline. Used in dashboards and summary rows.
  */
 @Composable
 fun KpiCard(
@@ -249,7 +361,9 @@ fun KpiCard(
     modifier: Modifier = Modifier,
     trend: Float? = null,
     spark: List<Float> = emptyList(),
-    tone: KTone = KTone.Primary
+    tone: KTone = KTone.Primary,
+    subtitle: String? = null,
+    icon: androidx.compose.ui.graphics.vector.ImageVector? = null
 ) {
     val colors = LocalKarenColors.current
     val tint = tone.color(colors)
@@ -262,14 +376,36 @@ fun KpiCard(
             .padding(14.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                label.uppercase(),
-                color = colors.textMuted,
-                fontFamily = LocalKarenType.current.mono,
-                fontSize = 10.sp,
-                letterSpacing = 0.5.sp,
-                modifier = Modifier.weight(1f)
-            )
+            if (icon != null) {
+                Box(
+                    Modifier
+                        .size(28.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(tint.copy(alpha = 0.12f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(16.dp))
+                }
+                Spacer(Modifier.width(8.dp))
+            }
+            Column(Modifier.weight(1f)) {
+                Text(
+                    label.uppercase(),
+                    color = colors.textMuted,
+                    fontFamily = LocalKarenType.current.mono,
+                    fontSize = 10.sp,
+                    letterSpacing = 0.5.sp
+                )
+                if (subtitle != null) {
+                    Text(
+                        subtitle,
+                        color = colors.textMuted,
+                        fontSize = 9.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
             if (trend != null) {
                 val up = trend >= 0
                 Icon(
@@ -316,6 +452,7 @@ fun KpiCard(
 /**
  * Sortable data table. Tap a header to sort asc/desc. `columns` define
  * header labels and cell content. Rows are (id, cells) pairs.
+ * Optional zebra striping and row numbers.
  */
 @Composable
 fun KDataTable(
@@ -324,7 +461,9 @@ fun KDataTable(
     modifier: Modifier = Modifier,
     sortColumn: Int = -1,
     sortAsc: Boolean = true,
-    onSort: (Int, Boolean) -> Unit = { _, _ -> }
+    onSort: (Int, Boolean) -> Unit = { _, _ -> },
+    zebra: Boolean = true,
+    rowNumbers: Boolean = false
 ) {
     val colors = LocalKarenColors.current
     val scroll = rememberScrollState()
@@ -344,6 +483,15 @@ fun KDataTable(
                 .padding(horizontal = 12.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            if (rowNumbers) {
+                Text(
+                    "#",
+                    color = colors.textMuted,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.width(28.dp)
+                )
+            }
             columns.forEachIndexed { ci, col ->
                 val sorted = ci == sortColumn
                 Row(
@@ -376,26 +524,52 @@ fun KDataTable(
         }
         KHairline()
         // Rows.
-        rows.forEach { (id, cells) ->
-            Row(
+        if (rows.isEmpty()) {
+            Box(
                 Modifier
                     .fillMaxWidth()
-                    .horizontalScroll(scroll)
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically
+                    .padding(24.dp),
+                contentAlignment = Alignment.Center
             ) {
-                cells.forEachIndexed { ci, cell ->
-                    Text(
-                        cell,
-                        color = if (ci == 0) colors.textPrimary else colors.textSecondary,
-                        fontSize = 12.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false)
-                    )
-                }
+                Text(
+                    "No data",
+                    color = colors.textMuted,
+                    fontSize = 12.sp
+                )
             }
-            KHairline()
+        } else {
+            rows.forEachIndexed { ri, (id, cells) ->
+                val bg = if (zebra && ri % 2 == 1) colors.surfaceHover.copy(alpha = 0.3f) else Color.Transparent
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .background(bg)
+                        .horizontalScroll(scroll)
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (rowNumbers) {
+                        Text(
+                            "${ri + 1}",
+                            color = colors.textMuted,
+                            fontFamily = LocalKarenType.current.mono,
+                            fontSize = 10.sp,
+                            modifier = Modifier.width(28.dp)
+                        )
+                    }
+                    cells.forEachIndexed { ci, cell ->
+                        Text(
+                            cell,
+                            color = if (ci == 0) colors.textPrimary else colors.textSecondary,
+                            fontSize = 12.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                    }
+                }
+                KHairline()
+            }
         }
     }
 }
@@ -406,13 +580,14 @@ fun KDataTable(
 
 /**
  * Agent task timeline: a vertical list of steps with status icons
- * (done / active / pending) and an optional progress bar.
+ * (done / active / pending), optional timestamps, and a progress bar.
  */
 @Composable
 fun KTaskTimeline(
     steps: List<Triple<String, String, Int>>, // (label, detail, status) — 0=done 1=active 2=pending
     progress: Float? = null,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    timestamps: List<String> = emptyList()
 ) {
     val colors = LocalKarenColors.current
     Column(
@@ -463,12 +638,23 @@ fun KTaskTimeline(
                 }
                 Spacer(Modifier.width(10.dp))
                 Column(Modifier.weight(1f)) {
-                    Text(
-                        label,
-                        color = if (status == 2) colors.textMuted else colors.textPrimary,
-                        fontSize = 13.sp,
-                        fontWeight = if (status == 1) FontWeight.SemiBold else FontWeight.Normal
-                    )
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text(
+                            label,
+                            color = if (status == 2) colors.textMuted else colors.textPrimary,
+                            fontSize = 13.sp,
+                            fontWeight = if (status == 1) FontWeight.SemiBold else FontWeight.Normal,
+                            modifier = Modifier.weight(1f)
+                        )
+                        if (i < timestamps.size && timestamps[i].isNotBlank()) {
+                            Text(
+                                timestamps[i],
+                                color = colors.textMuted,
+                                fontFamily = LocalKarenType.current.mono,
+                                fontSize = 9.sp
+                            )
+                        }
+                    }
                     if (detail.isNotBlank()) {
                         Text(
                             detail,
@@ -568,6 +754,7 @@ fun KImageGrid(
 
 /**
  * Empty state: centred icon, title, message, and an optional action button.
+ * `variant` controls the icon tint: Info (muted), Warning (amber), Error (red).
  */
 @Composable
 fun KEmptyState(
@@ -576,9 +763,15 @@ fun KEmptyState(
     message: String = "",
     modifier: Modifier = Modifier,
     actionLabel: String? = null,
-    onAction: (() -> Unit)? = null
+    onAction: (() -> Unit)? = null,
+    variant: KEmptyVariant = KEmptyVariant.Info
 ) {
     val colors = LocalKarenColors.current
+    val tint = when (variant) {
+        KEmptyVariant.Info -> colors.textMuted
+        KEmptyVariant.Warning -> colors.accentAmber
+        KEmptyVariant.Error -> colors.accentRed
+    }
     Column(
         modifier
             .fillMaxWidth()
@@ -589,11 +782,11 @@ fun KEmptyState(
             Modifier
                 .size(56.dp)
                 .clip(CircleShape)
-                .background(colors.surfaceHover)
-                .border(1.dp, colors.border, CircleShape),
+                .background(tint.copy(alpha = 0.1f))
+                .border(1.dp, tint.copy(alpha = 0.3f), CircleShape),
             contentAlignment = Alignment.Center
         ) {
-            Icon(icon, contentDescription = null, tint = colors.textMuted, modifier = Modifier.size(26.dp))
+            Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(26.dp))
         }
         Spacer(Modifier.height(14.dp))
         Text(title, color = colors.textPrimary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
@@ -608,18 +801,22 @@ fun KEmptyState(
     }
 }
 
+/** Visual variant for [KEmptyState]. */
+enum class KEmptyVariant { Info, Warning, Error }
+
 // ---------------------------------------------------------------------------
 // Skeleton loader (SmartUI-3 §15) — shimmering placeholder blocks.
 // ---------------------------------------------------------------------------
 
 /**
- * Skeleton loader: a column of shimmering placeholder blocks.
- * Used while content loads.
+ * Skeleton loader: shimmering placeholder blocks. `layout` picks a preset
+ * shape — List (text lines), Card (title + lines), Chart (bars), or Table.
  */
 @Composable
 fun KSkeletonLoader(
     modifier: Modifier = Modifier,
-    rows: Int = 3
+    rows: Int = 3,
+    layout: KSkeletonLayout = KSkeletonLayout.List
 ) {
     val colors = LocalKarenColors.current
     val shimmer = remember { mutableStateOf(0f) }
@@ -638,26 +835,93 @@ fun KSkeletonLoader(
             .border(1.dp, colors.cardBorder, KR.card)
             .padding(14.dp)
     ) {
-        repeat(rows) { i ->
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .height(if (i == 0) 20.dp else 14.dp)
-                    .clip(RoundedCornerShape(4.dp))
-                    .background(colors.surfaceHover.copy(alpha = alpha + 0.1f))
-            )
-            if (i < rows - 1) Spacer(Modifier.height(10.dp))
+        when (layout) {
+            KSkeletonLayout.List -> {
+                repeat(rows) { i ->
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(if (i == 0) 20.dp else 14.dp)
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(colors.surfaceHover.copy(alpha = alpha + 0.1f))
+                    )
+                    if (i < rows - 1) Spacer(Modifier.height(10.dp))
+                }
+            }
+            KSkeletonLayout.Card -> {
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(18.dp)
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(colors.surfaceHover.copy(alpha = alpha + 0.15f))
+                )
+                Spacer(Modifier.height(10.dp))
+                repeat(rows) {
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(12.dp)
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(colors.surfaceHover.copy(alpha = alpha + 0.08f))
+                    )
+                    Spacer(Modifier.height(8.dp))
+                }
+            }
+            KSkeletonLayout.Chart -> {
+                Row(
+                    Modifier.fillMaxWidth().height(80.dp),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.Bottom
+                ) {
+                    repeat(5) { i ->
+                        val h = 0.3f + 0.7f * ((i * 37 % 10) / 10f)
+                        Box(
+                            Modifier
+                                .weight(1f)
+                                .fillMaxHeight(h)
+                                .padding(horizontal = 3.dp)
+                                .clip(RoundedCornerShape(topStart = 3.dp, topEnd = 3.dp))
+                                .background(colors.surfaceHover.copy(alpha = alpha + 0.1f))
+                        )
+                    }
+                }
+            }
+            KSkeletonLayout.Table -> {
+                repeat(rows + 1) { i ->
+                    Row(Modifier.fillMaxWidth()) {
+                        repeat(3) { c ->
+                            Box(
+                                Modifier
+                                    .weight(1f)
+                                    .height(if (i == 0) 14.dp else 12.dp)
+                                    .padding(horizontal = 4.dp)
+                                    .clip(RoundedCornerShape(3.dp))
+                                    .background(
+                                        colors.surfaceHover.copy(
+                                            alpha = if (i == 0) alpha + 0.15f else alpha + 0.06f
+                                        )
+                                    )
+                            )
+                        }
+                    }
+                    if (i < rows) Spacer(Modifier.height(6.dp))
+                }
+            }
         }
     }
 }
+
+/** Preset skeleton layouts. */
+enum class KSkeletonLayout { List, Card, Chart, Table }
 
 // ---------------------------------------------------------------------------
 // Search result card (SmartUI-3 §9) — title, snippet, source, freshness.
 // ---------------------------------------------------------------------------
 
 /**
- * Search result card: title, snippet, source domain, and a freshness label.
- * Used in web search results and research panels.
+ * Search result card: favicon, title, snippet, source domain, and a
+ * freshness badge. Used in web search results and research panels.
  */
 @Composable
 fun KSearchResultCard(
@@ -666,7 +930,8 @@ fun KSearchResultCard(
     source: String,
     modifier: Modifier = Modifier,
     freshness: String? = null,
-    onClick: (() -> Unit)? = null
+    onClick: (() -> Unit)? = null,
+    favicon: androidx.compose.ui.graphics.vector.ImageVector? = null
 ) {
     val colors = LocalKarenColors.current
     Column(
@@ -679,6 +944,18 @@ fun KSearchResultCard(
             .padding(12.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
+            if (favicon != null) {
+                Box(
+                    Modifier
+                        .size(20.dp)
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(colors.surfaceHover),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(favicon, contentDescription = null, tint = colors.textMuted, modifier = Modifier.size(12.dp))
+                }
+                Spacer(Modifier.width(6.dp))
+            }
             Text(
                 source,
                 color = colors.accentGreen,
@@ -692,11 +969,23 @@ fun KSearchResultCard(
             )
             if (freshness != null) {
                 Spacer(Modifier.width(6.dp))
+                val (freshColor, freshBg) = when {
+                    freshness.contains("hour", true) || freshness.contains("min", true) ->
+                        colors.accentGreen to colors.accentGreen.copy(alpha = 0.12f)
+                    freshness.contains("day", true) || freshness.contains("week", true) ->
+                        colors.accentAmber to colors.accentAmber.copy(alpha = 0.12f)
+                    else ->
+                        colors.textMuted to colors.surfaceHover
+                }
                 Text(
                     freshness,
-                    color = colors.textMuted,
+                    color = freshColor,
                     fontFamily = LocalKarenType.current.mono,
-                    fontSize = 9.sp
+                    fontSize = 9.sp,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(freshBg)
+                        .padding(horizontal = 5.dp, vertical = 2.dp)
                 )
             }
         }
@@ -712,28 +1001,40 @@ fun KSearchResultCard(
 // ---------------------------------------------------------------------------
 
 /**
- * Star rating input. `value` is 0..5. Tap a star to set the rating.
+ * Star rating input. `value` is 0..max. Tap a star to set the rating.
+ * Optional label shows the current selection.
  */
 @Composable
 fun KRatingInput(
     value: Int,
     onValueChange: (Int) -> Unit,
     modifier: Modifier = Modifier,
-    max: Int = 5
+    max: Int = 5,
+    label: String? = null
 ) {
     val colors = LocalKarenColors.current
-    Row(modifier, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-        (1..max).forEach { star ->
-            val filled = star <= value
-            Icon(
-                if (filled) Icons.Default.Star else Icons.Default.StarBorder,
-                contentDescription = "Rate $star",
-                tint = if (filled) colors.accentAmber else colors.textMuted,
-                modifier = Modifier
-                    .size(28.dp)
-                    .clip(CircleShape)
-                    .clickable { onValueChange(if (star == value) 0 else star) }
-                    .padding(2.dp)
+    Column(modifier) {
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            (1..max).forEach { star ->
+                val filled = star <= value
+                Icon(
+                    if (filled) Icons.Default.Star else Icons.Default.StarBorder,
+                    contentDescription = "Rate $star",
+                    tint = if (filled) colors.accentAmber else colors.textMuted,
+                    modifier = Modifier
+                        .size(28.dp)
+                        .clip(CircleShape)
+                        .clickable { onValueChange(if (star == value) 0 else star) }
+                        .padding(2.dp)
+                )
+            }
+        }
+        if (label != null) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                if (value > 0) "$label: $value/$max" else label,
+                color = colors.textMuted,
+                fontSize = 11.sp
             )
         }
     }
@@ -745,16 +1046,19 @@ fun KRatingInput(
 
 /**
  * Expandable accordion section. Tap the header to toggle.
+ * Optional icon and smooth expand/collapse animation.
  */
 @Composable
 fun KAccordion(
     title: String,
     modifier: Modifier = Modifier,
     defaultExpanded: Boolean = false,
-    content: @Composable () -> Unit
+    content: @Composable () -> Unit,
+    icon: androidx.compose.ui.graphics.vector.ImageVector? = null
 ) {
     val colors = LocalKarenColors.current
     var expanded by remember { mutableStateOf(defaultExpanded) }
+    val anim by animateFloatAsState(if (expanded) 1f else 0f, tween(250), label = "acc")
     Column(
         modifier
             .fillMaxWidth()
@@ -769,6 +1073,10 @@ fun KAccordion(
                 .padding(14.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            if (icon != null) {
+                Icon(icon, contentDescription = null, tint = colors.textMuted, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+            }
             Text(
                 title,
                 color = colors.textPrimary,
@@ -783,11 +1091,159 @@ fun KAccordion(
                 modifier = Modifier.size(20.dp)
             )
         }
-        if (expanded) {
+        if (anim > 0f) {
             KHairline()
-            Box(Modifier.padding(14.dp)) { content() }
+            Box(
+                Modifier
+                    .fillMaxWidth(anim)
+                    .padding(14.dp)
+            ) { content() }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Progress ring (SmartUI-3 §5) — circular progress with center label.
+// ---------------------------------------------------------------------------
+
+/**
+ * Circular progress ring with an optional center label (e.g. percentage).
+ * `progress` is 0..1.
+ */
+@Composable
+fun KProgressRing(
+    progress: Float,
+    modifier: Modifier = Modifier,
+    size: androidx.compose.ui.unit.Dp = 80.dp,
+    strokeWidth: androidx.compose.ui.unit.Dp = 8.dp,
+    color: Color = LocalKarenColors.current.accentGreen,
+    trackColor: Color = LocalKarenColors.current.surfaceHover,
+    centerLabel: String? = null
+) {
+    val colors = LocalKarenColors.current
+    val animated by animateFloatAsState(progress.coerceIn(0f, 1f), tween(600), label = "ring")
+    Box(modifier.size(size), contentAlignment = Alignment.Center) {
+        Canvas(Modifier.size(size)) {
+            val pad = strokeWidth.toPx() / 2
+            val arcSize = Size(size.toPx() - pad * 2, size.toPx() - pad * 2)
+            drawArc(
+                color = trackColor,
+                startAngle = -90f,
+                sweepAngle = 360f,
+                useCenter = false,
+                topLeft = Offset(pad, pad),
+                size = arcSize,
+                style = Stroke(width = strokeWidth.toPx(), cap = StrokeCap.Round)
+            )
+            drawArc(
+                color = color,
+                startAngle = -90f,
+                sweepAngle = 360f * animated,
+                useCenter = false,
+                topLeft = Offset(pad, pad),
+                size = arcSize,
+                style = Stroke(width = strokeWidth.toPx(), cap = StrokeCap.Round)
+            )
+        }
+        if (centerLabel != null) {
+            Text(
+                centerLabel,
+                color = colors.textPrimary,
+                fontFamily = LocalKarenType.current.mono,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1
+            )
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Horizontal bar chart (SmartUI-3 §2b) — labeled bars with values.
+// ---------------------------------------------------------------------------
+
+/**
+ * Horizontal bar chart. Each row: label on the left, bar + value on the right.
+ * Good for rankings and comparisons with long labels.
+ */
+@Composable
+fun KHorizontalBarChart(
+    dataPoints: List<SmartUIDataPoint>,
+    modifier: Modifier = Modifier,
+    barColor: Color = LocalKarenColors.current.accentGreen,
+    maxBarWidth: Float = 0.65f
+) {
+    val colors = LocalKarenColors.current
+    if (dataPoints.isEmpty()) return
+    val maxV = dataPoints.maxOf { it.value }.takeIf { it > 0f } ?: 1f
+    Column(
+        modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(colors.surface)
+            .border(1.dp, colors.border, RoundedCornerShape(8.dp))
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        dataPoints.take(8).forEach { dp ->
+            val frac = (dp.value / maxV).coerceIn(0f, 1f)
+            val w by animateFloatAsState(frac, tween(500), label = "hbar")
+            Column {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(
+                        dp.label,
+                        color = colors.textPrimary,
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    Text(
+                        "${dp.value.toInt()}",
+                        color = colors.textMuted,
+                        fontFamily = LocalKarenType.current.mono,
+                        fontSize = 11.sp
+                    )
+                }
+                Spacer(Modifier.height(4.dp))
+                Box(
+                    Modifier
+                        .fillMaxWidth(maxBarWidth * w)
+                        .height(10.dp)
+                        .clip(RoundedCornerShape(5.dp))
+                        .background(barColor)
+                )
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Badge (SmartUI-3 §12) — small status pill.
+// ---------------------------------------------------------------------------
+
+/**
+ * Small status badge / pill. `tone` controls the color.
+ */
+@Composable
+fun KBadge(
+    text: String,
+    modifier: Modifier = Modifier,
+    tone: KTone = KTone.Neutral
+) {
+    val colors = LocalKarenColors.current
+    val tint = tone.color(colors)
+    Text(
+        text,
+        color = tint,
+        fontSize = 10.sp,
+        fontWeight = FontWeight.SemiBold,
+        fontFamily = LocalKarenType.current.mono,
+        modifier = modifier
+            .clip(RoundedCornerShape(4.dp))
+            .background(tint.copy(alpha = 0.12f))
+            .padding(horizontal = 7.dp, vertical = 3.dp)
+    )
 }
 
 // ---------------------------------------------------------------------------

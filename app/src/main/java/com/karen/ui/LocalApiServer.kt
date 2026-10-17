@@ -32,7 +32,10 @@ data class NodeInfo(
     val kind: String,
     val firstSeen: Long,
     val lastSeen: Long,
-    val requests: Int
+    val requests: Int,
+    val webgpu: Boolean = false,
+    val gpu: String = "",
+    val gflops: Double = 0.0
 )
 
 /** One model artifact actually found on disk, with its real runtime verdict. */
@@ -56,6 +59,7 @@ data class LocalModelFile(
  *   GET  /v1/files             every model file found on disk (fmt + runtime)
  *   POST /v1/chat/completions  runs the loaded local GGUF (stream:true → SSE)
  *   POST /v1/probe             loads a file with its real runtime (ORT/GGUF)
+ *   POST /v1/nodes/hello       nodes report WebGPU/GPU capability + GFLOPS
  *   POST /v1/embeddings        501 — no embedding runtime ships on-device
  *   GET  /api/tags             Ollama-shaped model list
  *
@@ -106,7 +110,10 @@ object LocalApiServer {
                 kind = kind,
                 firstSeen = prev?.firstSeen ?: now,
                 lastSeen = now,
-                requests = (prev?.requests ?: 0) + 1
+                requests = (prev?.requests ?: 0) + 1,
+                webgpu = prev?.webgpu ?: false,
+                gpu = prev?.gpu ?: "",
+                gflops = prev?.gflops ?: 0.0
             )
             nodeSnapshot = nodes.values.sortedByDescending { it.lastSeen }
             if (nodeNames[ip] == null) {
@@ -489,6 +496,13 @@ object LocalApiServer {
                         probeModelFile(ctx, socket, body)
                     }
                 }
+                method == "POST" && path == "/v1/nodes/hello" -> {
+                    if (body == null) {
+                        writeJson(socket, 400, JSONObject().put("error", errorObj("JSON body required")))
+                    } else {
+                        registerNodeCapabilities(socket, body)
+                    }
+                }
                 method == "GET" && path == "/api/tags" -> {
                     val models = JSONArray()
                     UserPrefs.models(ctx).filter { !isCloudProviderName(it) }.forEach { name ->
@@ -652,6 +666,36 @@ object LocalApiServer {
             return null
         }
         return pick to file
+    }
+
+    /** Dashboard reports a node's hardware: WebGPU presence, adapter, GFLOPS. */
+    private fun registerNodeCapabilities(socket: Socket, body: JSONObject) {
+        val ip = try {
+            socket.inetAddress?.hostAddress
+        } catch (_: Exception) {
+            null
+        }
+        if (ip == null || ip == "127.0.0.1" || ip == "::1" || ip == "0:0:0:0:0:0:0:1") {
+            writeJson(socket, 200, JSONObject().put("ok", true).put("note", "loopback — not tracked as a node"))
+            return
+        }
+        val now = System.currentTimeMillis()
+        val prev = nodes[ip]
+        val name = body.optString("name", "").trim()
+        if (name.isNotBlank()) nodeNames[ip] = name.take(40)
+        nodes[ip] = NodeInfo(
+            ip = ip,
+            name = nodeNames[ip] ?: prev?.name ?: ("Device " + ip.substringAfterLast('.')),
+            kind = prev?.kind ?: "Dashboard",
+            firstSeen = prev?.firstSeen ?: now,
+            lastSeen = now,
+            requests = prev?.requests ?: 0,
+            webgpu = body.optBoolean("webgpu", prev?.webgpu ?: false),
+            gpu = body.optString("gpu", prev?.gpu ?: "").take(90),
+            gflops = body.optDouble("gflops", prev?.gflops ?: 0.0)
+        )
+        nodeSnapshot = nodes.values.sortedByDescending { it.lastSeen }
+        writeJson(socket, 200, JSONObject().put("ok", true))
     }
 
     /** Loads a listed file with its real runtime and reports what happened. */
@@ -980,6 +1024,7 @@ object LocalApiServer {
   .badge.off { background: rgba(148,163,184,0.12); color: #94a3b8; }
   .frow button { padding: 5px 10px; font-size: 11px; border-radius: 7px; }
   .probe { font-size: 11px; color: #94a3b8; font-family: 'JetBrains Mono', monospace; padding: 2px 6px 4px; word-break: break-word; }
+  input[type=checkbox] { width: 15px; height: 15px; padding: 0; accent-color: #10A37F; }
   .toast { position: fixed; bottom: 96px; left: 50%; transform: translateX(-50%);
            background: #1b2029; border: 1px solid #38bdf8; color: #cce5ff;
            padding: 9px 16px; border-radius: 20px; font-size: 12.5px; opacity: 0;
@@ -1006,6 +1051,24 @@ object LocalApiServer {
   <summary id="filesSummary">On-device model files — loading…</summary>
   <div class="filelist" id="fileList"></div>
 </details>
+<details class="files" id="gpuPanel">
+  <summary id="gpuSummary">GPU offload — checking this device…</summary>
+  <div class="filelist">
+    <div class="fmeta" id="gpuAdapter"></div>
+    <div class="frow">
+      <button class="ghost" id="benchBtn" onclick="runBench()">Run GPU benchmark</button>
+      <span class="fmeta" id="benchResult"></span>
+    </div>
+    <div class="frow">
+      <label class="fmeta" style="display:flex;align-items:center;gap:8px;flex:1;min-width:260px">
+        <input type="checkbox" id="gpuBoost" onclick="toggleBoost(this.checked)">
+        <span>Run chat on <b>this device's GPU</b> (WebLLM — first reply downloads the engine + model once, then it is cached)</span>
+      </label>
+      <select id="boostModel" style="max-width:330px" onchange="saveBoostModel()"></select>
+    </div>
+    <div class="fmeta" id="boostStatus">Chat runs on the phone (llama.cpp) over the LAN.</div>
+  </div>
+</details>
 <main id="chat"></main>
 <div class="hint">Enter sends · Shift+Enter makes a new line · Stop cancels generation</div>
 <footer>
@@ -1015,7 +1078,7 @@ object LocalApiServer {
 </footer>
 <div class="toast" id="toast"></div>
 <script>
-var S = { token: localStorage.getItem('karen_token') || '', busy: false, ctrl: null, log: [], node: nodeName() };
+var S = { token: localStorage.getItem('karen_token') || '', busy: false, ctrl: null, log: [], node: nodeName(), boost: localStorage.getItem('karen_gpu_boost') === '1', llm: null, llmMod: null, llmModel: '', adapter: null, gpuName: '', gflops: 0 };
 function el(id) { return document.getElementById(id); }
 function nodeName() {
   var ua = navigator.userAgent, os = 'Device', br = 'Browser';
@@ -1042,7 +1105,7 @@ function add(role, text) { var d = document.createElement('div'); d.className = 
   d.textContent = text; el('chat').appendChild(d); el('chat').scrollTop = el('chat').scrollHeight; return d; }
 function saveToken() { S.token = el('token').value.trim();
   localStorage.setItem('karen_token', S.token);
-  toast(S.token ? 'Token saved' : 'Token cleared'); loadModels(); }
+  toast(S.token ? 'Token saved' : 'Token cleared'); loadModels(); reportNode(); }
 function loadModels() {
   fetch('/v1/models', { headers: headers(false) }).then(function (r) {
     if (r.status === 401) { setStatus(false, 'token needed'); return null; }
@@ -1141,10 +1204,243 @@ function probe(path, row) {
     done((j.ok ? 'OK — ' : '') + msg);
   }).catch(function () { done('probe failed'); });
 }
-function stopGen() { if (S.ctrl) { S.ctrl.abort(); } }
+var WGSL_MM = [
+'struct Dims { m: u32, n: u32, k: u32, pad: u32 }',
+'@group(0) @binding(0) var<storage, read> A: array<f32>;',
+'@group(0) @binding(1) var<storage, read> B: array<f32>;',
+'@group(0) @binding(2) var<storage, read_write> C: array<f32>;',
+'@group(0) @binding(3) var<uniform> dims: Dims;',
+'var<workgroup> tileA: array<f32, 256>;',
+'var<workgroup> tileB: array<f32, 256>;',
+'@compute @workgroup_size(16, 16)',
+'fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {',
+'  let row = gid.y; let col = gid.x; let lr = lid.y; let lc = lid.x;',
+'  var acc = 0.0;',
+'  let M = dims.m; let N = dims.n; let K = dims.k;',
+'  let tiles = (K + 15u) / 16u;',
+'  for (var t = 0u; t < tiles; t = t + 1u) {',
+'    let aCol = t * 16u + lc; let bRow = t * 16u + lr;',
+'    var av = 0.0; var bv = 0.0;',
+'    if (row < M && aCol < K) { av = A[row * K + aCol]; }',
+'    if (bRow < K && col < N) { bv = B[bRow * N + col]; }',
+'    tileA[lr * 16u + lc] = av; tileB[lr * 16u + lc] = bv;',
+'    workgroupBarrier();',
+'    for (var kk = 0u; kk < 16u; kk = kk + 1u) {',
+'      acc = acc + tileA[lr * 16u + kk] * tileB[kk * 16u + lc];',
+'    }',
+'    workgroupBarrier();',
+'  }',
+'  if (row < M && col < N) { C[row * N + col] = acc; }',
+'}'
+].join('\n');
+function reportNode() {
+  if (!S.token) return;
+  fetch('/v1/nodes/hello', {
+    method: 'POST',
+    headers: headers(true),
+    body: JSON.stringify({ name: S.node, webgpu: !!S.adapter, gpu: S.gpuName || '', gflops: S.gflops || 0 })
+  }).catch(function () {});
+}
+function toggleBoostText() {
+  el('boostStatus').textContent = S.boost
+    ? 'Chat runs on THIS device\'s GPU (WebLLM). The first reply downloads the engine + model once, then it is cached.'
+    : 'Chat runs on the phone (llama.cpp) over the LAN. Tick boost to run it here instead.';
+}
+async function initGpu() {
+  var box = el('gpuBoost');
+  box.checked = S.boost;
+  if (!navigator.gpu) {
+    el('gpuSummary').textContent = 'GPU offload — WebGPU not available in this browser (phone llama.cpp remains the runner)';
+    el('gpuAdapter').textContent = 'No navigator.gpu here — GPU running needs desktop Chrome/Edge with WebGPU. The phone still answers normally.';
+    el('benchBtn').disabled = true;
+    box.disabled = true;
+    box.checked = false;
+    S.boost = false;
+    el('boostStatus').textContent = 'GPU boost unavailable on this device.';
+    return;
+  }
+  try {
+    var ad = await navigator.gpu.requestAdapter();
+    if (!ad) {
+      el('gpuSummary').textContent = 'GPU offload — no WebGPU adapter available';
+      el('benchBtn').disabled = true;
+      box.disabled = true;
+      return;
+    }
+    S.adapter = ad;
+    var info = ad.info || {};
+    S.gpuName = [info.vendor, info.architecture, info.device, info.description].filter(Boolean).join(' · ') || 'WebGPU adapter';
+    el('gpuSummary').textContent = 'GPU offload — this device: ' + S.gpuName;
+    el('gpuAdapter').textContent = 'Adapter: ' + S.gpuName + ' — benchmark it below, or switch chat onto this GPU.';
+    toggleBoostText();
+    reportNode();
+  } catch (e) {
+    el('gpuSummary').textContent = 'GPU offload — adapter check failed: ' + (e && e.message ? e.message : e);
+    el('benchBtn').disabled = true;
+    box.disabled = true;
+  }
+}
+function toggleBoost(on) {
+  if (on && !S.adapter) {
+    el('gpuBoost').checked = false;
+    toast('No WebGPU adapter on this device');
+    return;
+  }
+  S.boost = on;
+  localStorage.setItem('karen_gpu_boost', on ? '1' : '0');
+  toggleBoostText();
+  toast(on ? 'GPU boost ON — chat runs on this device' : 'GPU boost OFF — back to the phone');
+  if (on) reportNode();
+}
+async function runBench() {
+  var btn = el('benchBtn');
+  btn.disabled = true;
+  el('benchResult').textContent = 'running…';
+  try {
+    if (!S.adapter) { S.adapter = await navigator.gpu.requestAdapter(); }
+    if (!S.adapter) throw new Error('no adapter');
+    var device = await S.adapter.requestDevice();
+    var N = 1024;
+    var bytes = N * N * 4;
+    var STORAGE = 0x80, COPY_DST = 0x8, COPY_SRC = 0x4, UNIFORM = 0x40, MAP_READ = 0x1;
+    var fill = new Float32Array(N * N);
+    fill.fill(0.5);
+    var A = device.createBuffer({ size: bytes, usage: STORAGE | COPY_DST });
+    var B = device.createBuffer({ size: bytes, usage: STORAGE | COPY_DST });
+    var C = device.createBuffer({ size: bytes, usage: STORAGE | COPY_SRC });
+    var dims = device.createBuffer({ size: 16, usage: UNIFORM | COPY_DST });
+    device.queue.writeBuffer(A, 0, fill);
+    device.queue.writeBuffer(B, 0, fill);
+    device.queue.writeBuffer(dims, 0, new Uint32Array([N, N, N, 0]));
+    var module = device.createShaderModule({ code: WGSL_MM });
+    var pipeline = device.createComputePipeline({ layout: 'auto', compute: { module: module, entryPoint: 'main' } });
+    var bind = device.createBindGroup({
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: A } },
+        { binding: 1, resource: { buffer: B } },
+        { binding: 2, resource: { buffer: C } },
+        { binding: 3, resource: { buffer: dims } }
+      ]
+    });
+    async function once() {
+      var enc = device.createCommandEncoder();
+      var pass = enc.beginComputePass();
+      pass.setPipeline(pipeline);
+      pass.setBindGroup(0, bind);
+      pass.dispatchWorkgroups(N / 16, N / 16);
+      pass.end();
+      device.queue.submit([enc.finish()]);
+      await device.queue.onSubmittedWorkDone();
+    }
+    await once();
+    var iters = 5;
+    var t0 = performance.now();
+    for (var i = 0; i < iters; i++) { await once(); }
+    var dt = Math.max(1, performance.now() - t0) / 1000;
+    var gflops = (2 * N * N * N * iters) / dt / 1e9;
+    S.gflops = gflops;
+    var stage = device.createBuffer({ size: 4, usage: COPY_DST | MAP_READ });
+    var enc2 = device.createCommandEncoder();
+    enc2.copyBufferToBuffer(C, 0, stage, 0, 4);
+    device.queue.submit([enc2.finish()]);
+    await stage.mapAsync(1);
+    var probe = new Float32Array(stage.getMappedRange())[0];
+    var okCell = Math.abs(probe - 256) < 2;
+    el('benchResult').textContent = gflops.toFixed(1) + ' GFLOPS (fp32 1024^3 x' + iters + ' · cell check ' + (okCell ? 'OK' : 'BAD ' + probe) + ')';
+    reportNode();
+  } catch (e) {
+    el('benchResult').textContent = 'benchmark failed: ' + (e && e.message ? e.message : e);
+  } finally {
+    btn.disabled = false;
+  }
+}
+function populateBoostModels(m) {
+  var sel = el('boostModel');
+  var list = ((m.prebuiltAppConfig && m.prebuiltAppConfig.model_list) || [])
+    .filter(function (x) { return /q4f16_1|q4f32_1/.test(x.model_id); })
+    .sort(function (a, b) { return a.vram_required_MB - b.vram_required_MB; });
+  sel.innerHTML = '';
+  list.forEach(function (x) {
+    var o = document.createElement('option');
+    o.value = x.model_id;
+    o.textContent = x.model_id + ' (' + Math.round(x.vram_required_MB) + ' MB VRAM)';
+    sel.appendChild(o);
+  });
+  var want = localStorage.getItem('karen_gpu_model') || '';
+  if (want) { sel.value = want; }
+  if (!sel.value && sel.options.length) { sel.selectedIndex = 0; }
+  S.llmModel = sel.value || '';
+}
+function saveBoostModel() {
+  S.llmModel = el('boostModel').value;
+  localStorage.setItem('karen_gpu_model', S.llmModel);
+  if (S.llm) { try { S.llm.unload(); } catch (e) {} S.llm = null; }
+  toast('GPU model: ' + S.llmModel);
+}
+async function initEngine(bubble) {
+  if (!navigator.gpu) throw new Error('WebGPU not available in this browser');
+  if (!S.llmMod) {
+    bubble.textContent = 'Loading WebLLM engine (one time)…';
+    try {
+      S.llmMod = await import('https://esm.run/@mlc-ai/web-llm@0.2.86');
+    } catch (e) {
+      throw new Error('could not load WebLLM from the CDN — GPU boost needs internet once to fetch the engine: ' + (e && e.message ? e.message : e));
+    }
+    populateBoostModels(S.llmMod);
+  }
+  if (!S.llmModel) { populateBoostModels(S.llmMod); }
+  if (!S.llmModel) { throw new Error('no GPU model list available'); }
+  var engine = new S.llmMod.MLCEngine();
+  engine.setInitProgressCallback(function (p) {
+    bubble.textContent = 'GPU: ' + (p && p.text ? p.text : 'loading…');
+  });
+  await engine.reload(S.llmModel);
+  S.llm = engine;
+  reportNode();
+}
+async function boostSend(text) {
+  el('input').value = '';
+  add('user', text);
+  S.log.push({ role: 'user', content: text });
+  var bubble = add('assistant', '…');
+  S.busy = true; el('send').disabled = true; el('stop').disabled = false;
+  S.ctrl = new AbortController();
+  var full = '';
+  try {
+    if (!S.llm) { await initEngine(bubble); }
+    bubble.textContent = '…';
+    var it = await S.llm.chat.completions.create({
+      messages: S.log.slice(-12),
+      stream: true,
+      temperature: 0.7
+    });
+    for await (var piece of it) {
+      if (S.ctrl.signal.aborted) break;
+      var d = piece.choices && piece.choices[0] && piece.choices[0].delta ? piece.choices[0].delta.content : '';
+      if (d) { full += d; bubble.textContent = full; el('chat').scrollTop = el('chat').scrollHeight; }
+    }
+    if (full) { S.log.push({ role: 'assistant', content: full }); }
+    else {
+      bubble.className = 'msg sys'; bubble.textContent = 'stopped';
+      if (S.log.length && S.log[S.log.length - 1].role === 'user') { S.log.pop(); }
+    }
+  } catch (e) {
+    bubble.className = 'msg sys';
+    bubble.textContent = 'GPU boost failed: ' + (e && e.message ? e.message : e);
+    if (S.log.length && S.log[S.log.length - 1].role === 'user') { S.log.pop(); }
+  } finally {
+    S.busy = false; el('send').disabled = false; el('stop').disabled = true; S.ctrl = null;
+  }
+}
+function stopGen() {
+  if (S.ctrl) { S.ctrl.abort(); }
+  if (S.llm && S.boost) { try { S.llm.interrupt(); } catch (e) {} }
+}
 function send() {
   var text = el('input').value.trim();
   if (!text || S.busy) return;
+  if (S.boost) { boostSend(text); return; }
   if (!S.token) { toast('Paste the bearer token first'); return; }
   var model = el('model').value;
   if (!model) { toast('Pick a model'); return; }
@@ -1213,6 +1509,7 @@ el('input').addEventListener('keydown', function (e) {
 el('token').value = S.token;
 add('sys', 'Hello from Karen — connected to $ip:$port. ${models.size} installed model(s). Paste the token from Settings → Local Server, then pick a model — .gguf files found on disk can run too (expand the On-device model files panel below).');
 loadModels();
+initGpu();
 </script>
 </body>
 </html>

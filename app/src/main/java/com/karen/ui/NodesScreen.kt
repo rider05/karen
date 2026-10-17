@@ -190,6 +190,23 @@ private fun NodeRow(node: NodeInfo, colors: KarenColors, tick: Long) {
                 fontWeight = FontWeight.Bold
             )
         }
+        if (node.webgpu || node.gpu.isNotBlank() || node.gflops > 0.0) {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                buildString {
+                    append("GPU: ")
+                    append(node.gpu.ifBlank { "WebGPU ready" })
+                    if (node.gflops > 0.0) {
+                        append(" · ")
+                        append(String.format(java.util.Locale.US, "%.0f", node.gflops))
+                        append(" GFLOPS")
+                    }
+                },
+                color = colors.accentBlue,
+                fontSize = 11.sp,
+                fontFamily = FontFamily.Monospace
+            )
+        }
         Spacer(Modifier.height(8.dp))
         Row(
             modifier = Modifier.fillMaxWidth(),

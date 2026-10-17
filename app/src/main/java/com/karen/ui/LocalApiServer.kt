@@ -1,6 +1,7 @@
 package com.karen.ui
 
 import android.content.Context
+import android.net.wifi.WifiManager
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -141,7 +142,14 @@ object LocalApiServer {
                 }
             } else null
 
-            // Bearer auth is mandatory, even on localhost.
+            // Landing page — no auth required.
+            if (method == "GET" && (path == "/" || path == "/index.html")) {
+                writeHtml(socket, landingPage(ctx))
+                socket.close()
+                return
+            }
+
+            // Bearer auth is mandatory for API routes.
             val auth = headers["authorization"].orEmpty()
             if (auth != "Bearer ${token(ctx)}") {
                 writeJson(socket, 401, JSONObject().put("error", errorObj("invalid bearer token")))
@@ -370,5 +378,116 @@ object LocalApiServer {
         out.write(head.toByteArray(Charsets.UTF_8))
         out.write(body)
         out.flush()
+    }
+
+    private fun writeHtml(socket: Socket, html: String) {
+        val body = html.toByteArray(Charsets.UTF_8)
+        val head = "HTTP/1.1 200 OK\r\n" +
+            "Content-Type: text/html; charset=utf-8\r\n" +
+            "Content-Length: ${body.size}\r\n" +
+            "Connection: close\r\n\r\n"
+        val out = socket.getOutputStream()
+        out.write(head.toByteArray(Charsets.UTF_8))
+        out.write(body)
+        out.flush()
+    }
+
+    private fun landingPage(ctx: Context): String {
+        val ip = wifiIp(ctx)
+        val port = UserPrefs.serverPort(ctx)
+        val models = UserPrefs.models(ctx).filter { !isCloudProviderName(it) }
+        return """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Karen — Local Server</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #0c0e12;
+    color: #e2e2e8;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .card {
+    background: #1a1c20;
+    border: 1px solid #283042;
+    border-radius: 16px;
+    padding: 40px;
+    max-width: 480px;
+    width: 90%;
+    text-align: center;
+  }
+  .logo {
+    width: 56px; height: 56px;
+    background: #10A37F;
+    border-radius: 14px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 24px;
+    font-weight: 700;
+    color: #fff;
+    margin-bottom: 20px;
+  }
+  h1 { font-size: 22px; font-weight: 700; margin-bottom: 8px; }
+  .sub { color: #94a3b8; font-size: 14px; margin-bottom: 24px; }
+  .row {
+    display: flex;
+    justify-content: space-between;
+    padding: 10px 0;
+    border-bottom: 1px solid #283042;
+    font-size: 13px;
+  }
+  .row:last-child { border-bottom: none; }
+  .label { color: #64748b; }
+  .value { color: #e2e2e8; font-family: 'JetBrains Mono', monospace; }
+  .status {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(16,163,127,0.12);
+    color: #10A37F;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+    margin-top: 20px;
+  }
+  .dot { width: 8px; height: 8px; background: #10A37F; border-radius: 50%; }
+  .models { margin-top: 16px; font-size: 12px; color: #64748b; }
+  .models span { color: #94a3b8; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">K</div>
+  <h1>Hello from Karen</h1>
+  <p class="sub">Your local AI server is running</p>
+  <div class="row"><span class="label">Address</span><span class="value">$ip:$port</span></div>
+  <div class="row"><span class="label">Status</span><span class="value">Active</span></div>
+  <div class="row"><span class="label">Models</span><span class="value">${models.size} installed</span></div>
+  <div class="status"><span class="dot"></span>&nbsp;Server Online</div>
+  ${if (models.isNotEmpty()) "<p class=\"models\">${models.take(3).joinToString(", ")}${if (models.size > 3) " +${models.size - 3} more" else ""}</p>" else ""}
+</div>
+</body>
+</html>
+        """.trimIndent()
+    }
+
+    private fun wifiIp(ctx: Context): String {
+        return try {
+            val wm = ctx.applicationContext.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
+            val ip = wm.connectionInfo.ipAddress
+            if (ip == 0) "127.0.0.1" else
+                "${(ip and 0xFF)}.${(ip shr 8 and 0xFF)}.${(ip shr 16 and 0xFF)}.${(ip shr 24 and 0xFF)}"
+        } catch (_: Exception) {
+            "127.0.0.1"
+        }
     }
 }

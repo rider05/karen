@@ -175,6 +175,7 @@ fun ChatGPTTopAppBar(
                 .fillMaxWidth()
                 .background(colors.background)
                 .then(if (compact) Modifier.padding(top = 6.dp) else Modifier.statusBarsPadding())
+                .padding(top = 2.dp, bottom = 2.dp)
                 .height(if (compact) 44.dp else 50.dp)
                 .padding(start = 4.dp, end = 4.dp),
             contentAlignment = Alignment.Center

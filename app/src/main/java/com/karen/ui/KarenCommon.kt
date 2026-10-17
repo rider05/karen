@@ -2611,12 +2611,12 @@ fun ChatGPTDrawerContent(
                     DrawerNavItem("Advanced Voice Mode", Icons.Default.GraphicEq, currentScreen == "Voice") {
                         onNavigate("Voice"); onCloseDrawer()
                     }
-                    DrawerNavItem("Dev Workspace / Canvas", Icons.Default.Terminal, currentScreen == "Workspace") {
+                    DrawerNavItem("Dev Workspace / Canvas", Icons.Default.Workspaces, currentScreen == "Workspace") {
                         onNavigate("Workspace"); onCloseDrawer()
                     }
                     AnimatedVisibility(visible = !toolsCollapsed) {
                         Column {
-                            DrawerNavItem("Knowledge Vault & Files", Icons.Default.Folder, currentScreen == "Files") {
+                            DrawerNavItem("Knowledge Vault & Files", Icons.Default.SnippetFolder, currentScreen == "Files") {
                                 onNavigate("Files"); onCloseDrawer()
                             }
                             DrawerNavItem("Memory & Preferences", Icons.Default.Psychology, currentScreen == "Memory") {

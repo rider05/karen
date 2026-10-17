@@ -111,7 +111,7 @@ fun HomeScreen(
                     PromptShortcutCard(
                         title = "Ask Karen",
                         subtitle = "Type or paste anything",
-                        icon = Icons.Default.ChatBubble,
+                        icon = Icons.Default.Assistant,
                         iconTint = colors.accentBlue,
                         modifier = Modifier.weight(1f)
                     ) { onNavigate("Chat") }
@@ -132,7 +132,7 @@ fun HomeScreen(
                     PromptShortcutCard(
                         title = "Knowledge Vault",
                         subtitle = "Your files & notes",
-                        icon = Icons.Default.Folder,
+                        icon = Icons.Default.SnippetFolder,
                         iconTint = colors.accentAmber,
                         modifier = Modifier.weight(1f)
                     ) { onNavigate("Files") }
@@ -140,7 +140,7 @@ fun HomeScreen(
                     PromptShortcutCard(
                         title = "Canvas",
                         subtitle = "Write & plan",
-                        icon = Icons.Default.Terminal,
+                        icon = Icons.Default.Workspaces,
                         iconTint = Color(0xFFEC4899),
                         modifier = Modifier.weight(1f)
                     ) { onNavigate("Workspace") }

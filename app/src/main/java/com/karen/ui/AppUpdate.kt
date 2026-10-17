@@ -9,6 +9,7 @@ import androidx.core.content.FileProvider
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
+import java.security.MessageDigest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -16,6 +17,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
+import org.json.JSONObject
 
 /**
  * In-app update from the tracked APK in git:
@@ -32,6 +34,8 @@ object AppUpdate {
     const val RAW_URL = "https://github.com/rider05/karen/raw/main/apks/karen.apk"
     private const val COMMITS_URL =
         "https://api.github.com/repos/rider05/karen/commits?path=apks/karen.apk&per_page=1"
+    private const val CONTENTS_URL =
+        "https://api.github.com/repos/rider05/karen/contents/apks/karen.apk"
 
     private const val PREFS = "karen_app_update"
     private const val KEY_SHA = "apk_sha"
@@ -48,6 +52,7 @@ object AppUpdate {
 
     /** File of a previously downloaded update, if it is still on disk and valid. */
     fun pendingApk(ctx: Context): java.io.File? {
+        purgeLegacyArtifacts(ctx)
         val path = prefs(ctx).getString(KEY_PENDING_APK, "").orEmpty()
         if (path.isBlank()) return null
         val file = java.io.File(path)
@@ -58,6 +63,24 @@ object AppUpdate {
             return null
         }
         return file
+    }
+
+    /**
+     * Removes leftovers from the pre-rename updater ("karen-debug.apk" and
+     * its .part file). Those files are old builds, never the current update;
+     * keeping them around could offer the user a downgrade.
+     */
+    private fun purgeLegacyArtifacts(ctx: Context) {
+        try {
+            File(ctx.getExternalFilesDir(null), "updates").listFiles()?.forEach { f ->
+                if (f.name.contains("karen-debug")) f.delete()
+            }
+        } catch (_: Exception) {
+        }
+        val path = prefs(ctx).getString(KEY_PENDING_APK, "").orEmpty()
+        if (path.contains("karen-debug")) {
+            prefs(ctx).edit().remove(KEY_PENDING_APK).apply()
+        }
     }
 
     /** Cooperative pause flag read by the download loops below. */
@@ -107,6 +130,18 @@ object AppUpdate {
     /** Asks GitHub for the newest commit touching the APK path (IO thread). */
     suspend fun check(ctx: Context): Check = withContext(Dispatchers.IO) {
         try {
+            prefs(ctx).edit().putLong(KEY_CHECKED_AT, System.currentTimeMillis()).apply()
+            // Exact identity check first: when the installed APK is the same
+            // git blob as the file in the repo we are up to date, regardless
+            // of what any earlier download recorded. Cost: one metadata call
+            // plus a local sha1 of the installed APK — never a download.
+            val remoteBlob = remoteBlobSha()
+            if (remoteBlob != null) {
+                val localBlob = gitBlobSha(File(ctx.applicationInfo.sourceDir))
+                if (localBlob != null && localBlob.equals(remoteBlob, ignoreCase = true)) {
+                    return@withContext Check.UpToDate
+                }
+            }
             val conn = (URL(COMMITS_URL).openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"
                 connectTimeout = 12000
@@ -130,7 +165,6 @@ object AppUpdate {
                 .take(10)
             val releaseNotes = commit?.optString("message", "").orEmpty()
                 .take(500)
-            prefs(ctx).edit().putLong(KEY_CHECKED_AT, System.currentTimeMillis()).apply()
             if (sha.isBlank()) {
                 Check.Failed("could not read latest commit")
             } else if (storedSha(ctx).isNotBlank() && sha == storedSha(ctx)) {
@@ -141,6 +175,48 @@ object AppUpdate {
         } catch (e: Exception) {
             Check.Failed(e.message ?: "network error")
         }
+    }
+
+    /** Git blob sha of the repo's apks/karen.apk, via the contents API. */
+    private fun remoteBlobSha(): String? = try {
+        val conn = (URL(CONTENTS_URL).openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = 12000
+            readTimeout = 15000
+            setRequestProperty("Accept", "application/vnd.github+json")
+        }
+        val code = conn.responseCode
+        val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+        val text = stream.bufferedReader().use { it.readText() }
+        conn.disconnect()
+        if (code !in 200..299) null
+        else JSONObject(text).optString("sha", "").ifBlank { null }
+    } catch (_: Exception) {
+        null
+    }
+
+    /**
+     * Git blob sha1 of a local file — the same value GitHub reports, so the
+     * installed APK can be compared byte-for-byte with the repo copy.
+     */
+    private fun gitBlobSha(file: File): String? = try {
+        if (!file.exists()) {
+            null
+        } else {
+            val md = MessageDigest.getInstance("SHA-1")
+            md.update("blob ${file.length()}\u0000".toByteArray(Charsets.UTF_8))
+            file.inputStream().use { ins ->
+                val buf = ByteArray(64 * 1024)
+                while (true) {
+                    val n = ins.read(buf)
+                    if (n <= 0) break
+                    md.update(buf, 0, n)
+                }
+            }
+            md.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        }
+    } catch (_: Exception) {
+        null
     }
 
     /**

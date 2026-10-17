@@ -1535,3 +1535,203 @@ fun SmartUIRenderer(
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Flowchart (ChatGPT Premium style) — nodes with icons, connected by lines.
+// ---------------------------------------------------------------------------
+
+/** A flowchart node: title, description, icon, and visual type. */
+data class KFlowNode(
+    val title: String,
+    val subtitle: String = "",
+    val icon: androidx.compose.ui.graphics.vector.ImageVector? = null,
+    val type: KFlowNodeType = KFlowNodeType.Process
+)
+
+/** Visual style for a flowchart node. */
+enum class KFlowNodeType { Start, Process, Decision, End }
+
+/**
+ * ChatGPT Premium-style flowchart. Vertical nodes with icons, connected by
+ * animated lines. Decision nodes get a diamond accent.
+ */
+@Composable
+fun KFlowchart(
+    nodes: List<KFlowNode>,
+    modifier: Modifier = Modifier,
+    animate: Boolean = true
+) {
+    val colors = LocalKarenColors.current
+    if (nodes.isEmpty()) return
+    Column(
+        modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(colors.surface)
+            .border(1.dp, colors.border, RoundedCornerShape(12.dp))
+            .padding(16.dp)
+    ) {
+        nodes.forEachIndexed { i, node ->
+            val nodeColor = when (node.type) {
+                KFlowNodeType.Start -> colors.accentGreen
+                KFlowNodeType.Process -> colors.accentBlue
+                KFlowNodeType.Decision -> colors.accentAmber
+                KFlowNodeType.End -> colors.accentGreen
+            }
+            Row(verticalAlignment = Alignment.Top) {
+                // Icon column with connector.
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Box(
+                        Modifier
+                            .size(40.dp)
+                            .clip(CircleShape)
+                            .background(nodeColor.copy(alpha = 0.12f))
+                            .border(1.5.dp, nodeColor.copy(alpha = 0.4f), CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (node.icon != null) {
+                            Icon(
+                                node.icon,
+                                contentDescription = null,
+                                tint = nodeColor,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        } else {
+                            Text(
+                                "${i + 1}",
+                                color = nodeColor,
+                                fontFamily = LocalKarenType.current.mono,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                    // Connector line to next node.
+                    if (i < nodes.lastIndex) {
+                        val lineH by animateFloatAsState(if (animate) 1f else 0f, tween(400 + i * 150), label = "fc$i")
+                        Box(
+                            Modifier
+                                .width(2.dp)
+                                .height((36 * lineH).dp)
+                                .clip(RoundedCornerShape(1.dp))
+                                .background(nodeColor.copy(alpha = 0.35f))
+                        )
+                    }
+                }
+                Spacer(Modifier.width(12.dp))
+                // Content.
+                Column(Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            node.title,
+                            color = colors.textPrimary,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        if (node.type == KFlowNodeType.Decision) {
+                            Spacer(Modifier.width(6.dp))
+                            KBadge("Decision", tone = KTone.Amber)
+                        }
+                    }
+                    if (node.subtitle.isNotBlank()) {
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            node.subtitle,
+                            color = colors.textMuted,
+                            fontSize = 12.sp,
+                            lineHeight = 16.sp
+                        )
+                    }
+                }
+            }
+            if (i < nodes.lastIndex) Spacer(Modifier.height(12.dp))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Question card — interactive Yes/No or multiple choice, ChatGPT style.
+// ---------------------------------------------------------------------------
+
+/**
+ * Interactive question card. Shows a question with tappable option buttons.
+ * `options` are the choices; tapping one calls `onAnswer` with the index.
+ * Yes/No is just options = listOf("Yes", "No").
+ */
+@Composable
+fun KQuestionCard(
+    question: String,
+    options: List<String>,
+    onAnswer: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+    selectedIndex: Int = -1,
+    multiSelect: Boolean = false
+) {
+    val colors = LocalKarenColors.current
+    var selection by remember { mutableStateOf(selectedIndex) }
+    Column(
+        modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(colors.surface)
+            .border(1.dp, colors.border, RoundedCornerShape(12.dp))
+            .padding(16.dp)
+    ) {
+        Text(
+            question,
+            color = colors.textPrimary,
+            fontSize = 15.sp,
+            fontWeight = FontWeight.SemiBold
+        )
+        Spacer(Modifier.height(12.dp))
+        options.forEachIndexed { i, option ->
+            val selected = if (multiSelect) selection == i else selection == i
+            val bg = if (selected) colors.accentGreen.copy(alpha = 0.08f) else Color.Transparent
+            val borderC = if (selected) colors.accentGreen.copy(alpha = 0.4f) else colors.border
+            val textC = if (selected) colors.accentGreen else colors.textSecondary
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(bg)
+                    .border(1.dp, borderC, RoundedCornerShape(8.dp))
+                    .clickable {
+                        selection = i
+                        onAnswer(i)
+                    }
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    Modifier
+                        .size(20.dp)
+                        .clip(CircleShape)
+                        .border(
+                            1.5.dp,
+                            if (selected) colors.accentGreen else colors.border,
+                            CircleShape
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (selected) {
+                        Icon(
+                            Icons.Default.Check,
+                            contentDescription = null,
+                            tint = colors.accentGreen,
+                            modifier = Modifier.size(12.dp)
+                        )
+                    }
+                }
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    option,
+                    color = textC,
+                    fontSize = 14.sp,
+                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
+                )
+            }
+            if (i < options.lastIndex) Spacer(Modifier.height(6.dp))
+        }
+    }
+}

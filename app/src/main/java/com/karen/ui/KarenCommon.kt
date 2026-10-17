@@ -2496,9 +2496,9 @@ fun ChatGPTDrawerContent(
     val colors = LocalKarenColors.current
     val currentMode = LocalKarenThemeMode.current
     var searchQuery by remember { mutableStateOf("") }
-    var toolsCollapsed by remember { mutableStateOf(false) }
-    var managersCollapsed by remember { mutableStateOf(false) }
-    var historyCollapsed by remember { mutableStateOf(false) }
+    var toolsCollapsed by remember { mutableStateOf(true) }
+    var managersCollapsed by remember { mutableStateOf(true) }
+    var historyCollapsed by remember { mutableStateOf(true) }
     val drawerCtx = androidx.compose.ui.platform.LocalContext.current
     val conversations = remember(historyVersion) { ChatHistoryStore.loadConversations(drawerCtx) }
     val visibleConversations = remember(conversations, searchQuery) {

@@ -1374,7 +1374,9 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                 var progress by remember { mutableStateOf(0f) }
                 var pendingSha by remember { mutableStateOf<String?>(null) }
                 var pendingDate by remember { mutableStateOf("") }
+                var releaseNotes by remember { mutableStateOf("") }
                 var downloadedFile by remember { mutableStateOf(AppUpdate.pendingApk(context)) }
+                var justInstalled by remember { mutableStateOf(AppUpdate.consumeJustInstalled(context)) }
                 val updateScope = rememberCoroutineScope()
                 Column(
                     modifier = Modifier
@@ -1386,6 +1388,43 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Text(updateStatus, color = colors.textPrimary, fontSize = 13.sp)
+                    if (justInstalled) {
+                        Spacer(Modifier.height(6.dp))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(colors.accentGreen.copy(alpha = 0.12f))
+                                .border(1.dp, colors.accentGreen.copy(alpha = 0.3f), RoundedCornerShape(8.dp))
+                                .padding(10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = colors.accentGreen, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("Update installed successfully", color = colors.accentGreen, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                    if (releaseNotes.isNotBlank() && pendingSha != null) {
+                        Spacer(Modifier.height(6.dp))
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(colors.surfaceHover.copy(alpha = 0.4f))
+                                .border(1.dp, colors.border.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                                .padding(10.dp)
+                        ) {
+                            Text("Release notes", color = colors.textMuted, fontSize = 10.5.sp, fontWeight = FontWeight.SemiBold)
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                releaseNotes,
+                                color = colors.textSecondary,
+                                fontSize = 11.5.sp,
+                                fontFamily = FontFamily.Monospace,
+                                lineHeight = 15.sp
+                            )
+                        }
+                    }
                     if (downloading) {
                         LinearProgressIndicator(
                             progress = { progress.coerceIn(0f, 1f) },
@@ -1414,11 +1453,13 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                                         when (val res = AppUpdate.check(context)) {
                                             is AppUpdate.Check.UpToDate -> {
                                                 pendingSha = null
+                                                releaseNotes = ""
                                                 updateStatus = "Up to date — installed matches ${AppUpdate.APK_PATH}"
                                             }
                                             is AppUpdate.Check.UpdateAvailable -> {
                                                 pendingSha = res.sha
                                                 pendingDate = res.date
+                                                releaseNotes = res.releaseNotes
                                                 updateStatus = if (AppUpdate.storedSha(context).isBlank()) {
                                                     "Installed version unknown — latest is ${res.sha.take(7)} (${
                                                         res.date.ifBlank { "unknown date" }

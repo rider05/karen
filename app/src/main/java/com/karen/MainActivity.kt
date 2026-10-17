@@ -9,6 +9,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.core.app.ActivityCompat
+import com.karen.ui.AppUpdate
 import com.karen.ui.KarenApp
 import com.karen.ui.UserPrefs
 
@@ -26,6 +27,10 @@ class MainActivity : ComponentActivity() {
         maybeRestartWakeListener()
         // Birthday: wish today if it's the birthday, and keep the alarm armed.
         com.karen.BirthdayNotifier.checkToday(this)
+        // Post-install: clean up pending APK if an update was just installed.
+        if (AppUpdate.checkPostInstall(this)) {
+            android.widget.Toast.makeText(this, "Update installed successfully", android.widget.Toast.LENGTH_SHORT).show()
+        }
     }
 
     override fun onNewIntent(intent: Intent) {

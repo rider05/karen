@@ -37,6 +37,8 @@ object AppUpdate {
     private const val KEY_SHA = "apk_sha"
     private const val KEY_CHECKED_AT = "checked_at"
     private const val KEY_PENDING_APK = "pending_apk"
+    private const val KEY_PENDING_SHA = "pending_sha"
+    private const val KEY_JUST_INSTALLED = "just_installed"
 
     private fun prefs(ctx: Context) =
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -44,12 +46,18 @@ object AppUpdate {
     fun storedSha(ctx: Context): String = prefs(ctx).getString(KEY_SHA, "").orEmpty()
     fun lastCheckedAt(ctx: Context): Long = prefs(ctx).getLong(KEY_CHECKED_AT, 0L)
 
-    /** File of a previously downloaded update, if it is still on disk. */
+    /** File of a previously downloaded update, if it is still on disk and valid. */
     fun pendingApk(ctx: Context): java.io.File? {
         val path = prefs(ctx).getString(KEY_PENDING_APK, "").orEmpty()
         if (path.isBlank()) return null
         val file = java.io.File(path)
-        return if (file.exists() && file.length() > 1_000_000) file else null
+        if (!file.exists() || file.length() < 1_000_000) return null
+        // Verify it still passes validation.
+        if (!validateApk(ctx, file).valid) {
+            cleanupPendingApk(ctx)
+            return null
+        }
+        return file
     }
 
     /** Cooperative pause flag read by the download loops below. */
@@ -83,10 +91,18 @@ object AppUpdate {
     }
 
     sealed interface Check {
-        data class UpdateAvailable(val sha: String, val date: String) : Check
+        data class UpdateAvailable(val sha: String, val date: String, val releaseNotes: String = "") : Check
         data object UpToDate : Check
         data class Failed(val reason: String) : Check
     }
+
+    /** Result of validating a downloaded APK before installation. */
+    data class ApkValidation(
+        val valid: Boolean,
+        val versionCode: Long = 0,
+        val versionName: String = "",
+        val reason: String = ""
+    )
 
     /** Asks GitHub for the newest commit touching the APK path (IO thread). */
     suspend fun check(ctx: Context): Check = withContext(Dispatchers.IO) {
@@ -108,13 +124,15 @@ object AppUpdate {
             val sha = latest.optString("sha", "")
             val date = latest.optJSONObject("commit")?.optString("date", "").orEmpty()
                 .take(10)
+            val releaseNotes = latest.optJSONObject("commit")?.optString("message", "").orEmpty()
+                .take(500)
             prefs(ctx).edit().putLong(KEY_CHECKED_AT, System.currentTimeMillis()).apply()
             if (sha.isBlank()) {
                 Check.Failed("could not read latest commit")
             } else if (storedSha(ctx).isNotBlank() && sha == storedSha(ctx)) {
                 Check.UpToDate
             } else {
-                Check.UpdateAvailable(sha, date)
+                Check.UpdateAvailable(sha, date, releaseNotes)
             }
         } catch (e: Exception) {
             Check.Failed(e.message ?: "network error")
@@ -169,8 +187,17 @@ object AppUpdate {
                 if (errors.isEmpty()) errors.add("downloaded file too small — retry on Wi-Fi")
                 return@withContext null
             }
+            // Validate before promoting to pending.
+            val validation = validateApk(ctx, file)
+            if (!validation.valid) {
+                file.delete()
+                part.delete()
+                errors.add("APK validation failed: ${validation.reason}")
+                return@withContext null
+            }
             prefs(ctx).edit()
                 .putString(KEY_PENDING_APK, file.absolutePath)
+                .putString(KEY_PENDING_SHA, sha.orEmpty())
                 .apply {
                     if (!sha.isNullOrBlank()) putString(KEY_SHA, sha)
                 }
@@ -327,6 +354,123 @@ object AppUpdate {
             errors.add("parallel failed (${e.message}), retrying single stream")
             downloadSingle(dest, part, 0L, onProgress, errors)
         }
+    }
+
+    // ---- APK validation (package name, version code, signing cert) ----
+
+    /** Read the installed app's version code. */
+    fun installedVersionCode(ctx: Context): Long {
+        return try {
+            val pm = ctx.packageManager
+            val info = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                pm.getPackageInfo(ctx.packageName, PackageManager.PackageInfoFlags.of(0))
+            } else {
+                @Suppress("DEPRECATION")
+                pm.getPackageInfo(ctx.packageName, 0)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) info.longVersionCode
+            else info.versionCode.toLong()
+        } catch (_: Exception) { 0L }
+    }
+
+    /** Read the installed app's signing certificate bytes. */
+    fun installedSigningCert(ctx: Context): ByteArray? {
+        return try {
+            val pm = ctx.packageManager
+            val info = pm.getPackageInfo(ctx.packageName, PackageManager.GET_SIGNATURES)
+            info.signatures?.firstOrNull()?.toByteArray()
+        } catch (_: Exception) { null }
+    }
+
+    /** Read version code from a candidate APK file. */
+    fun apkVersionCode(ctx: Context, file: File): Long {
+        return try {
+            val info = ctx.packageManager.getPackageArchiveInfo(
+                file.absolutePath, 0
+            ) ?: return 0L
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) info.longVersionCode
+            else info.versionCode.toLong()
+        } catch (_: Exception) { 0L }
+    }
+
+    /** Read signing certificate bytes from a candidate APK file. */
+    fun apkSigningCert(ctx: Context, file: File): ByteArray? {
+        return try {
+            val info = ctx.packageManager.getPackageArchiveInfo(
+                file.absolutePath, PackageManager.GET_SIGNATURES
+            ) ?: return null
+            info.signatures?.firstOrNull()?.toByteArray()
+        } catch (_: Exception) { null }
+    }
+
+    /** Validate a candidate APK: package name, version code, signature. */
+    fun validateApk(ctx: Context, file: File): ApkValidation {
+        if (!file.exists() || file.length() < 1_000_000) {
+            return ApkValidation(false, reason = "File missing or too small")
+        }
+        val info = try {
+            ctx.packageManager.getPackageArchiveInfo(file.absolutePath, PackageManager.GET_SIGNATURES)
+        } catch (e: Exception) {
+            return ApkValidation(false, reason = "Could not read APK: ${e.message}")
+        } ?: return ApkValidation(false, reason = "Invalid APK structure")
+
+        if (info.packageName != ctx.packageName) {
+            return ApkValidation(false, reason = "Package name mismatch (${info.packageName})")
+        }
+        val vCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) info.longVersionCode else info.versionCode.toLong()
+        val installedCode = installedVersionCode(ctx)
+        if (vCode < installedCode) {
+            return ApkValidation(false, reason = "Version $vCode is older than installed $installedCode")
+        }
+        val installedCert = installedSigningCert(ctx)
+        val apkCert = apkSigningCert(ctx, file)
+        if (installedCert == null || apkCert == null || !installedCert.contentEquals(apkCert)) {
+            return ApkValidation(false, reason = "Signing certificate mismatch")
+        }
+        return ApkValidation(true, vCode, info.versionName.orEmpty())
+    }
+
+    // ---- Pending APK lifecycle ----
+
+    /** Delete the pending APK and clear all update metadata. */
+    fun cleanupPendingApk(ctx: Context) {
+        try {
+            pendingApk(ctx)?.delete()
+        } catch (_: Exception) {
+        }
+        try {
+            File(ctx.getExternalFilesDir(null), "updates/karen.apk.part").delete()
+        } catch (_: Exception) {
+        }
+        prefs(ctx).edit()
+            .remove(KEY_PENDING_APK)
+            .remove(KEY_PENDING_SHA)
+            .apply()
+    }
+
+    /**
+     * Post-install detection: if a pending update was recorded and the app
+     * is running (possibly new version), clean up and return true.
+     * Called on app startup.
+     */
+    fun checkPostInstall(ctx: Context): Boolean {
+        val pendingSha = prefs(ctx).getString(KEY_PENDING_SHA, "").orEmpty()
+        if (pendingSha.isBlank()) return false
+        // The app is running — either the update succeeded or was cancelled.
+        // Either way, clean up the pending state.
+        cleanupPendingApk(ctx)
+        prefs(ctx).edit()
+            .putString(KEY_SHA, pendingSha)
+            .putBoolean(KEY_JUST_INSTALLED, true)
+            .apply()
+        return true
+    }
+
+    /** Whether the app just completed an update install. Clears the flag. */
+    fun consumeJustInstalled(ctx: Context): Boolean {
+        val v = prefs(ctx).getBoolean(KEY_JUST_INSTALLED, false)
+        if (v) prefs(ctx).edit().putBoolean(KEY_JUST_INSTALLED, false).apply()
+        return v
     }
 
     /** Hands the downloaded APK to the system installer. */

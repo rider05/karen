@@ -21,13 +21,16 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Assistant
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.SnippetFolder
+import androidx.compose.material.icons.filled.Workspaces
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
@@ -208,10 +211,10 @@ fun KNavigationDock(
 
     val destinations = remember {
         listOf(
-            NavDestination("Home", "Home", Icons.Default.Menu),
-            NavDestination("Chat", "Chat", Icons.AutoMirrored.Filled.Chat),
-            NavDestination("Workspace", "Workspace", Icons.AutoMirrored.Filled.KeyboardArrowRight),
-            NavDestination("Files", "Files", Icons.Default.Menu)
+            NavDestination("Home", "Home", Icons.Default.Home),
+            NavDestination("Chat", "Chat", Icons.Default.Assistant),
+            NavDestination("Workspace", "Workspace", Icons.Default.Workspaces),
+            NavDestination("Files", "Files", Icons.Default.SnippetFolder)
         )
     }
 

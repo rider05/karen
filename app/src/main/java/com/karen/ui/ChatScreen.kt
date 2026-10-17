@@ -1453,12 +1453,12 @@ fun ChatScreen(
                         contentWindow = UserPrefs.contextTokens(context)
                         showWindowDialog = true
                     },
-                    Triple(if (explainerPref) "Study mode: On" else "Study mode: Off", Icons.Default.School) {
+                    Triple(if (explainerPref) "SmartUI: On" else "SmartUI: Off", Icons.Default.School) {
                         explainerPref = !explainerPref
                         UserPrefs.setExplainerMode(context, explainerPref)
                         android.widget.Toast.makeText(
                             context,
-                            if (explainerPref) "Study mode on — structured answers" else "Study mode off — normal replies",
+                            if (explainerPref) "SmartUI on — structured answers" else "SmartUI off — normal replies",
                             android.widget.Toast.LENGTH_SHORT
                         ).show()
                     },

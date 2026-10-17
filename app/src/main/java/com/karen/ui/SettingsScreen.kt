@@ -463,7 +463,7 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column(Modifier.weight(1f)) {
-                            Text("Premium Explainer Style", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
+                            Text("SmartUI", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
                             Text("Off = normal replies · On = always structured · auto for study asks", color = colors.textMuted, fontSize = 11.5.sp)
                         }
                         Switch(

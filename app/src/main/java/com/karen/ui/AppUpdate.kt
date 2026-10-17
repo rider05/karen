@@ -122,9 +122,13 @@ object AppUpdate {
             if (arr.length() == 0) return@withContext Check.Failed("no history for $APK_PATH")
             val latest = arr.getJSONObject(0)
             val sha = latest.optString("sha", "")
-            val date = latest.optJSONObject("commit")?.optString("date", "").orEmpty()
+            val commit = latest.optJSONObject("commit")
+            // GitHub commits API: the date lives under commit.committer or
+            // commit.author — there is no top-level commit.date field.
+            val date = commit?.optJSONObject("committer")?.optString("date", "").orEmpty()
+                .ifBlank { commit?.optJSONObject("author")?.optString("date", "").orEmpty() }
                 .take(10)
-            val releaseNotes = latest.optJSONObject("commit")?.optString("message", "").orEmpty()
+            val releaseNotes = commit?.optString("message", "").orEmpty()
                 .take(500)
             prefs(ctx).edit().putLong(KEY_CHECKED_AT, System.currentTimeMillis()).apply()
             if (sha.isBlank()) {

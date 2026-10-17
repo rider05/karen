@@ -63,7 +63,7 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
             modifier = Modifier
                 .fillMaxWidth()
                 .statusBarsPadding()
-                .padding(horizontal = 8.dp, vertical = 8.dp),
+                .padding(horizontal = 8.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton(onClick = onBack) {
@@ -1453,12 +1453,22 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                                     downloading = true
                                     paused = false
                                     AppUpdate.setDownloadPaused(false)
-                                    progress = 0f
-                                    updateStatus = "Downloading ${AppUpdate.APK_PATH}…"
+                                    val partFile = java.io.File(context.getExternalFilesDir(null), "updates/karen-debug.apk.part")
+                                    val hasPartial = partFile.exists() && partFile.length() > 0
+                                    if (hasPartial) {
+                                        // Show resume progress immediately.
+                                        val total = AppUpdate.probeLength()
+                                        progress = if (total != null && total > 0) (partFile.length().toFloat() / total).coerceIn(0f, 1f) else 0f
+                                    } else {
+                                        progress = 0f
+                                    }
+                                    updateStatus = if (hasPartial) "Resuming download…" else "Downloading ${AppUpdate.APK_PATH}…"
                                     updateScope.launch {
                                         try {
                                             val errors = mutableListOf<String>()
-                                            val file = AppUpdate.download(context, sha, { p -> progress = p }, errors)
+                                            val partFile = java.io.File(context.getExternalFilesDir(null), "updates/karen-debug.apk.part")
+                                            val hasPartial = partFile.exists() && partFile.length() > 0
+                                            val file = AppUpdate.download(context, sha, { p -> progress = p }, errors, resume = hasPartial)
                                             if (file != null) {
                                                 pendingSha = null
                                                 downloadedFile = file

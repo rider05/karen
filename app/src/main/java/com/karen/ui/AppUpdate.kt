@@ -126,25 +126,46 @@ object AppUpdate {
      * requests when the server honors them, else a single stream.
      * Returns the file, or null with the reason appended to [errors].
      * Marks the sha when [sha] is set.
+     *
+     * Pause-and-continue: when [resume] is true and a partial file exists,
+     * the download continues from the saved byte offset instead of restarting.
      */
     suspend fun download(
         ctx: Context,
         sha: String?,
         onProgress: (Float) -> Unit,
-        errors: MutableList<String> = mutableListOf()
+        errors: MutableList<String> = mutableListOf(),
+        resume: Boolean = false
     ): File? = withContext(Dispatchers.IO) {
         val dir = File(ctx.getExternalFilesDir(null), "updates").apply { mkdirs() }
         val dest = File(dir, "karen-debug.apk")
+        val part = File(dir, "karen-debug.apk.part")
         downloadPaused = false
         try {
+            // Resume: keep the partial file and continue from its length.
+            val resumeOffset = if (resume && part.exists() && part.length() > 0) part.length() else 0L
+            if (resumeOffset == 0L && part.exists()) part.delete()
             val total = probeLength()
-            val file = if (total != null && total > 8_000_000) {
-                downloadSegmented(dest, total, onProgress, errors)
+            // Part file is already complete — just finalize it.
+            if (resumeOffset > 0 && total != null && resumeOffset >= total && total > 0) {
+                part.renameTo(dest)
+                prefs(ctx).edit()
+                    .putString(KEY_PENDING_APK, dest.absolutePath)
+                    .apply {
+                        if (!sha.isNullOrBlank()) putString(KEY_SHA, sha)
+                    }
+                    .apply()
+                onProgress(1f)
+                return@withContext dest
+            }
+            // Segmented is a fresh-download optimization; resume uses single-stream append.
+            val file = if (total != null && total > 8_000_000 && resumeOffset == 0L) {
+                downloadSegmented(dest, part, total, onProgress, errors)
             } else {
-                downloadSingle(dest, onProgress, errors)
+                downloadSingle(dest, part, resumeOffset, onProgress, errors)
             }
             if (file == null || file.length() < 1_000_000) {
-                file?.delete()
+                if (file != null && !resume) file.delete()
                 if (errors.isEmpty()) errors.add("downloaded file too small — retry on Wi-Fi")
                 return@withContext null
             }
@@ -163,7 +184,7 @@ object AppUpdate {
     }
 
     /** Total size when the server honors range requests, else null. */
-    private fun probeLength(): Long? {
+    fun probeLength(): Long? {
         var conn: HttpURLConnection? = null
         return try {
             conn = (URL(RAW_URL).openConnection() as HttpURLConnection).apply {
@@ -187,6 +208,8 @@ object AppUpdate {
 
     private suspend fun downloadSingle(
         dest: File,
+        part: File,
+        resumeOffset: Long,
         onProgress: (Float) -> Unit,
         errors: MutableList<String>
     ): File? = withContext(Dispatchers.IO) {
@@ -197,28 +220,40 @@ object AppUpdate {
                 connectTimeout = 15000
                 readTimeout = 60000
                 setRequestProperty("Accept", "application/octet-stream")
+                if (resumeOffset > 0) {
+                    setRequestProperty("Range", "bytes=$resumeOffset-")
+                }
             }
-            if (conn.responseCode !in 200..299) {
-                errors.add("download HTTP ${conn.responseCode}")
+            val code = conn.responseCode
+            if (resumeOffset > 0 && code != HttpURLConnection.HTTP_PARTIAL) {
+                // Server ignored the Range header — restart from scratch.
+                errors.add("server ignored resume, restarting")
+                return@withContext downloadSingle(dest, part, 0L, onProgress, errors)
+            }
+            if (code !in 200..299) {
+                errors.add("download HTTP $code")
                 return@withContext null
             }
             val total = conn.contentLengthLong.takeIf { it > 0 }
-            val tmp = File(dest.parent, "karen-debug.apk.part")
+            val expectedTotal = if (resumeOffset > 0 && total != null) resumeOffset + total else total
             conn.inputStream.use { input ->
-                tmp.outputStream().use { out ->
+                val mode = if (resumeOffset > 0) "rw" else "wt"
+                java.io.RandomAccessFile(part, mode).use { raf ->
+                    if (resumeOffset > 0) raf.seek(resumeOffset)
                     val buf = ByteArray(1024 * 1024)
-                    var done = 0L
+                    var done = resumeOffset
                     while (true) {
                         while (downloadPaused) delay(200)
                         val n = input.read(buf)
                         if (n < 0) break
-                        out.write(buf, 0, n)
+                        raf.write(buf, 0, n)
                         done += n
-                        if (total != null) onProgress((done.toFloat() / total).coerceIn(0f, 1f))
+                        val denom = expectedTotal ?: done
+                        onProgress((done.toFloat() / denom).coerceIn(0f, 1f))
                     }
                 }
             }
-            tmp.renameTo(dest)
+            part.renameTo(dest)
             dest
         } catch (e: Exception) {
             errors.add(e.message ?: "download failed")
@@ -233,14 +268,14 @@ object AppUpdate {
 
     private suspend fun downloadSegmented(
         dest: File,
+        part: File,
         total: Long,
         onProgress: (Float) -> Unit,
         errors: MutableList<String>
     ): File? = withContext(Dispatchers.IO) {
         val parts = 4
-        val tmp = File(dest.parent, "karen-debug.apk.part")
         try {
-            java.io.RandomAccessFile(tmp, "rw").use { it.setLength(total) }
+            java.io.RandomAccessFile(part, "rw").use { it.setLength(total) }
             val done = java.util.concurrent.atomic.AtomicLong(0)
             coroutineScope {
                 (0 until parts).map { i ->
@@ -259,7 +294,7 @@ object AppUpdate {
                                 throw java.io.IOException("range rejected (HTTP ${conn.responseCode})")
                             }
                             conn.inputStream.use { input ->
-                                java.io.RandomAccessFile(tmp, "rw").use { raf ->
+                                java.io.RandomAccessFile(part, "rw").use { raf ->
                                     raf.seek(start)
                                     val buf = ByteArray(1024 * 1024)
                                     var remaining = end - start + 1
@@ -284,13 +319,13 @@ object AppUpdate {
                     }
                 }.awaitAll()
             }
-            tmp.renameTo(dest)
+            part.renameTo(dest)
             dest
         } catch (e: Exception) {
             // Range path failed (proxy stripped it, etc.): single stream.
-            tmp.delete()
+            part.delete()
             errors.add("parallel failed (${e.message}), retrying single stream")
-            downloadSingle(dest, onProgress, errors)
+            downloadSingle(dest, part, 0L, onProgress, errors)
         }
     }
 

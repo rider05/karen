@@ -1521,7 +1521,7 @@ fun ChatScreen(
                     .weight(1f)
                     .fillMaxWidth()
                     .padding(horizontal = 14.dp),
-                contentPadding = PaddingValues(top = 0.dp, bottom = 200.dp),
+                contentPadding = PaddingValues(top = 12.dp, bottom = 200.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 items(messages, key = { when (it) { is ChatItem.User -> it.id; is ChatItem.Assistant -> it.id } }) { item ->

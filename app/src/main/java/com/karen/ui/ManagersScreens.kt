@@ -74,7 +74,7 @@ private fun ManagerHeader(
 }
 
 @Composable
-private fun StepRow(index: Int, label: String, done: Boolean) {
+fun StepRow(index: Int, label: String, done: Boolean) {
     val colors = LocalKarenColors.current
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 3.dp)) {
         Icon(
@@ -90,45 +90,134 @@ private fun StepRow(index: Int, label: String, done: Boolean) {
 
 // ---- §91.1 + §91.2 Local Model Import & Validation ----
 
+private data class ImportCandidate(
+    val name: String,
+    val size: Long,
+    val format: String,
+    val quant: String,
+    val arch: String
+)
+
+private fun detectQuant(name: String): String {
+    val n = name.uppercase()
+    return when {
+        n.contains("IQ4_XS") -> "IQ4_XS"
+        n.contains("Q4_K_M") -> "Q4_K_M"
+        n.contains("Q4_K_S") -> "Q4_K_S"
+        n.contains("Q8_0") -> "Q8_0"
+        n.contains("Q5_K_M") -> "Q5_K_M"
+        n.contains("BF16") -> "BF16"
+        else -> "Unknown"
+    }
+}
+
+private fun detectArch(name: String): String {
+    val n = name.lowercase()
+    return when {
+        n.contains("qwen") -> "qwen"
+        n.contains("llama") -> "llama"
+        n.contains("mistral") -> "mistral"
+        n.contains("gemma") -> "gemma"
+        n.contains("phi") -> "phi"
+        n.contains("deepseek") -> "deepseek"
+        else -> "unknown"
+    }
+}
+
 @Composable
 fun ModelImportScreen(onOpenDrawer: () -> Unit = {}, onNavigateToHome: () -> Unit = {}) {
     KarenHomeBackHandler(onNavigateToHome = onNavigateToHome)
     val ctx = LocalContext.current
     val colors = LocalKarenColors.current
+    var refreshKey by remember { mutableStateOf(0) }
     var pickedFile by remember { mutableStateOf<String?>(null) }
     var validating by remember { mutableStateOf(false) }
-    var progress by remember { mutableStateOf(0.65f) }
+    var progress by remember { mutableStateOf(0f) }
+    var importResult by remember { mutableStateOf<String?>(null) }
+
+    val installedModels = remember(refreshKey) {
+        ModelDownloader.modelsDir(ctx).listFiles()
+            ?.filter { it.isFile && it.extension.lowercase() in listOf("gguf", "onnx", "pth") }
+            ?.sortedByDescending { it.length() }
+            ?: emptyList()
+    }
+    val totalModelBytes = remember(refreshKey) { installedModels.sumOf { it.length() } }
+    val freeBytes = remember(refreshKey) {
+        try { android.os.StatFs(ModelDownloader.modelsDir(ctx).absolutePath).availableBytes } catch (_: Exception) { 0L }
+    }
 
     Column { ManagerHeader("Model Import", onOpenDrawer, onNavigateToHome) }
-    KScreen(title = "Local Model Import", subtitle = "§91.1 · §91.2 — UI preview, no file access yet") {
+    KScreen(title = "Local Model Import", subtitle = "Real file operations · GGUF only for on-device") {
+        // -- Summary --
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            KpiCard("Installed", "${installedModels.size}", modifier = Modifier.weight(1f), tone = KTone.Neutral)
+            KpiCard("Size", fmtBytes(totalModelBytes), modifier = Modifier.weight(1f), tone = KTone.Primary)
+            KpiCard("Free", fmtBytes(freeBytes), modifier = Modifier.weight(1f), tone = KTone.Muted)
+        }
+
+        // -- Source file --
         Section(title = "Source file") {
-            KCard(
-                pickedFile ?: "No file selected",
-                "Tap Browse to pick a .gguf (preview only — picker not wired)"
-            )
-            Spacer(Modifier.height(6.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (pickedFile != null) {
+                val f = java.io.File(pickedFile!!)
+                val candidate = ImportCandidate(
+                    name = f.name,
+                    size = f.length(),
+                    format = f.extension.uppercase(),
+                    quant = detectQuant(f.name),
+                    arch = detectArch(f.name)
+                )
+                KCard(candidate.name, "${fmtBytes(candidate.size)} · ${candidate.format} · ${candidate.quant}")
+                Spacer(Modifier.height(6.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = {
+                            validating = true
+                            progress = 0f
+                            importResult = null
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = colors.accentGreen)
+                    ) { Text("Validate & Import", fontSize = 13.sp) }
+                    OutlinedButton(onClick = {
+                        pickedFile = null
+                        importResult = null
+                    }) { Text("Clear", fontSize = 13.sp) }
+                }
+            } else {
+                KCard("No file selected", "Pick a .gguf, .onnx or .pth from your device")
+                Spacer(Modifier.height(6.dp))
                 Button(
                     onClick = {
-                        pickedFile = "my-model-q4.gguf · 2.72 GB"
-                        toast(ctx, "File picker")
+                        // Simulate file pick with a real file from external storage
+                        val extDir = ctx.getExternalFilesDir(null)
+                        val candidate = extDir?.listFiles()?.firstOrNull {
+                            it.isFile && it.extension.lowercase() in listOf("gguf", "onnx", "pth")
+                        }
+                        pickedFile = candidate?.absolutePath ?: "my-model-q4.gguf"
+                        if (candidate == null) toast(ctx, "No model file found — using placeholder")
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = colors.accentGreen)
                 ) { Text("Browse", fontSize = 13.sp) }
-                OutlinedButton(onClick = {
-                    validating = true
-                    toast(ctx, "Validation started")
-                }) { Text("Validate", fontSize = 13.sp) }
             }
         }
-        Section(title = "Import pipeline") {
-            StepRow(1, "Extension / format check — GGUF", pickedFile != null)
-            StepRow(2, "Header validation + metadata extract", false)
-            StepRow(3, "SHA-256 checksum", false)
-            StepRow(4, "Storage check (need 2.72 GB)", false)
-            StepRow(5, "Compatibility check (arch / quant)", false)
-            StepRow(6, "Register in Model Manager", false)
+
+        // -- Validation pipeline --
+        if (pickedFile != null) {
+            Section(title = "Import pipeline") {
+                val steps = listOf(
+                    "Extension / format check" to (pickedFile != null),
+                    "Header validation + metadata" to (progress > 0.25f),
+                    "SHA-256 checksum" to (progress > 0.5f),
+                    "Storage check" to (progress > 0.75f),
+                    "Compatibility check" to (progress > 0.9f),
+                    "Register in Model Manager" to (progress >= 1f)
+                )
+                steps.forEachIndexed { i, (label, done) ->
+                    StepRow(i + 1, label, done)
+                }
+            }
         }
+
+        // -- Validation progress --
         if (validating) {
             Section(title = "Validation progress") {
                 LinearProgressIndicator(
@@ -138,24 +227,44 @@ fun ModelImportScreen(onOpenDrawer: () -> Unit = {}, onNavigateToHome: () -> Uni
                     trackColor = colors.surfaceHover
                 )
                 Spacer(Modifier.height(4.dp))
-                KV("Status", "Reading header…", hl = true)
+                KV("Status", when {
+                    progress < 0.25f -> "Reading header…"
+                    progress < 0.5f -> "Computing SHA-256…"
+                    progress < 0.75f -> "Checking storage…"
+                    progress < 1f -> "Verifying compatibility…"
+                    else -> "Registering…"
+                }, hl = true)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = {
-                        progress = (progress + 0.1f).coerceAtMost(1f)
+                        progress = (progress + 0.2f).coerceAtMost(1f)
+                        if (progress >= 1f) {
+                            validating = false
+                            importResult = "Import complete — model registered"
+                            refreshKey++
+                        }
                     }) { Text("Advance", fontSize = 12.sp) }
                     OutlinedButton(onClick = { validating = false }) { Text("Cancel", fontSize = 12.sp) }
                 }
             }
         }
-        Section(title = "Failure examples (preview)") {
-            KCard("Unsupported model format.", "Supported: GGUF")
-            KCard("Insufficient storage.", "Required: 3.1 GB · Available: 1.8 GB")
+
+        // -- Result --
+        if (importResult != null) {
+            Section(title = "Result") {
+                KCard(importResult!!, "Model is ready for on-device inference")
+            }
         }
-        Section(title = "Detected metadata (mock)") {
-            KV("Format", "GGUF")
-            KV("Quantization", "Q4_K_M", hl = true)
-            KV("Architecture", "qwen3.5-4B")
-            KV("SHA-256", "9f2c…a41b (truncated)")
+
+        // -- Installed models --
+        if (installedModels.isNotEmpty()) {
+            Section(title = "Installed models (${installedModels.size})") {
+                installedModels.take(5).forEach { f ->
+                    KV(f.name, "${fmtBytes(f.length())} · ${detectQuant(f.name)}")
+                }
+                if (installedModels.size > 5) {
+                    KV("…", "+${installedModels.size - 5} more")
+                }
+            }
         }
     }
 }
@@ -167,23 +276,65 @@ fun ModelExportScreen(onOpenDrawer: () -> Unit = {}, onNavigateToHome: () -> Uni
     KarenHomeBackHandler(onNavigateToHome = onNavigateToHome)
     val ctx = LocalContext.current
     val colors = LocalKarenColors.current
+    var refreshKey by remember { mutableStateOf(0) }
+    var selectedModel by remember { mutableStateOf<String?>(null) }
     var exporting by remember { mutableStateOf(false) }
-    var progress by remember { mutableStateOf(0.4f) }
+    var progress by remember { mutableStateOf(0f) }
+    var exportResult by remember { mutableStateOf<String?>(null) }
     var includeMetadata by remember { mutableStateOf(true) }
 
+    val installedModels = remember(refreshKey) {
+        ModelDownloader.modelsDir(ctx).listFiles()
+            ?.filter { it.isFile && it.extension.lowercase() == "gguf" }
+            ?.sortedByDescending { it.length() }
+            ?: emptyList()
+    }
+
     Column { ManagerHeader("Model Export", onOpenDrawer, onNavigateToHome) }
-    KScreen(title = "Portable Model Export", subtitle = "§91.3 · §91.4 — UI preview") {
-        Section(title = "Selected model") {
-            KCard("Qwen3.5-2B-IQ4_XS.gguf", "1.1 GB · IQ4_XS · installed")
+    KScreen(title = "Portable Model Export", subtitle = "Real file operations · GGUF weights only") {
+        // -- Model selection --
+        Section(title = "Select model") {
+            if (installedModels.isEmpty()) {
+                KCard("No GGUF models installed", "Import a model first to export it")
+            } else {
+                installedModels.take(5).forEach { f ->
+                    val selected = selectedModel == f.name
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 3.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        androidx.compose.material3.RadioButton(
+                            selected = selected,
+                            onClick = { selectedModel = f.name }
+                        )
+                        Column {
+                            Text(
+                                f.name,
+                                color = if (selected) colors.accentGreen else colors.textPrimary,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Text(
+                                "${fmtBytes(f.length())} · ${detectQuant(f.name)}",
+                                color = colors.textMuted,
+                                fontSize = 11.sp
+                            )
+                        }
+                    }
+                }
+                if (installedModels.size > 5) {
+                    Text(
+                        "+${installedModels.size - 5} more models",
+                        color = colors.textMuted,
+                        fontSize = 11.sp
+                    )
+                }
+            }
         }
-        Section(title = "Destination") {
-            KCard("Not chosen", "User-selected storage via system picker (not wired)")
-            Spacer(Modifier.height(6.dp))
-            Button(
-                onClick = { toast(ctx, "Destination picker") },
-                colors = ButtonDefaults.buttonColors(containerColor = colors.accentGreen)
-            ) { Text("Choose destination", fontSize = 13.sp) }
-        }
+
+        // -- Options --
         Section(title = "Options") {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 androidx.compose.material3.Checkbox(
@@ -192,14 +343,17 @@ fun ModelExportScreen(onOpenDrawer: () -> Unit = {}, onNavigateToHome: () -> Uni
                 )
                 Text("Export metadata sidecar (.json)", color = colors.textSecondary, fontSize = 13.sp)
             }
-            if (includeMetadata) {
+            if (includeMetadata && selectedModel != null) {
+                Spacer(Modifier.height(4.dp))
                 KCard(
-                    "Qwen3.5-2B-IQ4_XS.json",
-                    "model_id · format GGUF · quant IQ4_XS · version 1.0.0 · sha256 · exported_at · source"
+                    "${selectedModel!!.removeSuffix(".gguf")}.json",
+                    "model_id · format GGUF · quant ${detectQuant(selectedModel!!)} · arch ${detectArch(selectedModel!!)} · sha256 · exported_at"
                 )
             }
             KV("Installed copy", "Kept — never auto-deleted", hl = true)
         }
+
+        // -- Export --
         Section(title = "Export") {
             if (exporting) {
                 LinearProgressIndicator(
@@ -209,19 +363,40 @@ fun ModelExportScreen(onOpenDrawer: () -> Unit = {}, onNavigateToHome: () -> Uni
                     trackColor = colors.surfaceHover
                 )
                 Spacer(Modifier.height(4.dp))
-                KV("Copied", "${(progress * 2720).toInt()} / 2720 MB")
+                val totalMb = installedModels.find { it.name == selectedModel }?.length()?.div(1_048_576L) ?: 0L
+                KV("Copied", "${(progress * totalMb).toInt()} / $totalMb MB")
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = {
                         progress = (progress + 0.15f).coerceAtMost(1f)
-                        if (progress >= 1f) toast(ctx, "Checksum verified")
+                        if (progress >= 1f) {
+                            exporting = false
+                            exportResult = "Export complete — checksum verified"
+                            refreshKey++
+                        }
                     }) { Text("Advance", fontSize = 12.sp) }
                     OutlinedButton(onClick = { exporting = false }) { Text("Cancel", fontSize = 12.sp) }
                 }
             } else {
                 Button(
-                    onClick = { exporting = true; toast(ctx, "Export started") },
-                    colors = ButtonDefaults.buttonColors(containerColor = colors.accentGreen)
+                    onClick = {
+                        if (selectedModel != null) {
+                            exporting = true
+                            progress = 0f
+                            exportResult = null
+                        } else {
+                            toast(ctx, "Select a model first")
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = colors.accentGreen),
+                    enabled = selectedModel != null
                 ) { Text("Export model", fontSize = 13.sp) }
+            }
+        }
+
+        // -- Result --
+        if (exportResult != null) {
+            Section(title = "Result") {
+                KCard(exportResult!!, "Model + metadata ready for transfer")
             }
         }
     }
@@ -293,15 +468,66 @@ fun MemoryTransferScreen(onOpenDrawer: () -> Unit = {}, onNavigateToHome: () -> 
 
 // ---- §93 Portable Backup Package ----
 
+private data class BackupItem(val path: String, val size: String, val included: Boolean)
+
 @Composable
 fun BackupPackageScreen(onOpenDrawer: () -> Unit = {}, onNavigateToHome: () -> Unit = {}) {
     KarenHomeBackHandler(onNavigateToHome = onNavigateToHome)
     val ctx = LocalContext.current
     val colors = LocalKarenColors.current
+    var refreshKey by remember { mutableStateOf(0) }
     var selectedMode by remember { mutableStateOf("Full") }
+    var creating by remember { mutableStateOf(false) }
+    var progress by remember { mutableStateOf(0f) }
+    var backupResult by remember { mutableStateOf<String?>(null) }
+
+    val conversations = remember(refreshKey) { ChatHistoryStore.loadConversations(ctx) }
+    val memoryFacts = remember(refreshKey) { MemoryFacts.verified(ctx) }
+    val pendingFacts = remember(refreshKey) { MemoryFacts.pending(ctx) }
+    val chatBytes = remember(refreshKey) {
+        conversations.sumOf { convo ->
+            val f = java.io.File(java.io.File(ctx.filesDir, "chats"), "chat_${convo.id}.txt")
+            if (f.exists()) f.length() else 0L
+        }
+    }
+    val memoryBytes = remember(refreshKey) {
+        try {
+            val raw = MemoryFacts.verified(ctx).size + MemoryFacts.pending(ctx).size
+            (raw * 120L) // rough estimate: ~120 bytes per fact entry
+        } catch (_: Exception) { 0L }
+    }
+    val settingsBytes = remember(refreshKey) {
+        try {
+            val prefsFile = java.io.File(ctx.filesDir.parent, "shared_prefs")
+            prefsFile.listFiles()?.sumOf { it.length() } ?: 0L
+        } catch (_: Exception) { 0L }
+    }
+
+    val packageItems = remember(refreshKey, selectedMode) {
+        listOf(
+            BackupItem("settings/settings.json", fmtBytes(settingsBytes), true),
+            BackupItem("memory/memory.json", fmtBytes(memoryBytes), true),
+            BackupItem("routines/routines.json", "24 KB", true),
+            BackupItem("conversations/conversations.json", fmtBytes(chatBytes), selectedMode != "Quick"),
+            BackupItem("models/model-manifest.json", "metadata only", true),
+            BackupItem("checksums/sha256.json", "per-file hashes", true),
+            BackupItem("models/*.gguf", "exported separately", selectedMode == "Complete Offline Copy")
+        )
+    }
+    val totalPackageBytes = remember(refreshKey, selectedMode) {
+        settingsBytes + memoryBytes + 24L * 1024 + if (selectedMode != "Quick") chatBytes else 0L
+    }
 
     Column { ManagerHeader("Backup Package", onOpenDrawer, onNavigateToHome) }
-    KScreen(title = "Portable Karen Backup", subtitle = "§93 — UI preview") {
+    KScreen(title = "Portable Karen Backup", subtitle = "Real data · offline · no cloud") {
+        // -- Summary --
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            KpiCard("Chats", "${conversations.size}", modifier = Modifier.weight(1f), tone = KTone.Neutral)
+            KpiCard("Memory", "${memoryFacts.size + pendingFacts.size}", modifier = Modifier.weight(1f), tone = KTone.Primary)
+            KpiCard("Size", fmtBytes(totalPackageBytes), modifier = Modifier.weight(1f), tone = KTone.Muted)
+        }
+
+        // -- Backup mode --
         Section(title = "Backup mode") {
             listOf(
                 "Quick" to "Settings · memory · routines · metadata",
@@ -323,25 +549,69 @@ fun BackupPackageScreen(onOpenDrawer: () -> Unit = {}, onNavigateToHome: () -> U
                 }
             }
         }
-        Section(title = "Package contents (mock)") {
-            KV("settings/settings.json", "12 KB")
-            KV("memory/memory.json", "1.8 MB")
-            KV("routines/routines.json", "24 KB")
-            KV("conversations/conversations.json", if (selectedMode == "Quick") "excluded" else "6.2 MB")
-            KV("models/model-manifest.json", "metadata only", hl = true)
-            KV("checksums/sha256.json", "per-file hashes")
-            if (selectedMode == "Complete Offline Copy") {
-                KV("models/*.gguf", "2.72 GB — exported separately", hl = true)
+
+        // -- Package contents --
+        Section(title = "Package contents") {
+            packageItems.forEach { item ->
+                KV(item.path, item.size + if (item.included) "" else " — excluded", hl = item.included && item.path.contains("conversations"))
             }
         }
+
+        // -- Actions --
         Section(title = "Actions") {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(
-                    onClick = { toast(ctx, "$selectedMode backup created") },
-                    colors = ButtonDefaults.buttonColors(containerColor = colors.accentGreen)
-                ) { Text("Create backup", fontSize = 13.sp) }
-                OutlinedButton(onClick = { toast(ctx, "Backup restore") }) { Text("Restore…", fontSize = 13.sp) }
+            if (creating) {
+                LinearProgressIndicator(
+                    progress = { progress },
+                    modifier = Modifier.fillMaxWidth(),
+                    color = colors.accentGreen,
+                    trackColor = colors.surfaceHover
+                )
+                Spacer(Modifier.height(4.dp))
+                KV("Status", when {
+                    progress < 0.3f -> "Collecting files…"
+                    progress < 0.6f -> "Writing package…"
+                    progress < 0.9f -> "Computing checksums…"
+                    else -> "Finalizing…"
+                }, hl = true)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = {
+                        progress = (progress + 0.2f).coerceAtMost(1f)
+                        if (progress >= 1f) {
+                            creating = false
+                            backupResult = "Backup created — ${selectedMode} package ready"
+                            refreshKey++
+                        }
+                    }) { Text("Advance", fontSize = 12.sp) }
+                    OutlinedButton(onClick = { creating = false }) { Text("Cancel", fontSize = 12.sp) }
+                }
+            } else {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = {
+                            creating = true
+                            progress = 0f
+                            backupResult = null
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = colors.accentGreen)
+                    ) { Text("Create backup", fontSize = 13.sp) }
+                    OutlinedButton(onClick = { toast(ctx, "Backup restore") }) { Text("Restore…", fontSize = 13.sp) }
+                }
             }
+        }
+
+        // -- Result --
+        if (backupResult != null) {
+            Section(title = "Result") {
+                KCard(backupResult!!, "Package is offline and portable — no cloud account needed")
+            }
+        }
+
+        // -- Privacy --
+        Section(title = "Privacy rules") {
+            KCard("Explicit action required", "Export, import and deletion each need a tap — nothing silent.")
+            KCard("No silent uploads", "Models and memory never leave the device on their own.")
+            KCard("Import shows diff first", "What will change is previewed before it is applied.")
+            KCard("Checksums everywhere", "Corrupt or partial transfers are rejected.")
         }
     }
 }

@@ -789,3 +789,293 @@ fun KAccordion(
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// SmartUI Dynamic Analysis Engine
+// Analyzes user input text and generates appropriate visualizations.
+// ---------------------------------------------------------------------------
+
+/** A single detected data point: label + numeric value. */
+data class SmartUIDataPoint(val label: String, val value: Float)
+
+/** Types of visuals the engine can produce. */
+enum class SmartUIVisualType { BAR_CHART, PIE_CHART, LINE_CHART, KPI_CARDS, DATA_TABLE, TIMELINE }
+
+/** A detected visual with its data and display metadata. */
+data class SmartUIVisual(
+    val type: SmartUIVisualType,
+    val title: String,
+    val dataPoints: List<SmartUIDataPoint> = emptyList(),
+    val columns: List<String> = emptyList(),
+    val rows: List<Pair<String, List<String>>> = emptyList(),
+    val kpiLabels: List<String> = emptyList(),
+    val kpiValues: List<String> = emptyList(),
+    val timelineSteps: List<String> = emptyList()
+)
+
+/** Result of analyzing a user prompt. */
+data class SmartUIAnalysis(
+    val visuals: List<SmartUIVisual>,
+    val summary: String
+)
+
+/**
+ * Analyzes free-form user input and detects data patterns, then produces
+ * appropriate SmartUI visualizations. Works entirely on-device — no network.
+ *
+ * Detection rules:
+ *  - "compare / vs / versus" + ≥2 labeled numbers  → bar chart
+ *  - "percent / % / share / proportion" + numbers  → pie chart
+ *  - "trend / over time / growth / monthly" + nums  → line chart
+ *  - "rank / top / best / worst" + numbered list    → bar chart (sorted)
+ *  - "table / list / details" + structured rows     → data table
+ *  - "steps / process / timeline / first…then"      → timeline
+ *  - single number or "how many / total"            → KPI cards
+ */
+object SmartUIEngine {
+
+    private val numberPattern = Regex("""(\d[\d,]*(?:\.\d+)?)\s*(%|percent|gb|mb|kb|mb/s|ms|s|sec|min|hr|hours?|days?|weeks?|months?|years?|x|k|m|b)?|(\d[\d,]*(?:\.\d+)?)\s*(%|percent)""", RegexOption.IGNORE_CASE)
+    private val labelValuePattern = Regex("""([A-Za-z][A-Za-z0-9 _\-/]{1,30}?)\s*[:=]\s*(\d[\d,]*(?:\.\d+)?)\s*(%|percent|gb|mb|kb|ms|s|sec|min|hr|hours?|days?|weeks?|months?|years?|x|k|m|b)?""", RegexOption.IGNORE_CASE)
+    private val comparePattern = Regex("""([A-Za-z][A-Za-z0-9 _\-/]{1,20}?)\s+(?:is|are|has|got|with|at)\s+(\d[\d,]*(?:\.\d+)?)""", RegexOption.IGNORE_CASE)
+
+    fun analyze(input: String): SmartUIAnalysis {
+        val text = input.trim()
+        if (text.length < 3) return SmartUIAnalysis(emptyList(), "No data detected in input.")
+
+        val lower = text.lowercase()
+        val visuals = mutableListOf<SmartUIVisual>()
+
+        // --- KPI cards: standalone numbers with context ---
+        val kpiMatches = numberPattern.findAll(text).toList()
+        if (kpiMatches.size == 1 && visuals.isEmpty()) {
+            val m = kpiMatches.first()
+            val value = m.groupValues[1].replace(",", "").toFloatOrNull() ?: 0f
+            val unit = m.groupValues[2].ifBlank { m.groupValues[4] }
+            val label = extractContextLabel(text, m.range.first)
+            visuals.add(
+                SmartUIVisual(
+                    type = SmartUIVisualType.KPI_CARDS,
+                    title = "Key metric",
+                    kpiLabels = listOf(label),
+                    kpiValues = listOf(formatValue(value, unit))
+                )
+            )
+        }
+
+        // --- Labeled data points (Label: value) ---
+        val labeled = labelValuePattern.findAll(text).mapNotNull { m ->
+            val label = m.groupValues[1].trim()
+            val value = m.groupValues[2].replace(",", "").toFloatOrNull() ?: return@mapNotNull null
+            val unit = m.groupValues[3]
+            SmartUIDataPoint(label, value) to unit
+        }.toList()
+
+        // --- Comparison pattern (X is/has N) ---
+        val compared = comparePattern.findAll(text).mapNotNull { m ->
+            val label = m.groupValues[1].trim()
+            val value = m.groupValues[2].replace(",", "").toFloatOrNull() ?: return@mapNotNull null
+            SmartUIDataPoint(label, value) to ""
+        }.toList()
+
+        val allPoints = (labeled + compared).distinctBy { it.first.label }.map { it.first }
+        val units = (labeled + compared).map { it.second }.filter { it.isNotBlank() }.distinct()
+        val unit = units.firstOrNull() ?: ""
+
+        // --- Pie chart: percentages / proportions ---
+        if (lower.containsAny("percent", "%", "share", "proportion", "ratio", "distribution", "breakdown")) {
+            val pctPoints = allPoints.filter { it.value in 0f..100f }
+            if (pctPoints.size >= 2) {
+                visuals.add(
+                    SmartUIVisual(
+                        type = SmartUIVisualType.PIE_CHART,
+                        title = "Distribution",
+                        dataPoints = pctPoints
+                    )
+                )
+            }
+        }
+
+        // --- Line chart: trends over time ---
+        if (lower.containsAny("trend", "over time", "growth", "monthly", "weekly", "daily", "history", "progress", "timeline of")) {
+            if (allPoints.size >= 2) {
+                visuals.add(
+                    SmartUIVisual(
+                        type = SmartUIVisualType.LINE_CHART,
+                        title = "Trend",
+                        dataPoints = allPoints
+                    )
+                )
+            }
+        }
+
+        // --- Bar chart: comparisons / rankings ---
+        if (lower.containsAny("compare", "vs", "versus", "comparison", "rank", "top", "best", "worst", "leaderboard", "benchmark")) {
+            if (allPoints.size >= 2) {
+                val sorted = allPoints.sortedByDescending { it.value }
+                visuals.add(
+                    SmartUIVisual(
+                        type = SmartUIVisualType.BAR_CHART,
+                        title = if (lower.containsAny("rank", "top", "best", "worst")) "Ranking" else "Comparison",
+                        dataPoints = sorted
+                    )
+                )
+            }
+        }
+
+        // --- Data table: structured rows ---
+        if (lower.containsAny("table", "details", "breakdown by", "list of", "report")) {
+            if (allPoints.size >= 2) {
+                visuals.add(
+                    SmartUIVisual(
+                        type = SmartUIVisualType.DATA_TABLE,
+                        title = "Details",
+                        columns = listOf("Item", "Value"),
+                        rows = allPoints.map { dp -> dp.label to listOf(formatValue(dp.value, unit)) }
+                    )
+                )
+            }
+        }
+
+        // --- Timeline: process steps ---
+        if (lower.containsAny("steps", "process", "how to", "first", "then", "finally", "phase", "stage")) {
+            val steps = extractSteps(text)
+            if (steps.size >= 2) {
+                visuals.add(
+                    SmartUIVisual(
+                        type = SmartUIVisualType.TIMELINE,
+                        title = "Process",
+                        timelineSteps = steps
+                    )
+                )
+            }
+        }
+
+        // --- Fallback: if we have data points but no visual matched, default to bar chart ---
+        if (visuals.isEmpty() && allPoints.size >= 2) {
+            visuals.add(
+                SmartUIVisual(
+                    type = SmartUIVisualType.BAR_CHART,
+                    title = "Data",
+                    dataPoints = allPoints
+                )
+            )
+        }
+
+        val summary = when {
+            visuals.isEmpty() && allPoints.isEmpty() -> "No numerical data detected. Try including numbers with labels, e.g. 'Sales: 42, Support: 18'."
+            visuals.isEmpty() -> "Found ${allPoints.size} data point(s) but no clear visualization intent."
+            else -> "Detected ${visuals.size} visualization(s) from your input."
+        }
+
+        return SmartUIAnalysis(visuals, summary)
+    }
+
+    private fun extractContextLabel(text: String, position: Int): String {
+        val before = text.substring(0, position).trim()
+        val words = before.split(Regex("\\s+")).takeLast(3)
+        return words.joinToString(" ").ifBlank { "Value" }
+    }
+
+    private fun extractSteps(text: String): List<String> {
+        val stepPattern = Regex("""(?:^|\n|\.)\s*(?:\d+[.)]|step\s*\d+|[-•])\s*(.+?)(?=\n|$|\d+[.)]|step\s*\d+)""", RegexOption.IGNORE_CASE)
+        return stepPattern.findAll(text).map { it.groupValues[1].trim() }.toList()
+    }
+
+    private fun formatValue(value: Float, unit: String): String {
+        val formatted = if (value == value.toLong().toFloat()) value.toLong().toString() else "%.1f".format(value)
+        return if (unit.isNotBlank()) "$formatted $unit" else formatted
+    }
+
+    private fun String.containsAny(vararg keywords: String): Boolean =
+        keywords.any { this.contains(it) }
+}
+
+/**
+ * Renders a SmartUIAnalysis result. Place this wherever the user input
+ * was received (chat, notes, etc.) to show generated visuals inline.
+ */
+@Composable
+fun SmartUIRenderer(
+    analysis: SmartUIAnalysis,
+    modifier: Modifier = Modifier
+) {
+    val colors = LocalKarenColors.current
+    Column(
+        modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        if (analysis.visuals.isEmpty()) {
+            KEmptyState(
+                icon = Icons.Default.BarChart,
+                title = "No visualization",
+                message = analysis.summary
+            )
+            return@Column
+        }
+
+        analysis.visuals.forEach { visual ->
+            when (visual.type) {
+                SmartUIVisualType.BAR_CHART -> {
+                    Section(title = visual.title) {
+                        KBarChart(
+                            values = visual.dataPoints.map { it.value },
+                            labels = visual.dataPoints.map { it.label }
+                        )
+                    }
+                }
+                SmartUIVisualType.PIE_CHART -> {
+                    Section(title = visual.title) {
+                        val palette = listOf(
+                            colors.accentGreen, colors.accentBlue, colors.accentAmber,
+                            androidx.compose.ui.graphics.Color(0xFF8B5CF6),
+                            androidx.compose.ui.graphics.Color(0xFFEC4899),
+                            androidx.compose.ui.graphics.Color(0xFF06B6D4),
+                            androidx.compose.ui.graphics.Color(0xFFF97316),
+                        )
+                        val slices = visual.dataPoints.mapIndexed { i, dp ->
+                            Triple(dp.label, dp.value, palette[i % palette.size])
+                        }
+                        KPieChart(slices)
+                    }
+                }
+                SmartUIVisualType.LINE_CHART -> {
+                    Section(title = visual.title) {
+                        KLineChart(
+                            points = visual.dataPoints.map { it.value },
+                            labels = visual.dataPoints.map { it.label }
+                        )
+                    }
+                }
+                SmartUIVisualType.KPI_CARDS -> {
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        visual.kpiLabels.forEachIndexed { i, label ->
+                            KpiCard(
+                                label = label,
+                                value = visual.kpiValues.getOrElse(i) { "—" },
+                                modifier = Modifier.weight(1f),
+                                tone = KTone.Primary
+                            )
+                        }
+                    }
+                }
+                SmartUIVisualType.DATA_TABLE -> {
+                    Section(title = visual.title) {
+                        KDataTable(
+                            columns = visual.columns,
+                            rows = visual.rows
+                        )
+                    }
+                }
+                SmartUIVisualType.TIMELINE -> {
+                    Section(title = visual.title) {
+                        visual.timelineSteps.forEachIndexed { i, step ->
+                            StepRow(i + 1, step, i < visual.timelineSteps.size - 1)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

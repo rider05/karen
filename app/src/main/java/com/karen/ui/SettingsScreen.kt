@@ -51,6 +51,9 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
     var editAge by remember(editing) { mutableStateOf(UserPrefs.age(context).takeIf { it != "-" } ?: "") }
     var editType by remember(editing) { mutableStateOf(UserPrefs.type(context).takeIf { it != "-" } ?: "Personal") }
 
+    var dobMillis by remember { mutableStateOf(UserPrefs.dob(context)) }
+    var showDobPicker by remember { mutableStateOf(false) }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -110,6 +113,24 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                         }
                         TextButton(onClick = { editing = true }) {
                             Text("Edit", color = colors.accentGreen)
+                        }
+                    }
+                    HorizontalDivider(color = colors.border, thickness = 0.5.dp, modifier = Modifier.padding(vertical = 10.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Date of birth", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
+                            Text(
+                                if (dobMillis > 0L) formatDob(dobMillis) else "Not set — Karen can wish you a happy birthday",
+                                color = colors.textMuted,
+                                fontSize = 11.5.sp
+                            )
+                        }
+                        TextButton(onClick = { showDobPicker = true }) {
+                            Text(if (dobMillis > 0L) "Change" else "Set", color = colors.accentGreen)
                         }
                     }
                 }
@@ -1645,5 +1666,56 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                 }
             }
         }
+        if (showDobPicker) {
+            DobPickerDialog(
+                initialMillis = dobMillis,
+                onDismiss = { showDobPicker = false },
+                onSave = { millis ->
+                    UserPrefs.setDob(context, millis)
+                    dobMillis = millis
+                    com.karen.BirthdayNotifier.schedule(context)
+                }
+            )
+        }
+    }
+}
+
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+private fun DobPickerDialog(
+    initialMillis: Long,
+    onDismiss: () -> Unit,
+    onSave: (Long) -> Unit
+) {
+    val colors = LocalKarenColors.current
+    val pickerState = rememberDatePickerState(
+        initialSelectedDateMillis = initialMillis.takeIf { it > 0L }
+    )
+    DatePickerDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(onClick = {
+                pickerState.selectedDateMillis?.let { onSave(it) }
+                onDismiss()
+            }) {
+                Text("Save", color = colors.accentGreen)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel", color = colors.textMuted)
+            }
+        }
+    ) {
+        DatePicker(state = pickerState)
+    }
+}
+
+private fun formatDob(millis: Long): String {
+    return try {
+        val sdf = java.text.SimpleDateFormat("dd MMM yyyy", java.util.Locale.getDefault())
+        sdf.format(java.util.Date(millis))
+    } catch (_: Exception) {
+        ""
     }
 }

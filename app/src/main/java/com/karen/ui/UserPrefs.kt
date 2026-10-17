@@ -30,6 +30,23 @@ object UserPrefs {
     fun age(ctx: Context): String = prefs(ctx).getString(KEY_AGE, "-") ?: "-"
     fun type(ctx: Context): String = prefs(ctx).getString(KEY_TYPE, "-") ?: "-"
 
+    // Date of birth (epoch millis at local midnight, 0 = not set). Drives the
+    // birthday notification; stored on-device only.
+    private const val KEY_DOB = "dob"
+    fun dob(ctx: Context): Long = prefs(ctx).getLong(KEY_DOB, 0L)
+    fun setDob(ctx: Context, epochMillis: Long) {
+        prefs(ctx).edit().putLong(KEY_DOB, epochMillis).apply()
+    }
+
+    // Last day the birthday wish was shown (yyyy-M-d) so a launch-time check
+    // never duplicates the notification on the same day.
+    private const val KEY_BIRTHDAY_NOTIFIED = "birthday_notified_for"
+    fun birthdayNotifiedFor(ctx: Context): String =
+        prefs(ctx).getString(KEY_BIRTHDAY_NOTIFIED, "") ?: ""
+    fun setBirthdayNotifiedFor(ctx: Context, value: String) {
+        prefs(ctx).edit().putString(KEY_BIRTHDAY_NOTIFIED, value).apply()
+    }
+
     private const val KEY_DEFAULT_EFFORT = "default_effort"
     fun defaultEffort(ctx: Context): String = when (val e = prefs(ctx).getString(KEY_DEFAULT_EFFORT, "Medium") ?: "Medium") {
         // Legacy level renamed to XHigh.

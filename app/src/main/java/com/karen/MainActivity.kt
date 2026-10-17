@@ -24,6 +24,8 @@ class MainActivity : ComponentActivity() {
         requestEssentialPermissions()
         // Cold start via wake trigger: keep the listener alive while in use.
         maybeRestartWakeListener()
+        // Birthday: wish today if it's the birthday, and keep the alarm armed.
+        com.karen.BirthdayNotifier.checkToday(this)
     }
 
     override fun onNewIntent(intent: Intent) {

@@ -844,22 +844,58 @@ fun ChatScreen(
             // Recursively continue cut-off replies: when the model hits
             // its output cap it stops mid-answer, so keep asking for
             // the rest instead of making the user type "continue".
+            // SSE deltas land in the bubble live, so the answer is visible
+            // while it generates instead of after the whole wait.
             val fullReply = StringBuilder()
+            val live = StringBuilder()
+            var lastUiMs = 0L
+            fun liveView(): String {
+                val s = live.toString()
+                val toolAt = s.indexOf("///TOOL")
+                return (if (toolAt >= 0) s.substring(0, toolAt) else s).trimEnd()
+            }
             var roundHistory = styled
             var rounds = 0
             var cut = true
             while (cut && rounds < 4 && !cancelGeneration) {
                 if (rounds > 0) {
-                    setStreamingText(aid, "Continuing… (part ${rounds + 1})")
+                    setStreamingText(aid, (liveView() + "\n\nContinuing… (part ${rounds + 1})").trim())
                 }
-                val res = provider.completeResult(
-                    key,
-                    roundHistory,
-                    maxTokensFor(effort),
-                    thinkingBudget = if (provider.reasoning) thinkingBudgetFor(effort) else null,
-                    historyLimit = limit,
-                    model = UserPrefs.apiModel(context, provider.id).ifBlank { null }
-                )
+                val res = try {
+                    provider.completeStreamingResult(
+                        key,
+                        roundHistory,
+                        maxTokensFor(effort),
+                        thinkingBudget = if (provider.reasoning) thinkingBudgetFor(effort) else null,
+                        historyLimit = limit,
+                        model = UserPrefs.apiModel(context, provider.id).ifBlank { null },
+                        onToken = { piece ->
+                            live.append(piece)
+                            val now = System.currentTimeMillis()
+                            if (now - lastUiMs > 60) {
+                                lastUiMs = now
+                                val snap = liveView()
+                                coroutineScope.launch {
+                                    streamingContent = true
+                                    setStreamingText(aid, snap)
+                                    scrollToBottomIfNear()
+                                }
+                            }
+                        },
+                        isCancelled = { cancelGeneration }
+                    )
+                } catch (e: Exception) {
+                    if (cancelGeneration) break
+                    // Endpoints that reject SSE: retry this round in one shot.
+                    provider.completeResult(
+                        key,
+                        roundHistory,
+                        maxTokensFor(effort),
+                        thinkingBudget = if (provider.reasoning) thinkingBudgetFor(effort) else null,
+                        historyLimit = limit,
+                        model = UserPrefs.apiModel(context, provider.id).ifBlank { null }
+                    )
+                }
                 if (cancelGeneration) break
                 fullReply.append(res.text)
                 cut = res.truncated && res.text.isNotBlank()
@@ -905,7 +941,11 @@ fun ChatScreen(
                 }
             }
             if (hasVisibleContent(withTools)) {
-                playOut(aid, withTools)
+                // Already streamed live: sync the final text (tool lines
+                // stripped, notes appended) instead of replaying it with
+                // the typing effect.
+                setStreamingText(aid, withTools)
+                scrollToBottomIfNear()
                 if (cancelGeneration) cancelSettle(aid) else completeSettle()
                 return
             }

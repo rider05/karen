@@ -375,11 +375,13 @@ suspend fun CloudProvider.completeResult(
 }
 
 /**
- * Streaming chat completion for realtime voice: tokens are delivered to
- * [onToken] as they arrive (SSE) while the full text is returned at the
- * end. Reasoning/thinking deltas are skipped — voice speaks answers only.
+ * Streaming chat completion for the chat view and realtime voice: answer
+ * deltas are delivered to [onToken] as they arrive (SSE) and the full text
+ * returns with the finish reason so chat can continue cut-off replies.
+ * Thinking deltas are never shown live — they only back up the body when a
+ * model emits no visible text (mirrors [extractOpenAiText]).
  */
-suspend fun CloudProvider.completeStreaming(
+suspend fun CloudProvider.completeStreamingResult(
     apiKey: String,
     history: List<Pair<String, String>>,
     maxTokens: Int,
@@ -388,10 +390,12 @@ suspend fun CloudProvider.completeStreaming(
     model: String? = null,
     onToken: (String) -> Unit = {},
     isCancelled: () -> Boolean = { false }
-): String = withContext(Dispatchers.IO) {
+): CloudResult = withContext(Dispatchers.IO) {
     val trimmed = history.takeLast(historyLimit.coerceIn(4, 80))
     val effectiveModel = modelOrDefault(model)
     val full = StringBuilder()
+    val thoughts = StringBuilder()
+    var truncated = false
     fun emit(piece: String) {
         if (piece.isNotEmpty()) {
             full.append(piece)
@@ -430,12 +434,19 @@ suspend fun CloudProvider.completeStreaming(
                     val payload = line.removePrefix("data:").trim()
                     if (payload.isBlank() || payload == "[DONE]") return@postStreamLines
                     try {
-                        val delta = JSONObject(payload)
+                        val choice = JSONObject(payload)
                             .optJSONArray("choices")
-                            ?.optJSONObject(0)
-                            ?.optJSONObject("delta") ?: return@postStreamLines
+                            ?.optJSONObject(0) ?: return@postStreamLines
+                        val reason = choice.optString("finish_reason", "")
+                        if (reason == "length" || reason == "max_tokens") truncated = true
+                        val delta = choice.optJSONObject("delta") ?: return@postStreamLines
                         val content = delta.opt("content")
                         if (content is String) emit(content)
+                        // Thinking models (DeepSeek/OpenRouter): backup body only.
+                        if (content !is String || content.isEmpty()) {
+                            val think = delta.opt("reasoning_content") ?: delta.opt("reasoning")
+                            if (think is String) thoughts.append(think)
+                        }
                     } catch (_: Exception) {
                     }
                 }
@@ -476,9 +487,18 @@ suspend fun CloudProvider.completeStreaming(
                 if (payload.isBlank()) return@postStreamLines
                 try {
                     val data = JSONObject(payload)
-                    if (data.optString("type") == "content_block_delta") {
-                        val text = data.optJSONObject("delta")?.optString("text", "").orEmpty()
-                        emit(text)
+                    when (data.optString("type")) {
+                        "content_block_delta" -> {
+                            val delta = data.optJSONObject("delta")
+                            if (delta?.optString("type") == "thinking_delta") {
+                                thoughts.append(delta.optString("thinking", ""))
+                            } else {
+                                emit(delta?.optString("text", "").orEmpty())
+                            }
+                        }
+                        "message_delta" -> {
+                            if (data.optJSONObject("delta")?.optString("stop_reason", "") == "max_tokens") truncated = true
+                        }
                     }
                 } catch (_: Exception) {
                 }
@@ -504,10 +524,12 @@ suspend fun CloudProvider.completeStreaming(
                 val payload = line.removePrefix("data:").trim()
                 if (payload.isBlank()) return@postStreamLines
                 try {
-                    val text = JSONObject(payload)
+                    val cand = JSONObject(payload)
                         .optJSONArray("candidates")
-                        ?.optJSONObject(0)
-                        ?.optJSONObject("content")
+                        ?.optJSONObject(0) ?: return@postStreamLines
+                    if (cand.optString("finishReason", "") == "MAX_TOKENS") truncated = true
+                    val text = cand
+                        .optJSONObject("content")
                         ?.optJSONArray("parts")
                         ?.optJSONObject(0)
                         ?.optString("text", "").orEmpty()
@@ -522,8 +544,24 @@ suspend fun CloudProvider.completeStreaming(
             }
         }
     }
-    full.toString()
+    // Thinking-only replies: surface the thinking rather than nothing.
+    if (full.isEmpty() && thoughts.isNotEmpty()) full.append(thoughts)
+    CloudResult(full.toString(), truncated)
 }
+
+/** Convenience wrapper for callers that only need the text (realtime voice). */
+suspend fun CloudProvider.completeStreaming(
+    apiKey: String,
+    history: List<Pair<String, String>>,
+    maxTokens: Int,
+    thinkingBudget: Int? = null,
+    historyLimit: Int = 20,
+    model: String? = null,
+    onToken: (String) -> Unit = {},
+    isCancelled: () -> Boolean = { false }
+): String = completeStreamingResult(
+    apiKey, history, maxTokens, thinkingBudget, historyLimit, model, onToken, isCancelled
+).text
 
 /** POSTs a JSON body and streams SSE `data:` lines until disconnect/cancel. */
 private fun postStreamLines(

@@ -28,7 +28,7 @@ import org.json.JSONArray
  */
 object AppUpdate {
     const val REPO = "rider05/karen"
-    const val APK_PATH = "apks/karen-debug.apk"
+    const val APK_PATH = "apks/karen.apk"
     const val RAW_URL = "https://github.com/rider05/karen/raw/main/apks/karen-debug.apk"
     private const val COMMITS_URL =
         "https://api.github.com/repos/rider05/karen/commits?path=apks/karen-debug.apk&per_page=1"
@@ -138,8 +138,8 @@ object AppUpdate {
         resume: Boolean = false
     ): File? = withContext(Dispatchers.IO) {
         val dir = File(ctx.getExternalFilesDir(null), "updates").apply { mkdirs() }
-        val dest = File(dir, "karen-debug.apk")
-        val part = File(dir, "karen-debug.apk.part")
+        val dest = File(dir, "karen.apk")
+        val part = File(dir, "karen.apk.part")
         downloadPaused = false
         try {
             // Resume: keep the partial file and continue from its length.

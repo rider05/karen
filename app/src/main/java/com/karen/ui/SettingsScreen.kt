@@ -1453,7 +1453,7 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                                     downloading = true
                                     paused = false
                                     AppUpdate.setDownloadPaused(false)
-                                    val partFile = java.io.File(context.getExternalFilesDir(null), "updates/karen-debug.apk.part")
+                                    val partFile = java.io.File(context.getExternalFilesDir(null), "updates/karen.apk.part")
                                     val hasPartial = partFile.exists() && partFile.length() > 0
                                     if (hasPartial) {
                                         // Show resume progress immediately.
@@ -1466,7 +1466,7 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                                     updateScope.launch {
                                         try {
                                             val errors = mutableListOf<String>()
-                                            val partFile = java.io.File(context.getExternalFilesDir(null), "updates/karen-debug.apk.part")
+                                            val partFile = java.io.File(context.getExternalFilesDir(null), "updates/karen.apk.part")
                                             val hasPartial = partFile.exists() && partFile.length() > 0
                                             val file = AppUpdate.download(context, sha, { p -> progress = p }, errors, resume = hasPartial)
                                             if (file != null) {

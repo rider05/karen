@@ -5,7 +5,7 @@
 
 The APK is hosted directly in this repository:
 
-apks/karen-debug.apk
+apks/karen.apk
 
 ✨ Features
 🤖 Offline AI Assistant
@@ -23,7 +23,7 @@ apks/karen-debug.apk
 🌐 Designed to work offline
 
 📲 Installation
-Download karen-debug.apk using the button above.
+Download karen.apk using the button above.
 
 Open the downloaded APK on your Android device.
 
@@ -47,7 +47,7 @@ The APK will be generated under:
 app/build/outputs/apk/
 
 📁 APK Location
-karen/ └── apks/    └── karen-debug.apk
+karen/ └── apks/    └── karen.apk
 
 ⭐ Support
 If you like Karen, consider giving the project a ⭐ on GitHub!

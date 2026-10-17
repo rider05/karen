@@ -1270,7 +1270,7 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                                 fontWeight = FontWeight.Medium
                             )
                             Text(
-                                "OpenAI-compatible API for your own apps (chat + models; no streaming, no embeddings)",
+                                "OpenAI-compatible API for your own apps (chat + models) · serves a Hello World page at / on your Wi-Fi",
                                 color = colors.textMuted,
                                 fontSize = 11.5.sp
                             )
@@ -1340,6 +1340,29 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                                 uncheckedTrackColor = colors.surfaceHover
                             )
                         )
+                    }
+                    if (serverLanOn) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text("Hello World page", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
+                                Text(
+                                    LocalApiServer.lanUrl(context),
+                                    color = if (serverOn) colors.accentGreen else colors.textMuted,
+                                    fontSize = 11.5.sp,
+                                    fontFamily = FontFamily.Monospace
+                                )
+                            }
+                            TextButton(onClick = {
+                                clipboard.setText(AnnotatedString(LocalApiServer.lanUrl(context)))
+                                android.widget.Toast.makeText(context, "Address copied — open it in any browser", android.widget.Toast.LENGTH_SHORT).show()
+                            }) {
+                                Text("Copy", color = colors.accentBlue, fontSize = 12.sp)
+                            }
+                        }
                     }
                     Row(
                         modifier = Modifier.fillMaxWidth(),

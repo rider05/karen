@@ -51,6 +51,9 @@ object LocalApiServer {
         return fresh
     }
 
+    /** Browser address other devices on the same Wi-Fi can open. */
+    fun lanUrl(ctx: Context): String = "http://${wifiIp(ctx)}:${UserPrefs.serverPort(ctx)}"
+
     fun start(ctx: Context): Boolean {
         if (running) return true
         val port = UserPrefs.serverPort(ctx)

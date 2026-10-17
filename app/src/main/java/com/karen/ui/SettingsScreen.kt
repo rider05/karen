@@ -1382,6 +1382,55 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                             Text("Copy", color = colors.accentBlue, fontSize = 12.sp)
                         }
                     }
+                    // Diagnostics: proves the server answers and shows whether
+                    // another device's request ever arrived.
+                    var selfTestText by remember { mutableStateOf("") }
+                    var selfTesting by remember { mutableStateOf(false) }
+                    val diagScope = rememberCoroutineScope()
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Diagnostics", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
+                            Text(
+                                if (LocalApiServer.requestCount == 0) "No requests received yet"
+                                else "${LocalApiServer.requestCount} request(s) received",
+                                color = colors.textMuted,
+                                fontSize = 11.5.sp,
+                                fontFamily = FontFamily.Monospace
+                            )
+                            if (LocalApiServer.lastRequest.isNotBlank()) {
+                                Text(
+                                    "Last: ${LocalApiServer.lastRequest}",
+                                    color = colors.textMuted,
+                                    fontSize = 11.sp,
+                                    fontFamily = FontFamily.Monospace
+                                )
+                            }
+                            if (selfTestText.isNotBlank()) {
+                                Text(
+                                    selfTestText,
+                                    color = if (selfTestText.contains("OK")) colors.accentGreen else colors.accentAmber,
+                                    fontSize = 11.sp,
+                                    fontFamily = FontFamily.Monospace
+                                )
+                            }
+                        }
+                        TextButton(onClick = {
+                            if (!selfTesting) {
+                                selfTesting = true
+                                selfTestText = ""
+                                diagScope.launch {
+                                    selfTestText = LocalApiServer.selfTest(context)
+                                    selfTesting = false
+                                }
+                            }
+                        }) {
+                            Text(if (selfTesting) "Testing…" else "Self-test", color = colors.accentBlue, fontSize = 12.sp)
+                        }
+                    }
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,

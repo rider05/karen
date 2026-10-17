@@ -42,6 +42,12 @@ object LocalApiServer {
     var status by mutableStateOf("Stopped")
         private set
 
+    /** Diagnostics for the Settings card: last request + total since start. */
+    var lastRequest by mutableStateOf("")
+        private set
+    var requestCount by mutableStateOf(0)
+        private set
+
     private var socket: ServerSocket? = null
     private var scope: CoroutineScope? = null
     private val busy = AtomicBoolean(false)
@@ -57,6 +63,35 @@ object LocalApiServer {
     /** Browser address other devices on the same Wi-Fi can open. */
     fun lanUrl(ctx: Context): String = "http://${lanIp(ctx)}:${UserPrefs.serverPort(ctx)}"
 
+    /** Probes the running server like a real client; short human verdict. */
+    suspend fun selfTest(ctx: Context): String = kotlinx.coroutines.withContext(Dispatchers.IO) {
+        fun probe(url: String): String = try {
+            val conn = (java.net.URL(url).openConnection() as java.net.HttpURLConnection).apply {
+                connectTimeout = 4000
+                readTimeout = 4000
+                requestMethod = "GET"
+            }
+            val code = conn.responseCode
+            val body = (if (code in 200..299) conn.inputStream else conn.errorStream)
+                ?.bufferedReader()?.use { it.readText() }.orEmpty()
+            conn.disconnect()
+            when {
+                code == 200 && body.contains("Hello from Karen") -> "OK"
+                code == 200 -> "OK (unexpected body)"
+                else -> "HTTP $code"
+            }
+        } catch (e: Exception) {
+            val n = e.javaClass.simpleName
+            if (n.contains("Timeout", ignoreCase = true)) "timeout"
+            else "$n${e.message?.let { ": ${it.take(50)}" } ?: ""}"
+        }
+        val port = UserPrefs.serverPort(ctx)
+        val ip = lanIp(ctx)
+        val loop = probe("http://127.0.0.1:$port/")
+        val lan = if (ip == "127.0.0.1") "no Wi-Fi address" else probe("http://$ip:$port/")
+        "Loopback → $loop · LAN ($ip) → $lan"
+    }
+
     fun start(ctx: Context): Boolean {
         if (running) return true
         val port = UserPrefs.serverPort(ctx)
@@ -71,6 +106,8 @@ object LocalApiServer {
             val appCtx = ctx.applicationContext
             val job = CoroutineScope(SupervisorJob() + Dispatchers.IO).also { scope = it }
             running = true
+            lastRequest = ""
+            requestCount = 0
             status = "Listening on ${if (bindAddr == null) "0.0.0.0" else "127.0.0.1"}:$port"
             job.launch {
                 try {
@@ -78,7 +115,10 @@ object LocalApiServer {
                         val client = try {
                             server.accept()
                         } catch (_: Exception) {
-                            break
+                            // Transient accept hiccup: keep listening.
+                            if (!running) break
+                            kotlinx.coroutines.delay(100)
+                            continue
                         }
                         launch { handle(appCtx, client) }
                     }
@@ -132,6 +172,13 @@ object LocalApiServer {
             }
             val method = parts[0].uppercase()
             val path = parts[1].substringBefore('?')
+            val peer = try {
+                socket.inetAddress?.hostAddress ?: "?"
+            } catch (_: Exception) {
+                "?"
+            }
+            lastRequest = "$method $path from $peer"
+            requestCount += 1
             val contentLength = headers["content-length"]?.toIntOrNull()?.coerceIn(0, 524288) ?: 0
             val bodyBytes = ByteArray(contentLength)
             var read = 0

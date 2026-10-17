@@ -9,6 +9,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import java.io.BufferedInputStream
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.ServerSocket
@@ -27,8 +28,9 @@ import org.json.JSONObject
  * On-device OpenAI-compatible API (Thinai-style local server, no new deps).
  *
  * Plain ServerSocket HTTP/1.1 on localhost:11434 by default:
+ *   GET  /                    browser dashboard — chat with the on-device model
  *   GET  /v1/models            installed weights actually on this phone
- *   POST /v1/chat/completions  runs the loaded local GGUF (non-streaming)
+ *   POST /v1/chat/completions  runs the loaded local GGUF (stream:true → SSE)
  *   POST /v1/embeddings        501 — no embedding runtime ships on-device
  *   GET  /api/tags             Ollama-shaped model list
  *
@@ -195,9 +197,9 @@ object LocalApiServer {
                 }
             } else null
 
-            // Landing page — no auth required.
+            // Dashboard — no auth required; model/API calls from it need the token.
             if (method == "GET" && (path == "/" || path == "/index.html")) {
-                writeHtml(socket, landingPage(ctx))
+                writeHtml(socket, dashboardPage(ctx))
                 socket.close()
                 return
             }
@@ -241,10 +243,7 @@ object LocalApiServer {
                     if (body == null) {
                         writeJson(socket, 400, JSONObject().put("error", errorObj("JSON body required")))
                     } else if (body.optBoolean("stream", false)) {
-                        writeJson(
-                            socket, 400,
-                            JSONObject().put("error", errorObj("streaming not supported — retry with stream:false"))
-                        )
+                        chatCompletionSse(ctx, socket, body)
                     } else {
                         chatCompletion(ctx, socket, body)
                     }
@@ -277,55 +276,14 @@ object LocalApiServer {
             return
         }
         try {
-            val want = body.optString("model", "").trim()
-            val installed = UserPrefs.models(ctx).filter { !isCloudProviderName(it) }
-            val pick = when {
-                want.isNotBlank() && want in installed -> want
-                want.isNotBlank() -> {
-                    writeJson(
-                        socket, 404,
-                        JSONObject().put("error", errorObj("model '$want' not on device — download it in Model Manager"))
-                    )
-                    return
-                }
-                else -> {
-                    val preferred = UserPrefs.preferredLocalModel(ctx).takeIf { it in installed }
-                    preferred ?: installed.firstOrNull()
-                }
-            }
-            if (pick == null) {
-                writeJson(
-                    socket, 503,
-                    JSONObject().put("error", errorObj("no local model installed — download one in Model Manager"))
-                )
-                return
-            }
-            val file = ModelDownloader.weightFileFor(ctx, pick)
-            if (file == null || !KarenLlama.ready) {
-                writeJson(socket, 503, JSONObject().put("error", errorObj("runtime not ready")))
-                return
-            }
+            val picked = pickModel(ctx, socket, body) ?: return
+            val (pick, file) = picked
             val window = UserPrefs.contextTokens(ctx)
             if (!KarenLlama.ensureLoaded(file, pick, window, 4)) {
                 writeJson(socket, 500, JSONObject().put("error", errorObj("could not load $pick into RAM")))
                 return
             }
-            val turns = body.optJSONArray("messages") ?: JSONArray()
-            val roles = mutableListOf<String>()
-            val texts = mutableListOf<String>()
-            for (i in 0 until turns.length()) {
-                val m = turns.optJSONObject(i) ?: continue
-                val role = m.optString("role", "user")
-                val content = when (val c = m.opt("content")) {
-                    is String -> c
-                    is JSONArray -> (0 until c.length()).mapNotNull { idx ->
-                        c.optJSONObject(idx)?.optString("text", null)
-                    }.joinToString("\n")
-                    else -> null
-                } ?: continue
-                roles.add(if (role == "assistant" || role == "system") role else "user")
-                texts.add(content)
-            }
+            val (roles, texts) = readTurns(body)
             if (texts.isEmpty()) {
                 writeJson(socket, 400, JSONObject().put("error", errorObj("messages[] required")))
                 return
@@ -375,6 +333,161 @@ object LocalApiServer {
             )
         } finally {
             busy.set(false)
+        }
+    }
+
+    /** Resolves the requested model; on failure writes the error and returns null. */
+    private fun pickModel(ctx: Context, socket: Socket, body: JSONObject): Pair<String, File>? {
+        val want = body.optString("model", "").trim()
+        val installed = UserPrefs.models(ctx).filter { !isCloudProviderName(it) }
+        val pick = when {
+            want.isNotBlank() && want in installed -> want
+            want.isNotBlank() -> {
+                writeJson(
+                    socket, 404,
+                    JSONObject().put("error", errorObj("model '$want' not on device — download it in Model Manager"))
+                )
+                return null
+            }
+            else -> {
+                val preferred = UserPrefs.preferredLocalModel(ctx).takeIf { it in installed }
+                preferred ?: installed.firstOrNull()
+            }
+        }
+        if (pick == null) {
+            writeJson(
+                socket, 503,
+                JSONObject().put("error", errorObj("no local model installed — download one in Model Manager"))
+            )
+            return null
+        }
+        val file = ModelDownloader.weightFileFor(ctx, pick)
+        if (file == null || !KarenLlama.ready) {
+            writeJson(socket, 503, JSONObject().put("error", errorObj("runtime not ready")))
+            return null
+        }
+        return pick to file
+    }
+
+    /** OpenAI-style turns from the request body into parallel role/text lists. */
+    private fun readTurns(body: JSONObject): Pair<List<String>, List<String>> {
+        val turns = body.optJSONArray("messages") ?: JSONArray()
+        val roles = mutableListOf<String>()
+        val texts = mutableListOf<String>()
+        for (i in 0 until turns.length()) {
+            val m = turns.optJSONObject(i) ?: continue
+            val role = m.optString("role", "user")
+            val content = when (val c = m.opt("content")) {
+                is String -> c
+                is JSONArray -> (0 until c.length()).mapNotNull { idx ->
+                    c.optJSONObject(idx)?.optString("text", "")?.takeIf { it.isNotBlank() }
+                }.joinToString("\n")
+                else -> null
+            } ?: continue
+            roles.add(if (role == "assistant" || role == "system") role else "user")
+            texts.add(content)
+        }
+        return roles to texts
+    }
+
+    /**
+     * SSE variant for `stream: true`: each generated piece is written as a
+     * `data: {chunk}` event and flushed immediately, so the browser dashboard
+     * shows tokens live. Close-delimited (no Content-Length) — the final
+     * `data: [DONE]` plus socket close ends the stream.
+     */
+    private fun chatCompletionSse(ctx: Context, socket: Socket, body: JSONObject) {
+        if (!busy.compareAndSet(false, true)) {
+            writeJson(socket, 429, JSONObject().put("error", errorObj("model busy — retry shortly")))
+            return
+        }
+        try {
+            val picked = pickModel(ctx, socket, body) ?: return
+            val (pick, file) = picked
+            val window = UserPrefs.contextTokens(ctx)
+            if (!KarenLlama.ensureLoaded(file, pick, window, 4)) {
+                writeJson(socket, 500, JSONObject().put("error", errorObj("could not load $pick into RAM")))
+                return
+            }
+            val (roles, texts) = readTurns(body)
+            if (texts.isEmpty()) {
+                writeJson(socket, 400, JSONObject().put("error", errorObj("messages[] required")))
+                return
+            }
+            val maxTokens = body.optInt("max_tokens", 512).coerceIn(1, 4096)
+            val out = socket.getOutputStream()
+            out.write(
+                (
+                    "HTTP/1.1 200 OK\r\n" +
+                        "Content-Type: text/event-stream\r\n" +
+                        "Cache-Control: no-cache\r\n" +
+                        "Connection: close\r\n\r\n"
+                    ).toByteArray(Charsets.UTF_8)
+            )
+            out.flush()
+            val id = "karen-${System.currentTimeMillis()}"
+            var gone = false
+            fun emit(obj: JSONObject) {
+                if (gone) return
+                try {
+                    out.write(("data: $obj\n\n").toByteArray(Charsets.UTF_8))
+                    out.flush()
+                } catch (_: Exception) {
+                    // Client left: stop generating.
+                    gone = true
+                    KarenLlama.cancel()
+                }
+            }
+            try {
+                KarenLlama.completeStream(
+                    "You are Karen, a helpful on-device assistant.",
+                    roles.toTypedArray(),
+                    texts.toTypedArray(),
+                    maxTokens
+                ) { piece ->
+                    if (piece.isNotEmpty()) {
+                        emit(
+                            JSONObject().put("id", id)
+                                .put("object", "chat.completion.chunk")
+                                .put("model", pick)
+                                .put(
+                                    "choices",
+                                    JSONArray().put(
+                                        JSONObject().put("index", 0)
+                                            .put("delta", JSONObject().put("content", piece))
+                                    )
+                                )
+                        )
+                    }
+                }
+            } catch (_: Exception) {
+            }
+            emit(
+                JSONObject().put("id", id)
+                    .put("object", "chat.completion.chunk")
+                    .put("model", pick)
+                    .put(
+                        "choices",
+                        JSONArray().put(
+                            JSONObject().put("index", 0)
+                                .put("finish_reason", "stop")
+                        )
+                    )
+            )
+            if (!gone) {
+                try {
+                    out.write("data: [DONE]\n\n".toByteArray(Charsets.UTF_8))
+                    out.flush()
+                } catch (_: Exception) {
+                }
+            }
+        } catch (_: Exception) {
+        } finally {
+            busy.set(false)
+            try {
+                socket.close()
+            } catch (_: Exception) {
+            }
         }
     }
 
@@ -482,8 +595,8 @@ object LocalApiServer {
 <div class="card">
   <div class="badge">TOKEN REQUIRED</div>
   <h1>This is the Karen API</h1>
-  <p>Only model/API routes need the bearer token. The status page does not:</p>
-  <p>Status page → <code>/</code></p>
+  <p>Only model/API calls need the bearer token. The dashboard does not:</p>
+  <p>Dashboard → <code>/</code></p>
   <p>API calls → send <code>Authorization: Bearer &lt;token&gt;</code>.
      Find the token in Karen → Settings → Local Server → Bearer token.</p>
 </div>
@@ -491,7 +604,8 @@ object LocalApiServer {
 </html>
 """.trimIndent()
 
-    private fun landingPage(ctx: Context): String {
+    /** Browser dashboard — chat with the on-device model, no app install. */
+    private fun dashboardPage(ctx: Context): String {
         val ip = lanIp(ctx)
         val port = UserPrefs.serverPort(ctx)
         val models = UserPrefs.models(ctx).filter { !isCloudProviderName(it) }
@@ -501,79 +615,174 @@ object LocalApiServer {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Karen — Local Server</title>
+<title>Karen — Dashboard</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    background: #0c0e12;
-    color: #e2e2e8;
-    min-height: 100vh;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-  .card {
-    background: #1a1c20;
-    border: 1px solid #283042;
-    border-radius: 16px;
-    padding: 40px;
-    max-width: 480px;
-    width: 90%;
-    text-align: center;
-  }
-  .logo {
-    width: 56px; height: 56px;
-    background: #10A37F;
-    border-radius: 14px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 24px;
-    font-weight: 700;
-    color: #fff;
-    margin-bottom: 20px;
-  }
-  h1 { font-size: 22px; font-weight: 700; margin-bottom: 8px; }
-  .sub { color: #94a3b8; font-size: 14px; margin-bottom: 24px; }
-  .row {
-    display: flex;
-    justify-content: space-between;
-    padding: 10px 0;
-    border-bottom: 1px solid #283042;
-    font-size: 13px;
-  }
-  .row:last-child { border-bottom: none; }
-  .label { color: #64748b; }
-  .value { color: #e2e2e8; font-family: 'JetBrains Mono', monospace; }
-  .status {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    background: rgba(16,163,127,0.12);
-    color: #10A37F;
-    padding: 4px 12px;
-    border-radius: 20px;
-    font-size: 12px;
-    font-weight: 600;
-    margin-top: 20px;
-  }
-  .dot { width: 8px; height: 8px; background: #10A37F; border-radius: 50%; }
-  .models { margin-top: 16px; font-size: 12px; color: #64748b; }
-  .models span { color: #94a3b8; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+         background: #0c0e12; color: #e2e2e8; height: 100vh; display: flex; flex-direction: column; }
+  header { display: flex; align-items: center; gap: 12px; padding: 13px 18px;
+           background: #14171f; border-bottom: 1px solid #283042; }
+  .logo { width: 36px; height: 36px; background: #10A37F; border-radius: 9px;
+          display: flex; align-items: center; justify-content: center;
+          font-weight: 700; color: #fff; font-size: 17px; flex: none; }
+  header h1 { font-size: 15px; font-weight: 600; }
+  header .sub { font-size: 11.5px; color: #64748b; }
+  .status { margin-left: auto; display: flex; align-items: center; gap: 7px;
+            font-size: 12px; color: #10A37F; white-space: nowrap; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #10A37F; }
+  .dot.off { background: #f59e0b; }
+  .bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+         padding: 10px 18px; background: #111317; border-bottom: 1px solid #1e252e; }
+  input, select, button, textarea { font: inherit; border-radius: 8px; border: 1px solid #283042;
+         background: #1a1c20; color: #e2e2e8; padding: 8px 10px; outline: none; }
+  input:focus, select:focus, textarea:focus { border-color: #38bdf8; }
+  button { background: #10A37F; border-color: #10A37F; color: #fff; font-weight: 600;
+           cursor: pointer; padding: 8px 16px; }
+  button.ghost { background: transparent; border-color: #283042; color: #94a3b8; font-weight: 500; }
+  button:disabled { opacity: .45; cursor: default; }
+  main { flex: 1; overflow-y: auto; padding: 18px; display: flex; flex-direction: column; gap: 12px; }
+  .msg { max-width: 82%; padding: 10px 14px; border-radius: 14px; font-size: 14px;
+         line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
+  .msg.user { align-self: flex-end; background: #10A37F; color: #fff; border-bottom-right-radius: 4px; }
+  .msg.assistant { align-self: flex-start; background: #1b2029; border: 1px solid #283042;
+                   border-bottom-left-radius: 4px; }
+  .msg.sys { align-self: center; background: transparent; border: 1px dashed #283042;
+             color: #94a3b8; font-size: 12.5px; text-align: center; max-width: 92%; }
+  .hint { font-size: 11.5px; color: #64748b; padding: 0 18px 10px; background: #14171f; }
+  footer { display: flex; gap: 8px; padding: 10px 18px 14px; background: #14171f;
+           border-top: 1px solid #283042; }
+  footer textarea { flex: 1; resize: none; height: 54px; border-radius: 12px;
+                    background: #0f1116; padding: 15px 14px; }
+  .toast { position: fixed; bottom: 96px; left: 50%; transform: translateX(-50%);
+           background: #1b2029; border: 1px solid #38bdf8; color: #cce5ff;
+           padding: 9px 16px; border-radius: 20px; font-size: 12.5px; opacity: 0;
+           transition: opacity .25s; pointer-events: none; white-space: nowrap; }
+  .toast.show { opacity: 1; }
 </style>
 </head>
 <body>
-<div class="card">
+<header>
   <div class="logo">K</div>
-  <h1>Hello from Karen</h1>
-  <p class="sub">Your local AI server is running</p>
-  <div class="row"><span class="label">Address</span><span class="value">$ip:$port</span></div>
-  <div class="row"><span class="label">Status</span><span class="value">Active</span></div>
-  <div class="row"><span class="label">Models</span><span class="value">${models.size} installed</span></div>
-  <div class="status"><span class="dot"></span>&nbsp;Server Online</div>
-  ${if (models.isNotEmpty()) "<p class=\"models\">${models.take(3).joinToString(", ")}${if (models.size > 3) " +${models.size - 3} more" else ""}</p>" else ""}
+  <div>
+    <h1>Karen Dashboard</h1>
+    <div class="sub">the model runs on the phone — this page is just the window</div>
+  </div>
+  <div class="status"><span class="dot" id="dot"></span><span id="statusText">connecting…</span></div>
+</header>
+<div class="bar">
+  <input id="token" type="password" placeholder="Bearer token — Karen → Settings → Local Server" style="flex:1;min-width:230px">
+  <button class="ghost" onclick="saveToken()">Save</button>
+  <select id="model" style="min-width:180px"><option value="">(pick model)</option></select>
+  <button class="ghost" onclick="loadModels()">Refresh</button>
 </div>
+<main id="chat"></main>
+<div class="hint">Enter sends · Shift+Enter makes a new line · Stop cancels generation</div>
+<footer>
+  <textarea id="input" placeholder="Ask the on-device model…"></textarea>
+  <button id="send" onclick="send()">Send</button>
+  <button id="stop" class="ghost" onclick="stopGen()" disabled>Stop</button>
+</footer>
+<div class="toast" id="toast"></div>
+<script>
+var S = { token: localStorage.getItem('karen_token') || '', busy: false, ctrl: null, log: [] };
+function el(id) { return document.getElementById(id); }
+function toast(m) { var t = el('toast'); t.textContent = m; t.classList.add('show');
+  setTimeout(function () { t.classList.remove('show'); }, 2400); }
+function setStatus(ok, text) { el('dot').className = ok ? 'dot' : 'dot off'; el('statusText').textContent = text; }
+function add(role, text) { var d = document.createElement('div'); d.className = 'msg ' + role;
+  d.textContent = text; el('chat').appendChild(d); el('chat').scrollTop = el('chat').scrollHeight; return d; }
+function saveToken() { S.token = el('token').value.trim();
+  localStorage.setItem('karen_token', S.token);
+  toast(S.token ? 'Token saved' : 'Token cleared'); loadModels(); }
+function loadModels() {
+  fetch('/v1/models', { headers: { 'Authorization': 'Bearer ' + S.token } }).then(function (r) {
+    if (r.status === 401) { setStatus(false, 'token needed'); return null; }
+    if (!r.ok) { setStatus(false, 'HTTP ' + r.status); return null; }
+    return r.json();
+  }).then(function (j) {
+    if (!j) return;
+    var ms = (j.data || []).map(function (m) { return m.id; });
+    var sel = el('model'); var cur = sel.value;
+    sel.innerHTML = '';
+    if (!ms.length) { var o0 = document.createElement('option'); o0.value = ''; o0.textContent = '(no local models)'; sel.appendChild(o0); }
+    ms.forEach(function (m) { var o = document.createElement('option'); o.value = m; o.textContent = m; sel.appendChild(o); });
+    if (cur && ms.indexOf(cur) >= 0) { sel.value = cur; } else if (ms.length) { sel.value = ms[0]; }
+    setStatus(true, 'online · ' + ms.length + ' model(s)');
+  }).catch(function () { setStatus(false, 'unreachable'); });
+}
+function stopGen() { if (S.ctrl) { S.ctrl.abort(); } }
+function send() {
+  var text = el('input').value.trim();
+  if (!text || S.busy) return;
+  if (!S.token) { toast('Paste the bearer token first'); return; }
+  var model = el('model').value;
+  if (!model) { toast('Pick a model'); return; }
+  el('input').value = '';
+  add('user', text);
+  S.log.push({ role: 'user', content: text });
+  var bubble = add('assistant', '…');
+  S.busy = true; el('send').disabled = true; el('stop').disabled = false;
+  S.ctrl = new AbortController();
+  var full = '';
+  fetch('/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + S.token },
+    body: JSON.stringify({ model: model, messages: S.log.slice(-12), stream: true, max_tokens: 1024 }),
+    signal: S.ctrl.signal
+  }).then(function (r) {
+    if (!r.ok) {
+      return r.text().then(function (t) {
+        bubble.className = 'msg sys';
+        bubble.textContent = 'Error ' + r.status + ' — ' + t.slice(0, 240);
+        if (S.log.length && S.log[S.log.length - 1].role === 'user') { S.log.pop(); }
+      });
+    }
+    var reader = r.body.getReader();
+    var dec = new TextDecoder();
+    var buf = '';
+    function pump() {
+      return reader.read().then(function (step) {
+        if (step.done) return;
+        buf += dec.decode(step.value, { stream: true });
+        var i;
+        while ((i = buf.indexOf('\n\n')) >= 0) {
+          var evt = buf.slice(0, i); buf = buf.slice(i + 2);
+          if (!evt.startsWith('data:')) continue;
+          var payload = evt.slice(5).trim();
+          if (payload === '[DONE]') continue;
+          try {
+            var j = JSON.parse(payload);
+            var ch = j.choices && j.choices[0];
+            var d = ch && ch.delta && ch.delta.content;
+            if (d) { full += d; bubble.textContent = full; el('chat').scrollTop = el('chat').scrollHeight; }
+          } catch (e) {}
+        }
+        return pump();
+      });
+    }
+    return pump().then(function () {
+      if (!full) {
+        bubble.className = 'msg sys'; bubble.textContent = '(empty reply)';
+        if (S.log.length && S.log[S.log.length - 1].role === 'user') { S.log.pop(); }
+      } else { S.log.push({ role: 'assistant', content: full }); }
+    });
+  }).catch(function () {
+    if (full) { S.log.push({ role: 'assistant', content: full }); bubble.textContent = full + ' [stopped]'; }
+    else {
+      bubble.className = 'msg sys'; bubble.textContent = 'stopped';
+      if (S.log.length && S.log[S.log.length - 1].role === 'user') { S.log.pop(); }
+    }
+  }).then(function () {
+    S.busy = false; el('send').disabled = false; el('stop').disabled = true; S.ctrl = null;
+  });
+}
+el('input').addEventListener('keydown', function (e) {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+});
+el('token').value = S.token;
+add('sys', 'Hello from Karen — connected to $ip:$port. ${models.size} local model(s) on this phone. Paste the token from Settings → Local Server, pick a model, then ask away.');
+loadModels();
+</script>
 </body>
 </html>
         """.trimIndent()

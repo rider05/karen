@@ -1270,7 +1270,7 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                                 fontWeight = FontWeight.Medium
                             )
                             Text(
-                                "OpenAI-compatible API for your own apps (chat + models) · serves a Hello World page at / on your Wi-Fi",
+                                "OpenAI-compatible API for your own apps (chat + models) · serves a chat dashboard at / on your Wi-Fi",
                                 color = colors.textMuted,
                                 fontSize = 11.5.sp
                             )
@@ -1350,7 +1350,7 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column(Modifier.weight(1f)) {
-                            Text("Hello World page", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
+                            Text("Dashboard (other devices)", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
                             Text(
                                 pageUrl,
                                 color = if (serverOn && serverLanOn) colors.accentGreen else colors.textMuted,
@@ -1372,12 +1372,38 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                             } else if (!serverOn) {
                                 Text("Start the server above to open it", color = colors.textMuted, fontSize = 11.sp)
                             } else {
-                                Text("No token needed — open this on any device on the same Wi-Fi", color = colors.textMuted, fontSize = 11.sp)
+                                Text("No token to open the page — chat needs the token from below", color = colors.textMuted, fontSize = 11.sp)
                             }
                         }
                         TextButton(onClick = {
                             clipboard.setText(AnnotatedString(pageUrl))
                             android.widget.Toast.makeText(context, "Address copied — open it in any browser", android.widget.Toast.LENGTH_SHORT).show()
+                        }) {
+                            Text("Copy", color = colors.accentBlue, fontSize = 12.sp)
+                        }
+                    }
+                    // Same page from this phone itself — reachable even with LAN off.
+                    val localPageUrl = "http://127.0.0.1:${UserPrefs.serverPort(context)}"
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Dashboard (this phone)", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
+                            Text(
+                                localPageUrl,
+                                color = if (serverOn) colors.accentGreen else colors.textMuted,
+                                fontSize = 11.5.sp,
+                                fontFamily = FontFamily.Monospace
+                            )
+                            if (!serverOn) {
+                                Text("Start the server above to open it", color = colors.textMuted, fontSize = 11.sp)
+                            }
+                        }
+                        TextButton(onClick = {
+                            clipboard.setText(AnnotatedString(localPageUrl))
+                            android.widget.Toast.makeText(context, "Local address copied", android.widget.Toast.LENGTH_SHORT).show()
                         }) {
                             Text("Copy", color = colors.accentBlue, fontSize = 12.sp)
                         }

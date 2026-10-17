@@ -258,6 +258,7 @@ fun KNavigationDock(
             Modifier
                 .fillMaxWidth()
                 .background(colors.background)
+                .padding(top = 2.dp, bottom = 2.dp)
         ) {
             Box(
                 Modifier

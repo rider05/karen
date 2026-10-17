@@ -43,7 +43,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -346,45 +348,148 @@ fun BackupPackageScreen(onOpenDrawer: () -> Unit = {}, onNavigateToHome: () -> U
 
 // ---- §94 Storage / File Manager ----
 
+private data class StorageCat(val label: String, val bytes: Long, val files: Int)
+
+private fun walkSize(dir: java.io.File): Pair<Long, Int> {
+    if (!dir.exists() || !dir.isDirectory) return 0L to 0
+    var total = 0L
+    var count = 0
+    dir.walkTopDown().forEach { f ->
+        if (f.isFile) { total += f.length(); count++ }
+    }
+    return total to count
+}
+
+private fun fmtBytes(bytes: Long): String = when {
+    bytes >= 1_073_741_824L -> String.format("%.2f GB", bytes / 1_073_741_824.0)
+    bytes >= 1_048_576L -> String.format("%.1f MB", bytes / 1_048_576.0)
+    bytes >= 1024L -> String.format("%.1f KB", bytes / 1024.0)
+    else -> "$bytes B"
+}
+
 @Composable
 fun StorageManagerScreen(onOpenDrawer: () -> Unit = {}, onNavigateToHome: () -> Unit = {}) {
     KarenHomeBackHandler(onNavigateToHome = onNavigateToHome)
     val ctx = LocalContext.current
     val colors = LocalKarenColors.current
+    var refreshKey by remember { mutableStateOf(0) }
+
+    val deviceTotal = remember(refreshKey) {
+        try { android.os.StatFs(ctx.filesDir.absolutePath).totalBytes } catch (_: Exception) { 0L }
+    }
+    val deviceFree = remember(refreshKey) {
+        try { android.os.StatFs(ctx.filesDir.absolutePath).availableBytes } catch (_: Exception) { 0L }
+    }
+    val karenTotal = remember(refreshKey) {
+        listOf(ctx.filesDir, ctx.cacheDir, ctx.getExternalFilesDir(null))
+            .filterNotNull()
+            .sumOf { walkSize(it).first }
+    }
+    val cacheSize = remember(refreshKey) { walkSize(ctx.cacheDir).first }
+
+    val cats = remember(refreshKey) {
+        val raws = listOf(
+            "Models" to ModelDownloader.modelsDir(ctx),
+            "Documents" to java.io.File(ctx.filesDir, "vault"),
+            "Attachments" to java.io.File(ctx.filesDir, "attachments"),
+            "Chats" to java.io.File(ctx.filesDir, "chats"),
+            "Projects" to java.io.File(ctx.filesDir, "projects"),
+            "Voice" to java.io.File(ctx.getExternalFilesDir("voices") ?: ctx.filesDir, ""),
+            "Updates" to java.io.File(ctx.getExternalFilesDir(null), "updates"),
+        )
+        raws.map { (label, dir) ->
+            val (bytes, files) = walkSize(dir)
+            StorageCat(label, bytes, files)
+        }
+            .filter { it.bytes > 0L }
+            .sortedByDescending { it.bytes }
+    }
+
+    val largestFiles = remember(refreshKey) {
+        listOf(ctx.filesDir, ctx.cacheDir, ctx.getExternalFilesDir(null))
+            .filterNotNull()
+            .flatMap { it.walkTopDown().toList() }
+            .filter { it.isFile }
+            .sortedByDescending { it.length() }
+            .take(5)
+    }
 
     Column { ManagerHeader("Karen Storage", onOpenDrawer, onNavigateToHome) }
-    KScreen(title = "Storage & File Manager", subtitle = "§94 — UI preview, mock sizes") {
-        Section(title = "Usage breakdown") {
-            listOf(
-                "Models" to ("6.4 GB" to 0.49f),
-                "Documents" to ("2.1 GB" to 0.16f),
-                "Backups" to ("3.2 GB" to 0.24f),
-                "Cache" to ("800 MB" to 0.06f),
-                "Embeddings" to ("450 MB" to 0.03f),
-                "Memory" to ("120 MB" to 0.01f)
-            ).forEach { (label, pair) ->
-                val (size, frac) = pair
-                KV(label, size)
-                LinearProgressIndicator(
-                    progress = { frac },
-                    modifier = Modifier.fillMaxWidth().height(5.dp),
-                    color = colors.accentBlue,
-                    trackColor = colors.surfaceHover
+    KScreen(title = "Storage & File Manager", subtitle = "Real device data · re-scans on every visit") {
+        // -- Summary cards --
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            KpiCard("Device", fmtBytes(deviceTotal), modifier = Modifier.weight(1f), tone = KTone.Neutral)
+            KpiCard("Karen", fmtBytes(karenTotal), modifier = Modifier.weight(1f), tone = KTone.Primary)
+            KpiCard("Free", fmtBytes(deviceFree), modifier = Modifier.weight(1f), tone = KTone.Muted)
+        }
+
+        // -- Donut --
+        if (cats.isNotEmpty()) {
+            Section(title = "Usage breakdown") {
+                val palette = listOf(
+                    colors.accentGreen, colors.accentBlue, colors.accentAmber,
+                    androidx.compose.ui.graphics.Color(0xFF8B5CF6),
+                    androidx.compose.ui.graphics.Color(0xFFEC4899),
+                    androidx.compose.ui.graphics.Color(0xFF06B6D4),
+                    androidx.compose.ui.graphics.Color(0xFFF97316),
                 )
-                Spacer(Modifier.height(6.dp))
+                val slices = cats.mapIndexed { i, c ->
+                    Triple(c.label, c.bytes.toFloat(), palette[i % palette.size])
+                }
+                KPieChart(slices)
             }
-            KV("Total (Karen)", "13.07 GB", hl = true)
-            KV("Device free", "48.2 GB")
         }
-        Section(title = "Shortcuts") {
-            KCard("Open Model Manager", "installed weights · import · export")
-            KCard("Memory transfer", "export / import approved memory")
-            KCard("Backup package", "quick · full · offline copy")
+
+        // -- Category bars --
+        Section(title = "Categories") {
+            val maxBytes = cats.maxOfOrNull { it.bytes }?.takeIf { it > 0L } ?: 1L
+            cats.forEach { cat ->
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text(cat.label, color = colors.textPrimary, fontSize = 13.sp)
+                            Text(fmtBytes(cat.bytes), color = colors.textMuted, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+                        }
+                        LinearProgressIndicator(
+                            progress = { (cat.bytes.toFloat() / maxBytes).coerceIn(0f, 1f) },
+                            modifier = Modifier.fillMaxWidth().height(5.dp),
+                            color = colors.accentBlue,
+                            trackColor = colors.surfaceHover,
+                        )
+                    }
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        "${cat.files}",
+                        color = colors.textMuted,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 11.sp,
+                        modifier = Modifier.width(28.dp),
+                        textAlign = TextAlign.End
+                    )
+                }
+            }
         }
+
+        // -- Maintenance --
         Section(title = "Maintenance") {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { toast(ctx, "Cache cleared") }) { Text("Clear cache", fontSize = 12.sp) }
-                OutlinedButton(onClick = { toast(ctx, "Large-operation warning") }) { Text("Verify", fontSize = 12.sp) }
+                OutlinedButton(onClick = {
+                    ctx.cacheDir.deleteRecursively()
+                    toast(ctx, "Cache cleared (${fmtBytes(cacheSize)})")
+                    refreshKey++
+                }) {
+                    Text("Clear cache${if (cacheSize > 0) " (${fmtBytes(cacheSize)})" else ""}", fontSize = 12.sp)
+                }
+                OutlinedButton(onClick = {
+                    val d = java.io.File(ctx.getExternalFilesDir(null), "updates")
+                    val freed = walkSize(d).first
+                    d.listFiles()?.forEach { it.delete() }
+                    toast(ctx, "Downloads cleared (${fmtBytes(freed)})")
+                    refreshKey++
+                }) { Text("Clear downloads", fontSize = 12.sp) }
             }
             Spacer(Modifier.height(4.dp))
             Text(
@@ -392,6 +497,15 @@ fun StorageManagerScreen(onOpenDrawer: () -> Unit = {}, onNavigateToHome: () -> 
                 color = colors.textMuted,
                 fontSize = 12.sp
             )
+        }
+
+        // -- Largest files --
+        if (largestFiles.isNotEmpty()) {
+            Section(title = "Largest files") {
+                largestFiles.forEach { f ->
+                    KV(f.name, "${fmtBytes(f.length())}  ·  ${f.parentFile?.name ?: ""}")
+                }
+            }
         }
     }
 }

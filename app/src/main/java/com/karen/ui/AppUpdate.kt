@@ -528,6 +528,34 @@ object AppUpdate {
             .apply()
     }
 
+    /** Bytes currently used by downloaded and partial update files. */
+    fun cacheSizeBytes(ctx: Context): Long {
+        return try {
+            val dir = File(ctx.getExternalFilesDir(null) ?: return 0L, "updates")
+            dir.listFiles()?.fold(0L) { acc, f -> if (f.isFile) acc + f.length() else acc } ?: 0L
+        } catch (_: Exception) {
+            0L
+        }
+    }
+
+    /**
+     * Deletes every downloaded/partial update file and the pending metadata,
+     * so the user can reclaim the storage and download afresh. The last-check
+     * sha is cleared too: with the file gone the device no longer holds that
+     * update, so the next check should offer it again.
+     */
+    fun clearDownloadCache(ctx: Context) {
+        try {
+            File(ctx.getExternalFilesDir(null), "updates").listFiles()?.forEach { it.delete() }
+        } catch (_: Exception) {
+        }
+        prefs(ctx).edit()
+            .remove(KEY_PENDING_APK)
+            .remove(KEY_PENDING_SHA)
+            .remove(KEY_SHA)
+            .apply()
+    }
+
     /**
      * Post-install detection: if a pending update was recorded and the app
      * is running (possibly new version), clean up and return true.

@@ -43,9 +43,14 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
     val currentMode = LocalKarenThemeMode.current
 
     var editing by remember { mutableStateOf(false) }
+    var showClearCache by remember { mutableStateOf(false) }
 
     KarenHomeBackHandler(onNavigateToHome = onBack) {
-        if (editing) { editing = false; true } else false
+        when {
+            editing -> { editing = false; true }
+            showClearCache -> { showClearCache = false; true }
+            else -> false
+        }
     }
     var editName by remember(editing) { mutableStateOf(UserPrefs.name(context)) }
     var editAge by remember(editing) { mutableStateOf(UserPrefs.age(context).takeIf { it != "-" } ?: "") }
@@ -53,6 +58,21 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
 
     var dobMillis by remember { mutableStateOf(UserPrefs.dob(context)) }
     var showDobPicker by remember { mutableStateOf(false) }
+
+    // Update card state — hoisted to screen level so the clear-cache dialog
+    // can be rendered with the other dialogs below the list.
+    var updateStatus by remember { mutableStateOf("Installed: ${AppUpdate.currentVersion(context)}") }
+    var checking by remember { mutableStateOf(false) }
+    var downloading by remember { mutableStateOf(false) }
+    var paused by remember { mutableStateOf(false) }
+    var progress by remember { mutableStateOf(0f) }
+    var pendingSha by remember { mutableStateOf<String?>(null) }
+    var pendingDate by remember { mutableStateOf("") }
+    var releaseNotes by remember { mutableStateOf("") }
+    var downloadedFile by remember { mutableStateOf(AppUpdate.pendingApk(context)) }
+    var justInstalled by remember { mutableStateOf(AppUpdate.consumeJustInstalled(context)) }
+    var cacheBytes by remember { mutableStateOf(AppUpdate.cacheSizeBytes(context)) }
+    val updateScope = rememberCoroutineScope()
 
     Column(
         modifier = Modifier
@@ -1367,17 +1387,6 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
             item {
                 Text("Updates", color = colors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(6.dp))
-                var updateStatus by remember { mutableStateOf("Installed: ${AppUpdate.currentVersion(context)}") }
-                var checking by remember { mutableStateOf(false) }
-                var downloading by remember { mutableStateOf(false) }
-                var paused by remember { mutableStateOf(false) }
-                var progress by remember { mutableStateOf(0f) }
-                var pendingSha by remember { mutableStateOf<String?>(null) }
-                var pendingDate by remember { mutableStateOf("") }
-                var releaseNotes by remember { mutableStateOf("") }
-                var downloadedFile by remember { mutableStateOf(AppUpdate.pendingApk(context)) }
-                var justInstalled by remember { mutableStateOf(AppUpdate.consumeJustInstalled(context)) }
-                val updateScope = rememberCoroutineScope()
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1521,6 +1530,7 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                                             downloading = false
                                             paused = false
                                             AppUpdate.setDownloadPaused(false)
+                                            cacheBytes = AppUpdate.cacheSizeBytes(context)
                                         }
                                     }
                                 },
@@ -1567,6 +1577,14 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                             ) {
                                 Text("Install", fontSize = 12.sp)
                             }
+                        }
+                    }
+                    if (cacheBytes > 0L && !downloading) {
+                        OutlinedButton(
+                            onClick = { showClearCache = true },
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Text("Clear download cache (${fmtBytes(cacheBytes)})", fontSize = 12.sp)
                         }
                     }
                     Text(
@@ -1728,6 +1746,52 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                 }
             )
         }
+        if (showClearCache) {
+            androidx.compose.ui.window.Dialog(onDismissRequest = { showClearCache = false }) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(colors.surface)
+                        .border(1.dp, colors.border, RoundedCornerShape(20.dp))
+                        .padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text("Clear download cache?", color = colors.textPrimary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "Deletes ${fmtBytes(cacheBytes)} of downloaded update files from the app's private storage. You can download the update again any time.",
+                        color = colors.textMuted,
+                        fontSize = 12.5.sp
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TextButton(onClick = { showClearCache = false }) {
+                            Text("Cancel", color = colors.textMuted)
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Button(
+                            onClick = {
+                                AppUpdate.clearDownloadCache(context)
+                                downloadedFile = null
+                                cacheBytes = AppUpdate.cacheSizeBytes(context)
+                                updateStatus = "Download cache cleared — you can download again any time."
+                                showClearCache = false
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = colors.accentRed,
+                                contentColor = Color.White
+                            ),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Text("Clear")
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1760,6 +1824,13 @@ private fun DobPickerDialog(
     ) {
         DatePicker(state = pickerState)
     }
+}
+
+private fun fmtBytes(bytes: Long): String = when {
+    bytes >= 1_000_000_000L -> String.format(java.util.Locale.US, "%.1f GB", bytes / 1_000_000_000.0)
+    bytes >= 1_000_000L -> String.format(java.util.Locale.US, "%.1f MB", bytes / 1_000_000.0)
+    bytes >= 1_000L -> String.format(java.util.Locale.US, "%.0f KB", bytes / 1_000.0)
+    else -> "$bytes B"
 }
 
 private fun formatDob(millis: Long): String {

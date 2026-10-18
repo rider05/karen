@@ -53,12 +53,13 @@ object KR {
 }
 
 /** Semantic tone so chips and meters stay consistent across screens. */
-enum class KTone { Primary, Success, Amber, Danger, Neutral, Muted }
+enum class KTone { Primary, Success, Blue, Amber, Danger, Neutral, Muted }
 
 @Composable
 fun KTone.color(colors: KarenColors = LocalKarenColors.current): Color = when (this) {
     KTone.Primary -> colors.accentGreen
     KTone.Success -> colors.accentSuccess
+    KTone.Blue -> colors.accentBlue
     KTone.Amber -> colors.accentAmber
     KTone.Danger -> colors.accentRed
     KTone.Neutral -> colors.textSecondary

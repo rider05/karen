@@ -89,8 +89,12 @@ class WorkerInfo(
         /** A running task with no worker activity for this long fails. */
         const val TASK_STALL_MS = 120_000L
 
-        /** How long one poll request is held before the worker reconnects. */
-        const val POLL_HOLD_MS = 40_000L
+        /**
+         * How long one poll request is held before the worker reconnects.
+         * Tasks are handed over the moment they are queued and keepalives
+         * flow every 10 s, so a longer hold only cuts request churn.
+         */
+        const val POLL_HOLD_MS = 60_000L
     }
 }
 
@@ -1926,7 +1930,7 @@ object LocalApiServer {
 <script>
 var PAGE = '$mode';
 var S = { token: localStorage.getItem('karen_token') || '', busy: false, ctrl: null, log: [], node: nodeName(), boost: localStorage.getItem('karen_gpu_boost') === '1', llm: null, llmMod: null, llmModel: '', adapter: null, gpuName: '', gflops: 0,
-  w: { on: localStorage.getItem('karen_worker') !== '0' && !!localStorage.getItem('karen_token'), saved: localStorage.getItem('karen_worker') === '1', master: false, id: localStorage.getItem('karen_worker_id') || '', model: localStorage.getItem('karen_worker_model') || '', loaded: '', engine: null, interrupted: false },
+  w: { on: localStorage.getItem('karen_worker') !== '0' && !!localStorage.getItem('karen_token'), saved: localStorage.getItem('karen_worker') === '1', master: false, id: localStorage.getItem('karen_worker_id') || '', model: localStorage.getItem('karen_worker_model') || '', loaded: '', engine: null, interrupted: false, loop: false },
   wModels: [], wlist: [] };
 function el(id) { return document.getElementById(id); }
 function nodeName() {
@@ -2474,39 +2478,45 @@ function workerLeave(reason) {
   workerStatus('off — ' + (reason || 'left'));
 }
 async function workerLoop() {
-  while (S.w.on) {
-    var r = null;
-    try { r = await fetch('/v1/worker/poll', { headers: headers(true) }); }
-    catch (e) { workerStatus('connection lost — retrying'); await workerSleep(3000); continue; }
-    if (!r) { await workerSleep(3000); continue; }
-    if (r.status === 410) { workerLeave('disconnected by the phone'); toast('Removed by the phone — slave mode off'); return; }
-    if (r.status === 404) { workerStatus('re-registering…'); await workerRegister(); continue; }
-    if (r.status === 401) { workerStatus('token needed — save it above'); await workerSleep(5000); continue; }
-    if (!r.ok) { workerStatus('poll HTTP ' + r.status); await workerSleep(3000); continue; }
-    if (S.w.on) { workerStatus('idle — waiting for tasks'); }
-    var reader = r.body.getReader();
-    var dec = new TextDecoder();
-    var buf = '';
-    try {
-      while (true) {
-        var step = await reader.read();
-        if (step.done) break;
-        buf += dec.decode(step.value, { stream: true });
-        var i;
-        while ((i = buf.indexOf('\n\n')) >= 0) {
-          var block = buf.slice(0, i); buf = buf.slice(i + 2);
-          if (block.indexOf('event: task') !== 0) continue;
-          var dl = null;
-          var lines = block.split('\n');
-          for (var k = 0; k < lines.length; k++) { if (lines[k].indexOf('data: ') === 0) { dl = lines[k].slice(6); break; } }
-          if (!dl) continue;
-          try { var task = JSON.parse(dl); await workerRunTask(task); }
-          catch (e) { workerStatus('bad task: ' + (e && e.message ? e.message : e)); }
+  if (S.w.loop) { return; }  // exactly one poll loop per tab, ever
+  S.w.loop = true;
+  try {
+    while (S.w.on) {
+      var r = null;
+      try { r = await fetch('/v1/worker/poll', { headers: headers(true) }); }
+      catch (e) { workerStatus('connection lost — retrying'); await workerSleep(3000); continue; }
+      if (!r) { await workerSleep(3000); continue; }
+      if (r.status === 410) { workerLeave('disconnected by the phone'); toast('Removed by the phone — slave mode off'); return; }
+      if (r.status === 404) { workerStatus('re-registering…'); await workerRegister(); continue; }
+      if (r.status === 401) { workerStatus('token needed — save it above'); await workerSleep(5000); continue; }
+      if (!r.ok) { workerStatus('poll HTTP ' + r.status); await workerSleep(3000); continue; }
+      if (S.w.on) { workerStatus('idle — waiting for tasks'); }
+      var reader = r.body.getReader();
+      var dec = new TextDecoder();
+      var buf = '';
+      try {
+        while (true) {
+          var step = await reader.read();
+          if (step.done) break;
+          buf += dec.decode(step.value, { stream: true });
+          var i;
+          while ((i = buf.indexOf('\n\n')) >= 0) {
+            var block = buf.slice(0, i); buf = buf.slice(i + 2);
+            if (block.indexOf('event: task') !== 0) continue;
+            var dl = null;
+            var lines = block.split('\n');
+            for (var k = 0; k < lines.length; k++) { if (lines[k].indexOf('data: ') === 0) { dl = lines[k].slice(6); break; } }
+            if (!dl) continue;
+            try { var task = JSON.parse(dl); await workerRunTask(task); }
+            catch (e) { workerStatus('bad task: ' + (e && e.message ? e.message : e)); }
+          }
         }
+      } catch (e) {
+        workerStatus('poll stream error — retrying');
       }
-    } catch (e) {
-      workerStatus('poll stream error — retrying');
     }
+  } finally {
+    S.w.loop = false;
   }
 }
 async function workerEnsureEngine(model, taskId) {
@@ -2646,6 +2656,11 @@ function renderRunner(ws) {
   syncRunnerUi();
 }
 function refreshWorkers() {
+  // The slave list only exists on the console; the worker page has nothing to
+  // show there, so it must not keep asking the phone for it. This used to run
+  // every 5 s from every open tab — on worker pages that was the bulk of the
+  // "slaves keep sending requests" traffic.
+  if (PAGE !== 'console') { return; }
   fetch('/v1/workers', { headers: headers(false) }).then(function (r) {
     if (r.status === 401) { el('workersSummary').textContent = 'Slave nodes — save the token to list them'; return null; }
     if (!r.ok) { return null; }
@@ -2858,8 +2873,13 @@ if (PAGE === 'console') {
 }
 loadModels();
 initGpu();
-refreshWorkers();
-if (window.setInterval) { setInterval(refreshWorkers, 5000); }
+if (PAGE === 'console') {
+  refreshWorkers();
+  // Live slave list, console only: refresh when the tab is visible, never in
+  // the background, and at a calmer 10 s cadence (was every 5 s on all pages).
+  if (window.setInterval) { setInterval(function () { if (!document.hidden) { refreshWorkers(); } }, 10000); }
+  document.addEventListener('visibilitychange', function () { if (!document.hidden) { refreshWorkers(); } });
+}
 </script>
 </body>
 </html>

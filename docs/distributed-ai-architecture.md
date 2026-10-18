@@ -129,6 +129,13 @@ no promise that adding workers speeds up a single generation.
   instead of a silent "WebGPU unavailable".
 - No new exposure: workers poll outbound; nothing listens in the browser; no
   arbitrary code/file endpoints; logs never contain the token.
+- **Request budget per open page** (was: every page asked for the slave list
+  every 5 s, forever): a joined worker tab makes exactly one traffic stream —
+  the SSE long-poll, reconnected every 60 s (`POLL_HOLD_MS`; tasks are handed
+  over the moment they are queued, `: ping` keepalives every 10 s). The slave
+  list refresh runs only on the console, only while its tab is visible, at a
+  10 s cadence. One poll loop per tab is enforced (`S.w.loop`), so duplicate
+  joins cannot double the polling.
 
 ## 7. Failure & recovery
 

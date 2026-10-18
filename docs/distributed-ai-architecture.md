@@ -16,7 +16,7 @@ Status labels used here follow the plan: **WORKING** = implemented and exercised
 |---|---|---|
 | **Master host** | Karen app (Android) | HTTP server, auth, worker registry, task queue, relay, node tracking. Always on while the app runs. |
 | **Console** | Any dashboard page (phone browser or laptop browser) | Submit prompts, pick runner/model, watch stream + per-task metrics, manage workers. |
-| **Worker** | Dashboard page in *worker mode* (laptop/desktop browser with WebGPU) | Register capabilities, long-poll for tasks, load MLC models, run inference on its GPU, stream tokens back. |
+| **Worker** | Dashboard page in *worker mode* (laptop/desktop browser with WebGPU) | Register capabilities, long-poll for tasks, load MLC models, run inference on its GPU, stream tokens back. Other devices join **automatically** once the token is saved; the phone itself never becomes a worker. |
 
 ```
  phone (master host, :11434)                 laptop browser (worker)
@@ -37,10 +37,17 @@ WebRTC signaling.
 
 ## 2. Worker lifecycle (EXPERIMENTAL)
 
-1. **Join** — user ticks *Join as GPU worker* on a dashboard page. The page
-   registers (`POST /v1/worker/register`) with: name, adapter, GFLOPS (from the
-   shipped benchmark, if run), backend `webllm`, supported model ids, default
-   model. Server returns a stable `workerId` (persisted in `localStorage`).
+1. **Join (automatic by default)** — any *other* device that opens the dashboard
+   in a WebGPU browser becomes a worker as soon as the bearer token is saved
+   (one-time pairing per browser); the page registers on load
+   (`POST /v1/worker/register`) with: name, adapter, GFLOPS (from the shipped
+   benchmark, if run), backend `webllm`, supported model ids, default model.
+   Server returns a stable `workerId` (persisted in `localStorage`). The manual
+   *Work as a slave node* switch is an override — off = leave and stay off
+   (`karen_worker=0`), on = rejoin (`=1`); unset = auto. **The phone itself
+   never registers as a worker**: loopback and the phone's own LAN address get
+   `{ok, master:true}` instead of an id, and the page disables the switch with
+   an explanation.
 2. **Idle poll** — worker holds `GET /v1/worker/poll` (SSE). Server keeps it open
    up to 40 s, sending `: ping` every 10 s; each open counts as a heartbeat. On
    close the worker reconnects immediately (≤ few seconds).
@@ -69,7 +76,7 @@ running → completed | failed | cancelled`.
 | Endpoint | Direction | Payload (essentials) |
 |---|---|---|
 | `GET /v1/workers` | console/master | `{object:"list", data:[{id,name,ip,gpu,gflops,state,loadedModel,defaultModel,models[],lastSeenAt,tasksDone,lastTps,lastTtftMs}]}` |
-| `POST /v1/worker/register` | worker → master | `{workerId?, name, gpu, gflops, backend:"webllm", engine:"web-llm@0.2.86", defaultModel, models[], loadedModel}` → `{ok, workerId, pollSeconds, taskTimeoutSeconds}` |
+| `POST /v1/worker/register` | worker → master | `{workerId?, name, gpu, gflops, backend:"webllm", engine:"web-llm@0.2.86", defaultModel, models[], loadedModel}` → `{ok, workerId, pollSeconds, taskTimeoutSeconds}`; **master device → `{ok, master:true}`** (no id; see §2.1) |
 | `GET /v1/worker/poll` | worker → master | header `X-Karen-Worker: <id>`; SSE: `event: task` + `data: {id, model, messages[], temperature, max_tokens}`; `: ping` keepalives; `event: idle` end-of-hold |
 | `POST /v1/worker/progress` | worker → master | `{workerId, taskId, phase:"loading"\|"running", progress?, text?, loadedModel?}` → `{ok, cancel}` |
 | `POST /v1/worker/stream` | worker → master | `{workerId, taskId, delta}` → `{ok, cancel}` |
@@ -123,7 +130,8 @@ no promise that adding workers speeds up a single generation.
 |---|---|
 | Worker tab closed mid-task | No post for 120 s → task `failed` (“worker went quiet”), console unblocked; worker shows `offline` after 75 s |
 | Console disconnects | Next worker post gets `cancel:true` → engine interrupted → task `cancelled` |
-| Worker removed by master | Worker receives `410`, stops polling, join toggle off, toast shown |
+| Worker removed by master | Worker receives `410`, stops polling, join toggle off (`karen_worker=0`), toast shown |
+| Master device opens its own dashboard | `/v1/nodes/hello` and `/v1/worker/register` answer `{ok, master:true}`; page disables the slave switch — the master never becomes a worker |
 | Server restarted | Worker poll gets `404` → re-registers automatically (same id) |
 | Model load exceeds RAM | WebLLM throws → task `failed` with the real error text |
 | Task queued, nobody picks up | 120 s with no worker activity → `failed` (“no worker picked up the task”) |
@@ -152,6 +160,13 @@ responding (documented); phone RAM is untouched by worker tasks.
    forwarder, secure context, WebGPU available). Found + fixed during QA: JSON
    API responses now send `Cache-Control: no-store` — without it a browser could
    replay a cached 410 on `/v1/worker/poll` after the worker re-registered.
+   **Slave-node-default round (same day)**: fresh browser with WebGPU → no token
+   = no join, guidance status; token saved = pairs and auto-joins with zero
+   clicks; reload = auto-rejoin (~2 s); switch off = leave, persists off across
+   reloads (no register call after reload); switch on = rejoins; master
+   simulation (`hello`/`register` return `master:true`) = switch disabled,
+   explanation shown, no register call even when previously joined. No console
+   errors in any run.
 3. **On-device acceptance checklist** (manual, first run on user's hardware):
    join from a laptop; run a prompt from the phone console; watch tokens; Stop;
    close the tab mid-task and confirm the task fails cleanly; rejoin.

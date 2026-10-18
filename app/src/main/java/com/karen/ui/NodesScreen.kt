@@ -114,7 +114,7 @@ fun NodesScreen(onNavigateToHome: () -> Unit = {}) {
             }
 
             if (workers.isNotEmpty()) {
-                item { KSectionLabel("GPU WORKERS · ${workers.size}") }
+                item { KSectionLabel("SLAVE NODES · ${workers.size}") }
                 items(workers, key = { "worker:" + it.ip }) { node ->
                     WorkerPanel(
                         node = node,
@@ -123,7 +123,7 @@ fun NodesScreen(onNavigateToHome: () -> Unit = {}) {
                             val ok = LocalApiServer.cancelTaskOnWorker(node.workerId)
                             Toast.makeText(
                                 context,
-                                if (ok) "Task cancelled — the worker stops at its next chunk" else "Nothing running to cancel",
+                                if (ok) "Task cancelled — the node stops at its next chunk" else "Nothing running to cancel",
                                 Toast.LENGTH_SHORT
                             ).show()
                         },
@@ -156,17 +156,17 @@ fun NodesScreen(onNavigateToHome: () -> Unit = {}) {
 
     val doomed = pendingDisconnect
     if (doomed != null) {
-        val workerName = doomed.name.ifBlank { "Worker " + doomed.ip.substringAfterLast('.') }
+        val workerName = doomed.name.ifBlank { "Node " + doomed.ip.substringAfterLast('.') }
         AlertDialog(
             onDismissRequest = { pendingDisconnect = null },
             containerColor = colors.surface,
             titleContentColor = colors.textPrimary,
             textContentColor = colors.textSecondary,
-            title = { Text("Disconnect this worker?") },
+            title = { Text("Disconnect this slave node?") },
             text = {
                 Text(
                     "\u201C$workerName\u201D stops immediately and will not rejoin on its own — " +
-                        "someone has to press Join again on its dashboard page."
+                        "the slave node switch on that device has to be turned back on."
                 )
             },
             confirmButton = {
@@ -175,7 +175,7 @@ fun NodesScreen(onNavigateToHome: () -> Unit = {}) {
                     val ok = LocalApiServer.disconnectWorker(doomed.workerId)
                     Toast.makeText(
                         context,
-                        if (ok) "Worker disconnected" else "Worker already gone",
+                        if (ok) "Slave node disconnected" else "Node already gone",
                         Toast.LENGTH_SHORT
                     ).show()
                 }) { Text("Disconnect", color = colors.accentRed) }
@@ -265,11 +265,11 @@ private fun MasterPanel(workersOnline: Int, workersTotal: Int, nodesTotal: Int) 
                 caption = "this run"
             )
             KMetric(
-                "Workers",
+                "Slaves",
                 if (workersTotal == 0) "0" else "$workersOnline/$workersTotal",
                 Modifier.weight(1f),
                 tone = if (workersOnline > 0) KTone.Success else KTone.Muted,
-                caption = if (workersTotal == 0) "none joined" else "online"
+                caption = if (workersTotal == 0) "none yet" else "online"
             )
             KMetric(
                 "Devices",
@@ -367,7 +367,7 @@ private fun WorkerPanel(
     val label = if (!online) "OFFLINE" else state.ifBlank { "idle" }.uppercase(Locale.US)
 
     KPanel(
-        title = node.name.ifBlank { "Worker " + node.ip.substringAfterLast('.') },
+        title = node.name.ifBlank { "Node " + node.ip.substringAfterLast('.') },
         subtitle = node.ip,
         icon = { StatusDot(if (online) colors.accentGreen else colors.textMuted, 9.dp) },
         trailing = { KStatusChip(label = label, tone = tone, led = true) }
@@ -489,7 +489,8 @@ private fun EmptyPanel() {
     ) {
         Text(
             "Start the local server, then open its address from another device on the same Wi-Fi. " +
-                "Every dashboard page and API call appears here — a device can also join as a GPU worker from the dashboard.",
+                "Other devices work as slave nodes automatically: open the dashboard in Chrome/Edge " +
+                "with WebGPU and save the token once — the phone itself always stays master.",
             color = colors.textMuted,
             fontSize = 12.sp,
             lineHeight = 17.sp
@@ -500,8 +501,8 @@ private fun EmptyPanel() {
 @Composable
 private fun FooterNote() {
     Text(
-        "Names come from each device or its network host name. A worker runs prompts on its own GPU — " +
-            "Cancel task stops its current prompt, Disconnect stops the worker for good. It shows offline " +
+        "Names come from each device or its network host name. A slave node runs prompts on its own GPU — " +
+            "Cancel task stops its current prompt, Disconnect stops the node for good. It shows offline " +
             "after 75 s without a call.",
         color = LocalKarenColors.current.textMuted,
         fontSize = 11.sp,

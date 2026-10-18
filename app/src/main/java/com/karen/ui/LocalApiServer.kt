@@ -280,6 +280,17 @@ object LocalApiServer {
         null
     }
 
+    /** True for connections from the phone itself (loopback or its own LAN IP). */
+    private fun isMasterPeer(ctx: Context, ip: String?): Boolean {
+        if (ip == null) return false
+        if (ip == "127.0.0.1" || ip == "::1" || ip == "0:0:0:0:0:0:0:1") return true
+        return try {
+            ip == lanIp(ctx)
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     private fun newWorkerId(): String =
         "w_" + UUID.randomUUID().toString().replace("-", "").take(6)
 
@@ -364,8 +375,18 @@ object LocalApiServer {
     }
 
     /** Worker announces itself (and its model list) or refreshes capabilities. */
-    private fun registerWorker(socket: Socket, body: JSONObject) {
+    private fun registerWorker(ctx: Context, socket: Socket, body: JSONObject) {
         val ip = peerIp(socket)
+        // The phone is the master: it coordinates and never works as its own
+        // slave node. Loopback and the phone's own LAN address both count.
+        if (isMasterPeer(ctx, ip)) {
+            writeJson(
+                socket, 200,
+                JSONObject().put("ok", true).put("master", true)
+                    .put("note", "this is the master device — other devices work as slave nodes")
+            )
+            return
+        }
         val proposed = body.optString("workerId", "").trim()
         val id = if (proposed.startsWith("w_") && !removedWorkers.contains(proposed)) {
             proposed
@@ -649,7 +670,7 @@ object LocalApiServer {
                 socket, 503,
                 JSONObject().put(
                     "error",
-                    errorObj("no GPU worker is online — open the dashboard on a laptop/desktop with WebGPU and join as worker")
+                    errorObj("no worker is online — open the dashboard on a laptop/desktop with WebGPU; it joins automatically as a slave node once the token is saved")
                 )
             )
             return
@@ -1218,7 +1239,7 @@ object LocalApiServer {
                     if (body == null) {
                         writeJson(socket, 400, JSONObject().put("error", errorObj("JSON body required")))
                     } else {
-                        registerNodeCapabilities(socket, body)
+                        registerNodeCapabilities(ctx, socket, body)
                     }
                 }
                 method == "GET" && path == "/v1/workers" -> {
@@ -1228,7 +1249,7 @@ object LocalApiServer {
                     if (body == null) {
                         writeJson(socket, 400, JSONObject().put("error", errorObj("JSON body required")))
                     } else {
-                        registerWorker(socket, body)
+                        registerWorker(ctx, socket, body)
                     }
                 }
                 method == "GET" && path == "/v1/worker/poll" -> {
@@ -1443,14 +1464,14 @@ object LocalApiServer {
     }
 
     /** Dashboard reports a node's hardware: WebGPU presence, adapter, GFLOPS. */
-    private fun registerNodeCapabilities(socket: Socket, body: JSONObject) {
-        val ip = try {
-            socket.inetAddress?.hostAddress
-        } catch (_: Exception) {
-            null
-        }
-        if (ip == null || ip == "127.0.0.1" || ip == "::1" || ip == "0:0:0:0:0:0:0:1") {
-            writeJson(socket, 200, JSONObject().put("ok", true).put("note", "loopback — not tracked as a node"))
+    private fun registerNodeCapabilities(ctx: Context, socket: Socket, body: JSONObject) {
+        val ip = peerIp(socket)
+        if (ip == null || isMasterPeer(ctx, ip)) {
+            writeJson(
+                socket, 200,
+                JSONObject().put("ok", true).put("master", true)
+                    .put("note", "this is the master device — other devices work as slave nodes")
+            )
             return
         }
         val now = System.currentTimeMillis()
@@ -1819,7 +1840,7 @@ object LocalApiServer {
   <div class="logo">K</div>
   <div>
     <h1>Karen Dashboard</h1>
-    <div class="sub">the model runs on the phone — or on a device that joined as GPU worker</div>
+    <div class="sub">the model runs on the phone — or on another device working as a slave node</div>
   </div>
   <div class="status"><span class="dot" id="dot"></span><span id="statusText">connecting…</span></div>
 </header>
@@ -1830,9 +1851,9 @@ object LocalApiServer {
   <button class="ghost" onclick="loadModels()">Refresh</button>
   <select id="runner" style="min-width:200px" onchange="runnerChanged()" title="Where the prompt runs">
     <option value="">Runner: Phone (llama.cpp)</option>
-    <option value="auto">Runner: Auto — best GPU worker</option>
+    <option value="auto">Runner: Auto — best slave node</option>
   </select>
-  <select id="wmodel" style="min-width:220px;display:none" onchange="runnerChanged()" title="Model on the selected worker"></select>
+  <select id="wmodel" style="min-width:220px;display:none" onchange="runnerChanged()" title="Model on the selected slave node"></select>
 </div>
 <details class="files" id="filesPanel">
   <summary id="filesSummary">On-device model files — loading…</summary>
@@ -1857,16 +1878,16 @@ object LocalApiServer {
     <div class="frow" style="border-top:1px solid #283042;padding-top:10px;margin-top:6px">
       <label class="fmeta" style="display:flex;align-items:center;gap:8px;flex:1;min-width:260px">
         <input type="checkbox" id="gpuWorker" onclick="toggleWorker(this.checked)">
-        <span>Join as <b>GPU worker</b> — this device runs prompts sent from any dashboard's Runner picker (keep this tab open)</span>
+        <span>Work as a <b>slave node</b> — this device runs prompts sent by the phone (keep this tab open; other devices join automatically once the token is saved)</span>
       </label>
       <select id="workerModel" style="max-width:330px" onchange="saveWorkerModel()"></select>
     </div>
-    <div class="fmeta" id="workerStatus">Worker mode off — prompts run on the phone.</div>
+    <div class="fmeta" id="workerStatus">Slave node mode off — prompts run on the phone.</div>
     <div class="fmeta" id="secureHint" style="display:none;color:#f59e0b"></div>
   </div>
 </details>
 <details class="files" id="workersPanel">
-  <summary id="workersSummary">GPU workers — loading…</summary>
+  <summary id="workersSummary">Slave nodes — loading…</summary>
   <div class="filelist" id="workerList"></div>
 </details>
 <main id="chat"></main>
@@ -1879,7 +1900,7 @@ object LocalApiServer {
 <div class="toast" id="toast"></div>
 <script>
 var S = { token: localStorage.getItem('karen_token') || '', busy: false, ctrl: null, log: [], node: nodeName(), boost: localStorage.getItem('karen_gpu_boost') === '1', llm: null, llmMod: null, llmModel: '', adapter: null, gpuName: '', gflops: 0,
-  w: { on: localStorage.getItem('karen_worker') === '1', id: localStorage.getItem('karen_worker_id') || '', model: localStorage.getItem('karen_worker_model') || '', loaded: '', engine: null, interrupted: false },
+  w: { on: localStorage.getItem('karen_worker') !== '0' && !!localStorage.getItem('karen_token'), saved: localStorage.getItem('karen_worker') === '1', master: false, id: localStorage.getItem('karen_worker_id') || '', model: localStorage.getItem('karen_worker_model') || '', loaded: '', engine: null, interrupted: false },
   wModels: [], wlist: [] };
 function el(id) { return document.getElementById(id); }
 function nodeName() {
@@ -1907,7 +1928,15 @@ function add(role, text) { var d = document.createElement('div'); d.className = 
   d.textContent = text; el('chat').appendChild(d); el('chat').scrollTop = el('chat').scrollHeight; return d; }
 function saveToken() { S.token = el('token').value.trim();
   localStorage.setItem('karen_token', S.token);
-  toast(S.token ? 'Token saved' : 'Token cleared'); loadModels(); reportNode(); }
+  toast(S.token ? 'Token saved' : 'Token cleared'); loadModels();
+  reportNode().then(function () {
+    // Pairing is the only manual step: once the token is saved this device
+    // starts working as a slave node on its own (WebGPU + not opted out).
+    if (S.token && !S.w.on && !S.w.master && S.adapter && localStorage.getItem('karen_worker') !== '0') {
+      toast('Paired — this device now works as a slave node');
+      workerJoin(true);
+    }
+  }); }
 function loadModels() {
   fetch('/v1/models', { headers: headers(false) }).then(function (r) {
     if (r.status === 401) { setStatus(false, 'token needed'); return null; }
@@ -2036,12 +2065,23 @@ var WGSL_MM = [
 '}'
 ].join('\n');
 function reportNode() {
-  if (!S.token) return;
-  fetch('/v1/nodes/hello', {
+  if (!S.token) return Promise.resolve(null);
+  return fetch('/v1/nodes/hello', {
     method: 'POST',
     headers: headers(true),
     body: JSON.stringify({ name: S.node, webgpu: !!S.adapter, gpu: S.gpuName || '', gflops: S.gflops || 0 })
-  }).catch(function () {});
+  }).then(function (r) { return r.json().catch(function () { return null; }); })
+    .then(function (j) {
+      if (j && j.master) {
+        S.w.master = true;
+        if (S.w.on) { S.w.on = false; }
+        var wb = el('gpuWorker');
+        if (wb) { wb.checked = false; wb.disabled = true; }
+        el('workerStatus').textContent = 'This is the master device (the phone) — it coordinates; other devices work as slave nodes.';
+      }
+      return j;
+    })
+    .catch(function () { return null; });
 }
 function toggleBoostText() {
   el('boostStatus').textContent = S.boost
@@ -2062,7 +2102,7 @@ async function initGpu() {
     var wbox0 = el('gpuWorker');
     if (wbox0) { wbox0.disabled = true; wbox0.checked = false; }
     S.w.on = false;
-    el('workerStatus').textContent = 'Worker mode needs WebGPU on this device.';
+    el('workerStatus').textContent = 'Slave node mode needs WebGPU on this device.';
     if (el('workerModel')) { el('workerModel').disabled = true; }
     var host = location.hostname;
     var localish = host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1';
@@ -2087,9 +2127,17 @@ async function initGpu() {
     el('gpuSummary').textContent = 'GPU offload — this device: ' + S.gpuName;
     el('gpuAdapter').textContent = 'Adapter: ' + S.gpuName + ' — benchmark it below, or switch chat onto this GPU.';
     toggleBoostText();
-    reportNode();
+    await reportNode();
     el('gpuWorker').disabled = false;
-    if (S.w.on) { workerStatus('rejoining…'); workerJoin(); }
+    if (S.w.master) {
+      // The phone itself: master, not a slave node.
+      el('gpuWorker').disabled = true;
+    } else if (S.w.on) {
+      workerStatus(S.w.saved ? 'rejoining…' : 'this device works as a slave node — joining…');
+      workerJoin(true);
+    } else if (!S.token) {
+      el('workerStatus').textContent = 'Save the token above once — this device then works as a slave node automatically.';
+    }
   } catch (e) {
     el('gpuSummary').textContent = 'GPU offload — adapter check failed: ' + (e && e.message ? e.message : e);
     el('benchBtn').disabled = true;
@@ -2198,7 +2246,7 @@ function populateWorkerModels(list) {
 function saveWorkerModel() {
   S.w.model = el('workerModel').value;
   localStorage.setItem('karen_worker_model', S.w.model);
-  toast('Worker model: ' + S.w.model);
+  toast('Slave node model: ' + S.w.model);
   if (S.w.on) { workerRegister(); }
 }
 function populateBoostModels(m) {
@@ -2289,21 +2337,32 @@ function post(url, obj) {
     .catch(function () { return null; });
 }
 function workerSleep(ms) { return new Promise(function (res) { setTimeout(res, ms); }); }
-function workerStatus(text) { el('workerStatus').textContent = 'Worker ' + (S.w.id ? '(' + S.w.id + ') ' : '') + text; }
+function workerStatus(text) { el('workerStatus').textContent = 'Slave node ' + (S.w.id ? '(' + S.w.id + ') ' : '') + text; }
 function addMeta(bubble, text) {
   var d = document.createElement('div'); d.className = 'meta'; d.textContent = text;
   if (bubble.parentNode) { bubble.parentNode.insertBefore(d, bubble.nextSibling); }
 }
 function toggleWorker(on) {
+  if (on && S.w.master) {
+    el('gpuWorker').checked = false;
+    toast('This is the master device — it does not join as a slave node');
+    return;
+  }
   if (on && !S.adapter) {
     el('gpuWorker').checked = false;
     toast('No WebGPU adapter on this device');
     return;
   }
+  if (on && !S.token) {
+    el('gpuWorker').checked = false;
+    workerStatus('save the token above first — then this device works as a slave node');
+    toast('Token needed first');
+    return;
+  }
   localStorage.setItem('karen_worker', on ? '1' : '0');
-  if (on) { workerJoin(); } else { workerLeave('left from this device'); }
+  if (on) { S.w.saved = true; workerJoin(false); } else { workerLeave('left from this device'); }
 }
-async function workerJoin() {
+async function workerJoin(isAuto) {
   S.w.on = true;
   el('gpuWorker').checked = true;
   workerStatus('starting…');
@@ -2317,7 +2376,8 @@ async function workerJoin() {
     return;
   }
   await workerRegister();
-  toast('Joined as GPU worker');
+  if (S.w.master) { S.w.on = false; el('gpuWorker').checked = false; return; }
+  if (!isAuto) { toast('Working as a slave node'); }
   workerLoop();
 }
 async function workerRegister() {
@@ -2332,6 +2392,15 @@ async function workerRegister() {
     models: S.wModels,
     loadedModel: S.w.loaded || ''
   });
+  if (j && j.master) {
+    S.w.master = true;
+    S.w.on = false;
+    var wb = el('gpuWorker');
+    if (wb) { wb.checked = false; wb.disabled = true; }
+    workerStatus('this is the master device (the phone) — other devices work as slave nodes');
+    refreshWorkers();
+    return;
+  }
   if (j && j.workerId) {
     S.w.id = j.workerId;
     localStorage.setItem('karen_worker_id', S.w.id);
@@ -2354,7 +2423,7 @@ async function workerLoop() {
     try { r = await fetch('/v1/worker/poll', { headers: headers(true) }); }
     catch (e) { workerStatus('connection lost — retrying'); await workerSleep(3000); continue; }
     if (!r) { await workerSleep(3000); continue; }
-    if (r.status === 410) { workerLeave('disconnected by the phone'); toast('Removed by the phone — worker mode off'); return; }
+    if (r.status === 410) { workerLeave('disconnected by the phone'); toast('Removed by the phone — slave mode off'); return; }
     if (r.status === 404) { workerStatus('re-registering…'); await workerRegister(); continue; }
     if (r.status === 401) { workerStatus('token needed — save it above'); await workerSleep(5000); continue; }
     if (!r.ok) { workerStatus('poll HTTP ' + r.status); await workerSleep(3000); continue; }
@@ -2495,7 +2564,7 @@ function runnerChanged() {
   syncRunnerUi();
   var v = el('runner').value;
   if (v === '') { toast('Runner: the phone (llama.cpp)'); }
-  else if (v === 'auto') { toast('Runner: auto — best online GPU worker'); }
+  else if (v === 'auto') { toast('Runner: auto — best online slave node'); }
   else { toast('Runner: ' + runnerName(v)); }
 }
 function renderRunner(ws) {
@@ -2508,7 +2577,7 @@ function renderRunner(ws) {
   o0.value = ''; o0.textContent = 'Runner: Phone (llama.cpp)';
   sel.appendChild(o0);
   var oa = document.createElement('option');
-  oa.value = 'auto'; oa.textContent = 'Runner: Auto — best GPU worker (' + online + ' online)';
+  oa.value = 'auto'; oa.textContent = 'Runner: Auto — best slave node (' + online + ' online)';
   sel.appendChild(oa);
   (ws || []).forEach(function (w) {
     var o = document.createElement('option');
@@ -2522,7 +2591,7 @@ function renderRunner(ws) {
 }
 function refreshWorkers() {
   fetch('/v1/workers', { headers: headers(false) }).then(function (r) {
-    if (r.status === 401) { el('workersSummary').textContent = 'GPU workers — save the token to list them'; return null; }
+    if (r.status === 401) { el('workersSummary').textContent = 'Slave nodes — save the token to list them'; return null; }
     if (!r.ok) { return null; }
     return r.json();
   }).then(function (j) {
@@ -2531,13 +2600,13 @@ function refreshWorkers() {
     S.wlist = ws;
     var online = 0;
     for (var i = 0; i < ws.length; i++) { if (ws[i].state !== 'offline') online += 1; }
-    el('workersSummary').textContent = 'GPU workers (' + ws.length + ') — ' + online + ' online';
+    el('workersSummary').textContent = 'Slave nodes (' + ws.length + ') — ' + online + ' online';
     var box = el('workerList');
     box.innerHTML = '';
     if (!ws.length) {
       var d = document.createElement('div');
       d.className = 'fmeta';
-      d.textContent = 'No GPU workers yet. On a laptop/desktop open this dashboard, tick "Join as GPU worker" in the GPU panel, then pick it in Runner.';
+      d.textContent = 'No slave nodes yet. On a laptop/desktop open this dashboard and save the token — it joins automatically as a slave node, then pick it in Runner.';
       box.appendChild(d);
     }
     ws.forEach(function (w) {
@@ -2616,7 +2685,7 @@ function workerSend(text, runner, wmodel) {
             if (j.object === 'worker.done') {
               var st = j.stats || {};
               if (full && j.state !== 'failed') {
-                addMeta(bubble, 'GPU worker · ' + (st.tokens || 0) + ' tok · ' + (st.tps || 0) + ' tok/s · ttft ' + (((st.ttftMs || 0) / 1000).toFixed(2)) + ' s');
+                addMeta(bubble, 'Slave node · ' + (st.tokens || 0) + ' tok · ' + (st.tps || 0) + ' tok/s · ttft ' + (((st.ttftMs || 0) / 1000).toFixed(2)) + ' s');
               }
               continue;
             }
@@ -2728,7 +2797,7 @@ el('input').addEventListener('keydown', function (e) {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
 });
 el('token').value = S.token;
-add('sys', 'Hello from Karen — connected to $ip:$port. ${models.size} installed model(s). Paste the token from Settings → Local Server, then pick a model — .gguf files found on disk can run too (expand the On-device model files panel below). Runner → Auto hands prompts to a laptop GPU that joined in the GPU offload panel.');
+add('sys', 'Hello from Karen — connected to $ip:$port. ${models.size} installed model(s). Paste the token from Settings → Local Server, then pick a model — .gguf files found on disk can run too (expand the On-device model files panel below). Runner → Auto hands prompts to a laptop/desktop working as a slave node (open this page there — it joins automatically once the token is saved).');
 loadModels();
 initGpu();
 refreshWorkers();

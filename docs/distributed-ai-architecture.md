@@ -117,13 +117,16 @@ no promise that adding workers speeds up a single generation.
   test chat). All worker/chat APIs require the token (pages paste it once; stored
   per address in `localStorage`).
 - **WebGPU needs a secure context.** Over plain `http://192.168.x.x` browsers
-  hide `navigator.gpu` (verified; see audit §2.7). Ship `tools/karen-tunnel.ps1`
-  (WORKING once tested): forwards `127.0.0.1:11434` → `phone:11434` on the
-  laptop, so the page origin is `http://127.0.0.1:11434` (trusted) while the
-  TCP connection still lands on the phone. Alternative documented path:
+  hide `navigator.gpu` — in Chrome, Edge, Brave and Firefox alike (verified;
+  see audit §2.7). `tools/karen-tunnel.ps1` forwards `127.0.0.1:11434` →
+  `phone:11434` on the laptop, so the page origin is `http://127.0.0.1:11434`
+  (trusted) while the TCP connection still lands on the phone; the script now
+  opens the worker page itself. Alternative documented path:
   `chrome://flags/#unsafely-treat-insecure-origin-as-secure`.
-  The dashboard detects this case and shows the exact fix instead of a silent
-  "WebGPU unavailable".
+  Both the worker page and the dashboard name the real cause on load — the
+  insecure origin, WebGPU switched off in the browser, or no GPU adapter —
+  and print the tunnel command with the current phone address filled in,
+  instead of a silent "WebGPU unavailable".
 - No new exposure: workers poll outbound; nothing listens in the browser; no
   arbitrary code/file endpoints; logs never contain the token.
 

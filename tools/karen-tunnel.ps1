@@ -12,6 +12,7 @@
     powershell -ExecutionPolicy Bypass -File tools\karen-tunnel.ps1 -Phone 192.168.1.7
     then open  http://127.0.0.1:11434/           (worker page - this device works for the phone)
     or         http://127.0.0.1:11434/dashboard  (console dashboard - monitor + test chat)
+    The worker page opens automatically in the default browser; add -NoOpen to skip that.
 
   Port note:
     If 11434 is already taken on this PC (Ollama defaults to it), the script
@@ -28,7 +29,8 @@
 param(
   [Parameter(Mandatory = $true)][string]$Phone,
   [int]$Port = 11434,
-  [int]$Listen = 11434
+  [int]$Listen = 11434,
+  [switch]$NoOpen
 )
 
 $ErrorActionPreference = 'Continue'
@@ -42,6 +44,13 @@ try { $listener.Start() } catch {
 Write-Host ("Karen tunnel: http://127.0.0.1:{0}  ->  {1}:{2}   (Ctrl+C to stop)" -f $Listen, $Phone, $Port)
 Write-Host ("Worker page:  http://127.0.0.1:{0}/   (open this on the working device)" -f $Listen)
 Write-Host ("Dashboard:    http://127.0.0.1:{0}/dashboard" -f $Listen)
+
+# 127.0.0.1 is a trusted (secure) origin, so the worker page served through the
+# tunnel gets WebGPU — unlike the phone's http://LAN-IP address, where every
+# browser hides it. Open it here so the exact URL is never mistyped.
+if (-not $NoOpen) {
+  try { Start-Process ("http://127.0.0.1:{0}/" -f $Listen) } catch { Write-Host "Open http://127.0.0.1:$Listen/ manually (browser auto-open failed)." }
+}
 
 # One shared list of open connections; each direction pumps asynchronously so
 # several requests (page assets, SSE chat stream, worker poll) can be in flight

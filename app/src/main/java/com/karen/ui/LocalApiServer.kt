@@ -2117,9 +2117,35 @@ function toggleBoostText() {
 async function initGpu() {
   var box = el('gpuBoost');
   box.checked = S.boost;
+  var host = location.hostname;
+  var pport = location.port || '80';
+  var origin = location.origin;
+  var secure = window.isSecureContext;
+  var hint = el('secureHint');
   if (!navigator.gpu) {
-    el('gpuSummary').textContent = 'GPU offload — WebGPU not available in this browser (phone llama.cpp remains the runner)';
-    el('gpuAdapter').textContent = 'No navigator.gpu here — GPU running needs desktop Chrome/Edge with WebGPU. The phone still answers normally.';
+    if (!secure) {
+      // Every browser — Chrome, Edge, Brave, Firefox — hides navigator.gpu on
+      // plain-http LAN origins. It is a security rule, not a browser problem,
+      // so name the real cause and give both fixes with this page's values.
+      el('gpuSummary').textContent = 'GPU offload — blocked: ' + origin + ' is a plain http:// address, and every browser hides WebGPU there';
+      el('gpuAdapter').textContent = 'This is the same in Chrome, Edge and Firefox by design (not a version thing). The phone keeps answering on llama.cpp meanwhile. Two fixes:';
+      if (hint) {
+        hint.style.display = 'block';
+        hint.innerHTML =
+          '<b>Fix 1 — tunnel, no flags (desktop):</b> run on this PC ' +
+          '<code style="background:#0c0e12;border:1px solid #283042;border-radius:5px;padding:1px 5px">powershell -ExecutionPolicy Bypass -File tools\\karen-tunnel.ps1 -Phone ' + host + ' -Port ' + pport + '</code>' +
+          ' and open <a href="http://127.0.0.1:11434/" style="color:#38bdf8">http://127.0.0.1:11434/</a> — 127.0.0.1 is a trusted address, so WebGPU is exposed there.<br>' +
+          '<b>Fix 2 — trust this address:</b> open <b>chrome://flags/#unsafely-treat-insecure-origin-as-secure</b>, add ' +
+          '<code style="background:#0c0e12;border:1px solid #283042;border-radius:5px;padding:1px 5px">' + origin + '</code>, set it to Enabled, relaunch the browser.';
+      }
+    } else {
+      el('gpuSummary').textContent = 'GPU offload — WebGPU is switched off in this browser';
+      el('gpuAdapter').textContent = 'The address is fine (' + origin + ' is trusted), so the browser itself is not exposing WebGPU — open chrome://gpu and look for "WebGPU: Disabled".';
+      if (hint) {
+        hint.style.display = 'block';
+        hint.textContent = 'chrome://gpu → "WebGPU: Disabled" is the reason. Usually: hardware acceleration turned off in browser settings, an outdated browser (needs Chrome/Edge 113+), or a blocklisted GPU driver.';
+      }
+    }
     el('benchBtn').disabled = true;
     box.disabled = true;
     box.checked = false;
@@ -2130,19 +2156,17 @@ async function initGpu() {
     S.w.on = false;
     el('workerStatus').textContent = 'Slave node mode needs WebGPU on this device.';
     if (el('workerModel')) { el('workerModel').disabled = true; }
-    var host = location.hostname;
-    var localish = host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1';
-    if (!localish) {
-      var hint = el('secureHint');
-      hint.style.display = 'block';
-      hint.textContent = 'Heads-up: browsers hide WebGPU on http://' + host + '. On this PC run  tools\\karen-tunnel.ps1 -Phone <phone-ip>  then open http://127.0.0.1:11434 (or allow this origin in chrome://flags/#unsafely-treat-insecure-origin-as-secure).';
-    }
     return;
   }
   try {
     var ad = await navigator.gpu.requestAdapter();
     if (!ad) {
-      el('gpuSummary').textContent = 'GPU offload — no WebGPU adapter available';
+      el('gpuSummary').textContent = 'GPU offload — WebGPU is present, but this machine offered no GPU adapter';
+      el('gpuAdapter').textContent = 'requestAdapter() found nothing — often software rendering or a blocklisted GPU (the phone keeps answering meanwhile).';
+      if (hint) {
+        hint.style.display = 'block';
+        hint.textContent = 'Check chrome://gpu → "Graphics Feature Status": look for "Hardware accelerated: No" or "WebGPU: Disabled". Updating the GPU driver usually fixes this.';
+      }
       el('benchBtn').disabled = true;
       box.disabled = true;
       return;
@@ -2168,6 +2192,10 @@ async function initGpu() {
     }
   } catch (e) {
     el('gpuSummary').textContent = 'GPU offload — adapter check failed: ' + (e && e.message ? e.message : e);
+    if (hint) {
+      hint.style.display = 'block';
+      hint.textContent = 'requestAdapter() threw — WebGPU is only partially enabled here. Check chrome://gpu, then reload this page.';
+    }
     el('benchBtn').disabled = true;
     box.disabled = true;
   }

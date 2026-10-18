@@ -492,7 +492,10 @@ private fun EmptyPanel() {
             "Start the local server, then open its address from another device on the same Wi-Fi. " +
                 "Other devices work as slave nodes automatically: open the worker page (LAN address + /) " +
                 "in Chrome/Edge with WebGPU and save the token once — the phone itself always stays master. " +
-                "The control dashboard lives at LAN address + /dashboard.",
+                "The control dashboard lives at LAN address + /dashboard. " +
+                "On a plain http:// address every browser hides WebGPU — the page's GPU panel then prints " +
+                "the exact fix: on the laptop run tools\\karen-tunnel.ps1 -Phone <this phone's IP> and use " +
+                "the 127.0.0.1 address it opens.",
             color = colors.textMuted,
             fontSize = 12.sp,
             lineHeight = 17.sp

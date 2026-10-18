@@ -40,7 +40,9 @@ data class NodeInfo(
     val gflops: Double = 0.0,
     val worker: Boolean = false,
     val workerState: String = "",
-    val workerModel: String = ""
+    val workerModel: String = "",
+    /** Joined worker's id (`w_xxxxxx`) while the node is an active worker. */
+    val workerId: String = ""
 )
 
 /** One model artifact actually found on disk, with its real runtime verdict. */
@@ -171,6 +173,45 @@ object LocalApiServer {
         nodeSnapshot = emptyList()
     }
 
+    /** Drops one device from history; it simply reappears if it connects again. */
+    fun forgetNode(ip: String) {
+        nodes.remove(ip)
+        nodeSnapshot = nodes.values.sortedByDescending { it.lastSeen }
+    }
+
+    /**
+     * Master-side disconnect from the Network Nodes screen — same effect as the
+     * dashboard's Disconnect button: the worker gets 410 on its next call and
+     * stops for good (it will not rejoin on its own). True if it was joined.
+     */
+    fun disconnectWorker(id: String): Boolean {
+        val worker = workers.remove(id) ?: return false
+        cancelWorkerTask(worker, "worker was disconnected by the master")
+        failQueued(worker, "worker was disconnected by the master")
+        workerQueues.remove(id)
+        clearNodeWorker(worker.ip)
+        removedWorkers.add(id)
+        removedOrder.add(id)
+        while (removedOrder.size > 64) {
+            val old = removedOrder.poll()
+            if (old != null) removedWorkers.remove(old)
+        }
+        return true
+    }
+
+    /**
+     * Cancels the task a worker is currently on. The worker stops at its next
+     * chunk (the stream response carries the cancel flag) and the console
+     * watching that task sees "cancelled". False when nothing is running.
+     */
+    fun cancelTaskOnWorker(id: String): Boolean {
+        val worker = workers[id] ?: return false
+        val task = tasks[worker.currentTask] ?: return false
+        if (task.state == "completed" || task.state == "failed" || task.state == "cancelled") return false
+        cancelWorkerTask(worker, "cancelled from the phone")
+        return true
+    }
+
     private fun recordNode(remoteIp: String?, path: String, userAgent: String, headerName: String) {
         try {
             val ip = remoteIp ?: return
@@ -192,7 +233,8 @@ object LocalApiServer {
                 gflops = prev?.gflops ?: 0.0,
                 worker = prev?.worker ?: false,
                 workerState = prev?.workerState ?: "",
-                workerModel = prev?.workerModel ?: ""
+                workerModel = prev?.workerModel ?: "",
+                workerId = prev?.workerId ?: ""
             )
             nodeSnapshot = nodes.values.sortedByDescending { it.lastSeen }
             if (nodeNames[ip] == null) {
@@ -245,10 +287,15 @@ object LocalApiServer {
         workerQueues.getOrPut(id) { LinkedBlockingQueue() }
 
     /** Mirror worker state onto the node list so the app's Nodes screen shows it. */
-    private fun touchNodeWorker(ip: String?, state: String, model: String) {
+    private fun touchNodeWorker(ip: String?, state: String, model: String, workerId: String = "") {
         val key = ip ?: return
         val prev = nodes[key] ?: return
-        nodes[key] = prev.copy(worker = true, workerState = state, workerModel = model.take(80))
+        nodes[key] = prev.copy(
+            worker = true,
+            workerState = state,
+            workerModel = model.take(80),
+            workerId = workerId
+        )
         nodeSnapshot = nodes.values.sortedByDescending { it.lastSeen }
     }
 
@@ -256,7 +303,7 @@ object LocalApiServer {
         val key = ip ?: return
         val prev = nodes[key] ?: return
         if (!prev.worker) return
-        nodes[key] = prev.copy(worker = false, workerState = "", workerModel = "")
+        nodes[key] = prev.copy(worker = false, workerState = "", workerModel = "", workerId = "")
         nodeSnapshot = nodes.values.sortedByDescending { it.lastSeen }
     }
 
@@ -356,7 +403,7 @@ object LocalApiServer {
         workers[id] = worker
         workerQueueFor(id)
         removedWorkers.remove(id)
-        touchNodeWorker(ip, worker.state, worker.loadedModel.ifBlank { worker.defaultModel })
+        touchNodeWorker(ip, worker.state, worker.loadedModel.ifBlank { worker.defaultModel }, worker.id)
         writeJson(
             socket, 200,
             JSONObject().put("ok", true)
@@ -391,7 +438,7 @@ object LocalApiServer {
         if (current.isBlank() || tasks[current] == null) {
             worker.currentTask = ""
             worker.state = "idle"
-            touchNodeWorker(worker.ip, "idle", worker.loadedModel.ifBlank { worker.defaultModel })
+            touchNodeWorker(worker.ip, "idle", worker.loadedModel.ifBlank { worker.defaultModel }, worker.id)
         }
         val out = socket.getOutputStream()
         try {
@@ -416,7 +463,7 @@ object LocalApiServer {
                     worker.currentTask = task.id
                     task.state = "assigned"
                     task.lastActivityAt = at
-                    touchNodeWorker(worker.ip, "assigned", worker.loadedModel.ifBlank { worker.defaultModel })
+                    touchNodeWorker(worker.ip, "assigned", worker.loadedModel.ifBlank { worker.defaultModel }, worker.id)
                     task.events.add(
                         JSONObject().put("type", "status").put("phase", "assigned")
                             .put("text", "worker picked up the task").put("model", task.model)
@@ -472,7 +519,7 @@ object LocalApiServer {
                 if (progress >= 0.0) evt.put("progress", progress)
                 task.events.add(evt)
             }
-            touchNodeWorker(worker.ip, worker.state, worker.loadedModel.ifBlank { worker.defaultModel })
+            touchNodeWorker(worker.ip, worker.state, worker.loadedModel.ifBlank { worker.defaultModel }, worker.id)
         }
         writeJson(
             socket, 200,
@@ -534,7 +581,7 @@ object LocalApiServer {
         }
         worker.state = "idle"
         worker.currentTask = ""
-        touchNodeWorker(worker.ip, "idle", worker.loadedModel.ifBlank { worker.defaultModel })
+        touchNodeWorker(worker.ip, "idle", worker.loadedModel.ifBlank { worker.defaultModel }, worker.id)
         task.events.add(
             JSONObject().put("type", "done")
                 .put("status", task.state)
@@ -559,19 +606,7 @@ object LocalApiServer {
     /** Master-side disconnect: the worker gets 410 afterwards and stops for good. */
     private fun workerRemove(socket: Socket, body: JSONObject) {
         val id = body.optString("id", body.optString("workerId", ""))
-        val worker = workers.remove(id)
-        if (worker != null) {
-            cancelWorkerTask(worker, "worker was disconnected by the master")
-            failQueued(worker, "worker was disconnected by the master")
-            workerQueues.remove(id)
-            clearNodeWorker(worker.ip)
-            removedWorkers.add(id)
-            removedOrder.add(id)
-            while (removedOrder.size > 64) {
-                val old = removedOrder.poll()
-                if (old != null) removedWorkers.remove(old)
-            }
-        }
+        disconnectWorker(id)
         writeJson(socket, 200, JSONObject().put("ok", true))
     }
 
@@ -642,7 +677,7 @@ object LocalApiServer {
         workerQueueFor(worker.id).add(task)
         worker.state = "assigned"
         worker.currentTask = task.id
-        touchNodeWorker(worker.ip, "assigned", worker.loadedModel.ifBlank { worker.defaultModel })
+        touchNodeWorker(worker.ip, "assigned", worker.loadedModel.ifBlank { worker.defaultModel }, worker.id)
         val out = socket.getOutputStream()
         var gone = false
         val emitRaw = { s: String ->
@@ -677,7 +712,7 @@ object LocalApiServer {
             if (worker.currentTask == task.id) {
                 worker.state = "idle"
                 worker.currentTask = ""
-                touchNodeWorker(worker.ip, "idle", worker.loadedModel.ifBlank { worker.defaultModel })
+                touchNodeWorker(worker.ip, "idle", worker.loadedModel.ifBlank { worker.defaultModel }, worker.id)
             }
             try {
                 socket.close()
@@ -803,7 +838,7 @@ object LocalApiServer {
             if (worker.currentTask == task.id) {
                 worker.state = "idle"
                 worker.currentTask = ""
-                touchNodeWorker(worker.ip, "idle", worker.loadedModel.ifBlank { worker.defaultModel })
+                touchNodeWorker(worker.ip, "idle", worker.loadedModel.ifBlank { worker.defaultModel }, worker.id)
             }
         }
         if (failure != null) {
@@ -1434,7 +1469,8 @@ object LocalApiServer {
             gflops = body.optDouble("gflops", prev?.gflops ?: 0.0),
             worker = prev?.worker ?: false,
             workerState = prev?.workerState ?: "",
-            workerModel = prev?.workerModel ?: ""
+            workerModel = prev?.workerModel ?: "",
+            workerId = prev?.workerId ?: ""
         )
         nodeSnapshot = nodes.values.sortedByDescending { it.lastSeen }
         writeJson(socket, 200, JSONObject().put("ok", true))

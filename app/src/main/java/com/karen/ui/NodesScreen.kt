@@ -1,5 +1,7 @@
 package com.karen.ui
 
+import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.widget.Toast
 import androidx.compose.foundation.background
@@ -11,8 +13,12 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -21,6 +27,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -30,8 +37,10 @@ import java.util.Locale
 
 /**
  * Network Nodes — this phone (the master) plus every device that ever talked
- * to its local server, live. Devices that joined as GPU workers get a fuller
- * readout: state, loaded model, GPU and measured compute.
+ * to its local server, live. The master card carries the server controls
+ * (start/stop, LAN exposure, dashboard, restart); GPU workers get per-worker
+ * controls (cancel the running task, disconnect for good); other devices can
+ * be forgotten individually.
  */
 @Composable
 fun NodesScreen(onNavigateToHome: () -> Unit = {}) {
@@ -53,7 +62,22 @@ fun NodesScreen(onNavigateToHome: () -> Unit = {}) {
     val clients = nodes.filter { !it.worker }
     val workersOnline = workers.count { now - it.lastSeen < WorkerInfo.ONLINE_WINDOW_MS }
 
-    KarenHomeBackHandler(onNavigateToHome = onNavigateToHome) { false }
+    var pendingDisconnect by remember { mutableStateOf<NodeInfo?>(null) }
+    var confirmClear by remember { mutableStateOf(false) }
+
+    KarenHomeBackHandler(onNavigateToHome = onNavigateToHome) {
+        when {
+            pendingDisconnect != null -> {
+                pendingDisconnect = null
+                true
+            }
+            confirmClear -> {
+                confirmClear = false
+                true
+            }
+            else -> false
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -65,8 +89,7 @@ fun NodesScreen(onNavigateToHome: () -> Unit = {}) {
             onBackClick = onNavigateToHome,
             moreActions = listOf(
                 Triple("Clear node history", Icons.Default.Delete) {
-                    LocalApiServer.clearNodes()
-                    Toast.makeText(context, "Node history cleared", Toast.LENGTH_SHORT).show()
+                    confirmClear = true
                 }
             )
         )
@@ -93,35 +116,127 @@ fun NodesScreen(onNavigateToHome: () -> Unit = {}) {
             if (workers.isNotEmpty()) {
                 item { KSectionLabel("GPU WORKERS · ${workers.size}") }
                 items(workers, key = { "worker:" + it.ip }) { node ->
-                    WorkerPanel(node = node, now = now)
+                    WorkerPanel(
+                        node = node,
+                        now = now,
+                        onCancelTask = {
+                            val ok = LocalApiServer.cancelTaskOnWorker(node.workerId)
+                            Toast.makeText(
+                                context,
+                                if (ok) "Task cancelled — the worker stops at its next chunk" else "Nothing running to cancel",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        },
+                        onDisconnect = { pendingDisconnect = node }
+                    )
                 }
             }
 
             if (clients.isNotEmpty()) {
                 item { KSectionLabel("DEVICES · ${clients.size}") }
                 items(clients, key = { "device:" + it.ip }) { node ->
-                    DevicePanel(node = node, now = now)
+                    DevicePanel(
+                        node = node,
+                        now = now,
+                        onForget = {
+                            LocalApiServer.forgetNode(node.ip)
+                            Toast.makeText(
+                                context,
+                                "Forgot ${node.name.ifBlank { node.ip }}",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    )
                 }
             }
 
             item { FooterNote() }
         }
     }
+
+    val doomed = pendingDisconnect
+    if (doomed != null) {
+        val workerName = doomed.name.ifBlank { "Worker " + doomed.ip.substringAfterLast('.') }
+        AlertDialog(
+            onDismissRequest = { pendingDisconnect = null },
+            containerColor = colors.surface,
+            titleContentColor = colors.textPrimary,
+            textContentColor = colors.textSecondary,
+            title = { Text("Disconnect this worker?") },
+            text = {
+                Text(
+                    "\u201C$workerName\u201D stops immediately and will not rejoin on its own — " +
+                        "someone has to press Join again on its dashboard page."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingDisconnect = null
+                    val ok = LocalApiServer.disconnectWorker(doomed.workerId)
+                    Toast.makeText(
+                        context,
+                        if (ok) "Worker disconnected" else "Worker already gone",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }) { Text("Disconnect", color = colors.accentRed) }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDisconnect = null }) { Text("Cancel") }
+            }
+        )
+    }
+
+    if (confirmClear) {
+        AlertDialog(
+            onDismissRequest = { confirmClear = false },
+            containerColor = colors.surface,
+            titleContentColor = colors.textPrimary,
+            textContentColor = colors.textSecondary,
+            title = { Text("Clear node history?") },
+            text = {
+                Text(
+                    "Every remembered device is dropped from this list. Devices that are still " +
+                        "connected reappear on their next request; joined workers keep working."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmClear = false
+                    LocalApiServer.clearNodes()
+                    Toast.makeText(context, "Node history cleared", Toast.LENGTH_SHORT).show()
+                }) { Text("Clear", color = colors.accentRed) }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmClear = false }) { Text("Cancel") }
+            }
+        )
+    }
 }
 
 /**
- * The phone itself: server state, the two addresses other devices use, and
- * live counters. Tapping an address copies it (LAN row turns green only when
- * it is actually reachable from the network).
+ * The phone itself: the two addresses other devices use, live counters, and
+ * the server controls — start/stop, LAN exposure, open dashboard, restart.
+ * Tapping an address copies it.
  */
 @Composable
 private fun MasterPanel(workersOnline: Int, workersTotal: Int, nodesTotal: Int) {
     val colors = LocalKarenColors.current
     val context = LocalContext.current
     val running = LocalApiServer.running
-    val lanOn = UserPrefs.serverLan(context)
     val lanUrl = LocalApiServer.lanUrl(context)
     val localUrl = "http://127.0.0.1:${UserPrefs.serverPort(context)}"
+
+    // Pref-backed, so the switch flips immediately and survives restarts.
+    var lanOn by remember { mutableStateOf(UserPrefs.serverLan(context)) }
+    LaunchedEffect(Unit) { lanOn = UserPrefs.serverLan(context) }
+
+    fun restartServer() {
+        LocalApiServer.stop()
+        val ok = LocalApiServer.start(context)
+        if (!ok) {
+            Toast.makeText(context, "Could not start the server — check the port in Settings", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     KPanel(
         title = "This phone",
@@ -137,16 +252,6 @@ private fun MasterPanel(workersOnline: Int, workersTotal: Int, nodesTotal: Int) 
     ) {
         UrlRow("LAN", lanUrl, highlight = running && lanOn)
         UrlRow("Local", localUrl, highlight = running)
-
-        val hint = when {
-            !running -> "Server is stopped — start it in Settings › Local Server so devices can connect."
-            !lanOn -> "LAN is off — enable \"Expose on local network\" in Settings so other devices can connect."
-            else -> null
-        }
-        if (hint != null) {
-            Spacer(Modifier.height(6.dp))
-            Text(hint, color = colors.accentAmber, fontSize = 11.sp, lineHeight = 15.sp)
-        }
 
         Spacer(Modifier.height(10.dp))
         KHairline()
@@ -173,16 +278,85 @@ private fun MasterPanel(workersOnline: Int, workersTotal: Int, nodesTotal: Int) 
                 caption = "seen"
             )
         }
+
+        Spacer(Modifier.height(12.dp))
+        KHairline()
+        Spacer(Modifier.height(8.dp))
+
+        SwitchRow(
+            title = "Server",
+            subtitle = if (running) LocalApiServer.status else "Stopped",
+            subtitleColor = if (running) colors.accentGreen else colors.textMuted,
+            checked = running,
+            accent = colors.accentGreen
+        ) { want ->
+            if (want) {
+                val ok = LocalApiServer.start(context)
+                if (!ok) {
+                    Toast.makeText(context, "Could not start — check the port in Settings", Toast.LENGTH_SHORT).show()
+                }
+            } else {
+                LocalApiServer.stop()
+            }
+        }
+
+        SwitchRow(
+            title = "LAN access",
+            subtitle = if (lanOn) "Anyone on your Wi-Fi with the token can call it" else "Localhost only",
+            subtitleColor = if (lanOn) colors.accentAmber else colors.textMuted,
+            checked = lanOn,
+            accent = colors.accentAmber
+        ) { want ->
+            lanOn = want
+            UserPrefs.setServerLan(context, want)
+            // The bind address is decided at start — flip the listener over.
+            if (LocalApiServer.running) restartServer()
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            KSecondaryButton(
+                label = "Open dashboard",
+                onClick = {
+                    try {
+                        context.startActivity(
+                            Intent(Intent.ACTION_VIEW, Uri.parse(localUrl))
+                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        )
+                    } catch (_: Exception) {
+                        Toast.makeText(context, "No browser available", Toast.LENGTH_SHORT).show()
+                    }
+                },
+                modifier = Modifier.weight(1f),
+                enabled = running
+            )
+            KSecondaryButton(
+                label = "Restart",
+                onClick = { restartServer() },
+                modifier = Modifier.weight(1f),
+                enabled = running
+            )
+        }
     }
 }
 
-/** One joined GPU worker: state pill, loaded model, GPU, compute, traffic. */
+/** One joined GPU worker: state, loaded model, GPU, traffic, and its controls. */
 @Composable
-private fun WorkerPanel(node: NodeInfo, now: Long) {
+private fun WorkerPanel(
+    node: NodeInfo,
+    now: Long,
+    onCancelTask: () -> Unit,
+    onDisconnect: () -> Unit
+) {
     val colors = LocalKarenColors.current
     val online = now - node.lastSeen < WorkerInfo.ONLINE_WINDOW_MS
     val state = node.workerState.lowercase(Locale.US)
     val hasGpu = node.gpu.isNotBlank() || node.webgpu || node.gflops > 0.0
+    val busy = online && state in listOf("assigned", "loading", "running")
 
     val tone = when {
         !online -> KTone.Muted
@@ -221,12 +395,36 @@ private fun WorkerPanel(node: NodeInfo, now: Long) {
             relTime(now - node.lastSeen),
             valueColor = if (online) colors.accentGreen else colors.textMuted
         )
+
+        Spacer(Modifier.height(10.dp))
+        KHairline()
+        Spacer(Modifier.height(10.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            if (busy) {
+                KSecondaryButton(
+                    label = "Cancel task",
+                    onClick = onCancelTask,
+                    modifier = Modifier.weight(1f),
+                    tone = KTone.Amber
+                )
+            }
+            KSecondaryButton(
+                label = "Disconnect",
+                onClick = onDisconnect,
+                modifier = Modifier.weight(1f),
+                tone = KTone.Danger
+            )
+        }
     }
 }
 
 /** Any other device that hit the server: dashboard pages and API callers. */
 @Composable
-private fun DevicePanel(node: NodeInfo, now: Long) {
+private fun DevicePanel(node: NodeInfo, now: Long, onForget: () -> Unit) {
     val colors = LocalKarenColors.current
     val active = now - node.lastSeen < 60_000
     val hasGpu = node.gpu.isNotBlank() || node.webgpu || node.gflops > 0.0
@@ -236,10 +434,21 @@ private fun DevicePanel(node: NodeInfo, now: Long) {
         subtitle = node.ip,
         icon = { StatusDot(if (active) colors.accentGreen else colors.textMuted, 9.dp) },
         trailing = {
-            KStatusChip(
-                label = node.kind.ifBlank { "Device" }.uppercase(Locale.US),
-                tone = if (node.kind.equals("Dashboard", ignoreCase = true)) KTone.Blue else KTone.Amber
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                KStatusChip(
+                    label = node.kind.ifBlank { "Device" }.uppercase(Locale.US),
+                    tone = if (node.kind.equals("Dashboard", ignoreCase = true)) KTone.Blue else KTone.Amber
+                )
+                Spacer(Modifier.width(2.dp))
+                KIconButton(onClick = onForget) {
+                    Icon(
+                        Icons.Default.Delete,
+                        contentDescription = "Forget this device",
+                        tint = colors.textMuted,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+            }
         }
     ) {
         if (hasGpu) {
@@ -292,12 +501,48 @@ private fun EmptyPanel() {
 private fun FooterNote() {
     Text(
         "Names come from each device or its network host name. A worker runs prompts on its own GPU — " +
-            "route a chat to it under Runner in the dashboard; it shows offline after 75 s without a call.",
+            "Cancel task stops its current prompt, Disconnect stops the worker for good. It shows offline " +
+            "after 75 s without a call.",
         color = LocalKarenColors.current.textMuted,
         fontSize = 11.sp,
         lineHeight = 15.sp,
         modifier = Modifier.padding(top = 4.dp, bottom = 4.dp)
     )
+}
+
+/** Labeled switch row used by the master controls. */
+@Composable
+private fun SwitchRow(
+    title: String,
+    subtitle: String,
+    subtitleColor: Color,
+    checked: Boolean,
+    accent: Color,
+    onToggle: (Boolean) -> Unit
+) {
+    val colors = LocalKarenColors.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(title, color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
+            Text(subtitle, color = subtitleColor, fontSize = 11.5.sp)
+        }
+        Spacer(Modifier.width(8.dp))
+        Switch(
+            checked = checked,
+            onCheckedChange = onToggle,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = Color.White,
+                checkedTrackColor = accent,
+                uncheckedThumbColor = colors.textMuted,
+                uncheckedTrackColor = colors.surfaceHover
+            )
+        )
+    }
 }
 
 /** Monospaced address row with a tap-to-copy affordance. */

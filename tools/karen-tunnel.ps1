@@ -2,24 +2,25 @@
   karen-tunnel.ps1 - expose the phone's Karen server at http://127.0.0.1:<Port> on this PC.
 
   Why this exists:
-    Browsers only expose WebGPU (needed for "Join as GPU worker") on *secure
+    Browsers only expose WebGPU (needed for the slave page to work) on *secure
     contexts*. http://192.168.x.x is NOT a secure context, so navigator.gpu is
     undefined there. http://127.0.0.1 IS trusted. This script forwards a local
-    port to the phone, so the dashboard page is served from 127.0.0.1 while the
-    actual TCP connection still lands on the phone.
+    port to the phone, so the pages are served from 127.0.0.1 while the actual
+    TCP connection still lands on the phone.
 
   Usage:
     powershell -ExecutionPolicy Bypass -File tools\karen-tunnel.ps1 -Phone 192.168.1.7
-    then open  http://127.0.0.1:11434  on this PC.
+    then open  http://127.0.0.1:11434/worker  (slave page - this device works for the phone)
+    or         http://127.0.0.1:11434/        (console dashboard - monitor + test chat)
 
   Port note:
     If 11434 is already taken on this PC (Ollama defaults to it), the script
     stops with an error. Pick a free listen port and open that one instead:
     powershell -ExecutionPolicy Bypass -File tools\karen-tunnel.ps1 -Phone 192.168.1.7 -Listen 11500
-    then open  http://127.0.0.1:11500
+    then open  http://127.0.0.1:11500/worker
 
   Notes:
-    - Keep this window open while using the dashboard / worker mode.
+    - Keep this window open while using the dashboard or the slave page.
     - The phone must be reachable (same Wi-Fi; Karen -> Settings -> Local Server
       shows the LAN address and the token).
     - Alternative without the script: chrome://flags/#unsafely-treat-insecure-origin-as-secure
@@ -39,6 +40,8 @@ try { $listener.Start() } catch {
   exit 1
 }
 Write-Host ("Karen tunnel: http://127.0.0.1:{0}  ->  {1}:{2}   (Ctrl+C to stop)" -f $Listen, $Phone, $Port)
+Write-Host ("Slave page:   http://127.0.0.1:{0}/worker   (open this on the working device)" -f $Listen)
+Write-Host ("Dashboard:    http://127.0.0.1:{0}/" -f $Listen)
 
 # One shared list of open connections; each direction pumps asynchronously so
 # several requests (page assets, SSE chat stream, worker poll) can be in flight

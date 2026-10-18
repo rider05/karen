@@ -1270,7 +1270,7 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                                 fontWeight = FontWeight.Medium
                             )
                             Text(
-                                "OpenAI-compatible API for your own apps (chat + models) · serves a chat dashboard at / on your Wi-Fi",
+                                "OpenAI-compatible API for your own apps (chat + models) · dashboard at / and slave page at /worker on your Wi-Fi",
                                 color = colors.textMuted,
                                 fontSize = 11.5.sp
                             )

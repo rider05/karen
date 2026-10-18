@@ -1158,9 +1158,15 @@ object LocalApiServer {
                 headerName = headers["x-karen-node"].orEmpty()
             )
 
-            // Dashboard — no auth required; model/API calls from it need the token.
+            // Console dashboard + dedicated slave-node page — both are token-free
+            // shells; model/API calls made from them need the token.
             if (method == "GET" && (path == "/" || path == "/index.html")) {
                 writeHtml(socket, dashboardPage(ctx))
+                socket.close()
+                return
+            }
+            if (method == "GET" && (path == "/worker" || path == "/slave")) {
+                writeHtml(socket, dashboardPage(ctx, worker = true))
                 socket.close()
                 return
             }
@@ -1764,9 +1770,11 @@ object LocalApiServer {
 """.trimIndent()
 
     /** Browser dashboard — chat with the on-device model, no app install. */
-    private fun dashboardPage(ctx: Context): String {
+    private fun dashboardPage(ctx: Context, worker: Boolean = false): String {
         val ip = lanIp(ctx)
         val port = UserPrefs.serverPort(ctx)
+        val mode = if (worker) "worker" else "console"
+        val slaveUrl = "http://" + ip.ifBlank { "127.0.0.1" } + ":" + port + "/worker"
         val models = UserPrefs.models(ctx).filter { !isCloudProviderName(it) }
         return """
 <!DOCTYPE html>
@@ -1774,7 +1782,7 @@ object LocalApiServer {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Karen — Dashboard</title>
+<title>${if (worker) "Karen — Slave node" else "Karen — Dashboard"}</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -1833,29 +1841,32 @@ object LocalApiServer {
            padding: 9px 16px; border-radius: 20px; font-size: 12.5px; opacity: 0;
            transition: opacity .25s; pointer-events: none; white-space: nowrap; }
   .toast.show { opacity: 1; }
+  /* Split pages: "/" is the console dashboard, "/worker" is this device's slave page. */
+  body.console .workerOnly { display: none !important; }
+  body.worker .consoleOnly { display: none !important; }
 </style>
 </head>
-<body>
+<body class="$mode">
 <header>
   <div class="logo">K</div>
   <div>
-    <h1>Karen Dashboard</h1>
-    <div class="sub">the model runs on the phone — or on another device working as a slave node</div>
+    <h1>${if (worker) "Karen Slave Node" else "Karen Dashboard"}</h1>
+    <div class="sub">${if (worker) "slave node working page — prompts from the phone run on this device's GPU" else "the model runs on the phone — or on another device working as a slave node"}</div>
   </div>
   <div class="status"><span class="dot" id="dot"></span><span id="statusText">connecting…</span></div>
 </header>
 <div class="bar">
   <input id="token" type="password" placeholder="Bearer token — Karen → Settings → Local Server" style="flex:1;min-width:230px">
   <button class="ghost" onclick="saveToken()">Save</button>
-  <select id="model" style="min-width:180px"><option value="">(pick model)</option></select>
-  <button class="ghost" onclick="loadModels()">Refresh</button>
-  <select id="runner" style="min-width:200px" onchange="runnerChanged()" title="Where the prompt runs">
+  <select id="model" class="consoleOnly" style="min-width:180px"><option value="">(pick model)</option></select>
+  <button class="ghost consoleOnly" onclick="loadModels()">Refresh</button>
+  <select id="runner" class="consoleOnly" style="min-width:200px" onchange="runnerChanged()" title="Where the prompt runs">
     <option value="">Runner: Phone (llama.cpp)</option>
     <option value="auto">Runner: Auto — best slave node</option>
   </select>
-  <select id="wmodel" style="min-width:220px;display:none" onchange="runnerChanged()" title="Model on the selected slave node"></select>
+  <select id="wmodel" class="consoleOnly" style="min-width:220px;display:none" onchange="runnerChanged()" title="Model on the selected slave node"></select>
 </div>
-<details class="files" id="filesPanel">
+<details class="files consoleOnly" id="filesPanel">
   <summary id="filesSummary">On-device model files — loading…</summary>
   <div class="filelist" id="fileList"></div>
 </details>
@@ -1867,38 +1878,40 @@ object LocalApiServer {
       <button class="ghost" id="benchBtn" onclick="runBench()">Run GPU benchmark</button>
       <span class="fmeta" id="benchResult"></span>
     </div>
-    <div class="frow">
+    <div class="frow consoleOnly">
       <label class="fmeta" style="display:flex;align-items:center;gap:8px;flex:1;min-width:260px">
         <input type="checkbox" id="gpuBoost" onclick="toggleBoost(this.checked)">
         <span>Run chat on <b>this device's GPU</b> (WebLLM — first reply downloads the engine + model once, then it is cached)</span>
       </label>
       <select id="boostModel" style="max-width:330px" onchange="saveBoostModel()"></select>
     </div>
-    <div class="fmeta" id="boostStatus">Chat runs on the phone (llama.cpp) over the LAN.</div>
-    <div class="frow" style="border-top:1px solid #283042;padding-top:10px;margin-top:6px">
+    <div class="fmeta consoleOnly" id="boostStatus">Chat runs on the phone (llama.cpp) over the LAN.</div>
+    <div class="frow workerOnly" style="border-top:1px solid #283042;padding-top:10px;margin-top:6px">
       <label class="fmeta" style="display:flex;align-items:center;gap:8px;flex:1;min-width:260px">
         <input type="checkbox" id="gpuWorker" onclick="toggleWorker(this.checked)">
-        <span>Work as a <b>slave node</b> — this device runs prompts sent by the phone (keep this tab open; other devices join automatically once the token is saved)</span>
+        <span>Work as a <b>slave node</b> — this device runs prompts sent by the phone (keep this tab open; it joins automatically once the token is saved)</span>
       </label>
       <select id="workerModel" style="max-width:330px" onchange="saveWorkerModel()"></select>
     </div>
-    <div class="fmeta" id="workerStatus">Slave node mode off — prompts run on the phone.</div>
+    <div class="fmeta workerOnly" id="workerStatus">Slave node — save the token above to pair this device.</div>
+    <div class="fmeta consoleOnly" id="slavePageHint">To make a device work as a slave node, open its slave page: <a href="/worker" style="color:#38bdf8">$slaveUrl</a></div>
     <div class="fmeta" id="secureHint" style="display:none;color:#f59e0b"></div>
   </div>
 </details>
-<details class="files" id="workersPanel">
+<details class="files consoleOnly" id="workersPanel">
   <summary id="workersSummary">Slave nodes — loading…</summary>
   <div class="filelist" id="workerList"></div>
 </details>
-<main id="chat"></main>
-<div class="hint">Enter sends · Shift+Enter makes a new line · Stop cancels generation</div>
-<footer>
+<main id="chat" class="consoleOnly"></main>
+<div class="hint consoleOnly">Enter sends · Shift+Enter makes a new line · Stop cancels generation</div>
+<footer class="consoleOnly">
   <textarea id="input" placeholder="Ask the on-device model…"></textarea>
   <button id="send" onclick="send()">Send</button>
   <button id="stop" class="ghost" onclick="stopGen()" disabled>Stop</button>
 </footer>
 <div class="toast" id="toast"></div>
 <script>
+var PAGE = '$mode';
 var S = { token: localStorage.getItem('karen_token') || '', busy: false, ctrl: null, log: [], node: nodeName(), boost: localStorage.getItem('karen_gpu_boost') === '1', llm: null, llmMod: null, llmModel: '', adapter: null, gpuName: '', gflops: 0,
   w: { on: localStorage.getItem('karen_worker') !== '0' && !!localStorage.getItem('karen_token'), saved: localStorage.getItem('karen_worker') === '1', master: false, id: localStorage.getItem('karen_worker_id') || '', model: localStorage.getItem('karen_worker_model') || '', loaded: '', engine: null, interrupted: false },
   wModels: [], wlist: [] };
@@ -1930,9 +1943,9 @@ function saveToken() { S.token = el('token').value.trim();
   localStorage.setItem('karen_token', S.token);
   toast(S.token ? 'Token saved' : 'Token cleared'); loadModels();
   reportNode().then(function () {
-    // Pairing is the only manual step: once the token is saved this device
-    // starts working as a slave node on its own (WebGPU + not opted out).
-    if (S.token && !S.w.on && !S.w.master && S.adapter && localStorage.getItem('karen_worker') !== '0') {
+    // Pairing on the slave page is the only manual step: once the token is
+    // saved, a /worker device starts working on its own (WebGPU + not opted out).
+    if (PAGE === 'worker' && S.token && !S.w.on && !S.w.master && S.adapter && localStorage.getItem('karen_worker') !== '0') {
       toast('Paired — this device now works as a slave node');
       workerJoin(true);
     }
@@ -2128,15 +2141,17 @@ async function initGpu() {
     el('gpuAdapter').textContent = 'Adapter: ' + S.gpuName + ' — benchmark it below, or switch chat onto this GPU.';
     toggleBoostText();
     await reportNode();
+    if (PAGE !== 'worker') { return; }  // the console never auto-joins as a slave
     el('gpuWorker').disabled = false;
     if (S.w.master) {
       // The phone itself: master, not a slave node.
       el('gpuWorker').disabled = true;
+      el('workerStatus').textContent = 'This is the master device (the phone) — other devices work as slave nodes.';
     } else if (S.w.on) {
       workerStatus(S.w.saved ? 'rejoining…' : 'this device works as a slave node — joining…');
       workerJoin(true);
     } else if (!S.token) {
-      el('workerStatus').textContent = 'Save the token above once — this device then works as a slave node automatically.';
+      el('workerStatus').textContent = 'Slave node — save the token above once; this device then starts working automatically.';
     }
   } catch (e) {
     el('gpuSummary').textContent = 'GPU offload — adapter check failed: ' + (e && e.message ? e.message : e);
@@ -2797,7 +2812,9 @@ el('input').addEventListener('keydown', function (e) {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
 });
 el('token').value = S.token;
-add('sys', 'Hello from Karen — connected to $ip:$port. ${models.size} installed model(s). Paste the token from Settings → Local Server, then pick a model — .gguf files found on disk can run too (expand the On-device model files panel below). Runner → Auto hands prompts to a laptop/desktop working as a slave node (open this page there — it joins automatically once the token is saved).');
+if (PAGE === 'console') {
+  add('sys', 'Hello from Karen — connected to $ip:$port. ${models.size} installed model(s). Paste the token from Settings → Local Server, then pick a model — .gguf files found on disk can run too (expand the On-device model files panel below). Runner → Auto hands prompts to a laptop/desktop working as a slave node — open the slave page ($slaveUrl) on that device; it joins automatically once the token is saved.');
+}
 loadModels();
 initGpu();
 refreshWorkers();

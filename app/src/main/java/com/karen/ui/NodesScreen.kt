@@ -252,6 +252,7 @@ private fun MasterPanel(workersOnline: Int, workersTotal: Int, nodesTotal: Int) 
     ) {
         UrlRow("LAN", lanUrl, highlight = running && lanOn)
         UrlRow("Local", localUrl, highlight = running)
+        UrlRow("Slave", "$lanUrl/worker", highlight = running && lanOn)
 
         Spacer(Modifier.height(10.dp))
         KHairline()
@@ -489,8 +490,8 @@ private fun EmptyPanel() {
     ) {
         Text(
             "Start the local server, then open its address from another device on the same Wi-Fi. " +
-                "Other devices work as slave nodes automatically: open the dashboard in Chrome/Edge " +
-                "with WebGPU and save the token once — the phone itself always stays master.",
+                "Other devices work as slave nodes automatically: open the slave page (LAN address + /worker) " +
+                "in Chrome/Edge with WebGPU and save the token once — the phone itself always stays master.",
             color = colors.textMuted,
             fontSize = 12.sp,
             lineHeight = 17.sp

@@ -530,7 +530,7 @@ private fun isTruncatedScaffold(reply: String): Boolean {
  * asked to continue where it left off — up to [MAX_SCAFFOLD_CHUNKS] chunks —
  * each chunk written to disk immediately so partial progress survives.
  */
-/** One workspace model call (cloud or local) shared by scaffold + fix rounds. */
+/** One workspace model call (cloud, local or a joined GPU node) shared by scaffold + fix rounds. */
 private suspend fun callWorkspaceModel(
     ctx: Context,
     cloud: CloudProvider?,
@@ -544,6 +544,23 @@ private suspend fun callWorkspaceModel(
     system: String,
     history: List<Pair<String, String>>
 ): String? {
+    // Slave-node route (the "Run on" chip on the composer): the whole call —
+    // scaffold, agent tasks, chat — runs on the joined GPU node. Falls through
+    // to cloud/local when no node can take it right now.
+    val nodeSel = UserPrefs.workerTarget(ctx)
+    if (nodeSel.isNotBlank()) {
+        val res = withContext(Dispatchers.IO) {
+            LocalApiServer.runOnWorker(
+                sel = nodeSel,
+                system = system,
+                pairs = history,
+                temperature = 0.7,
+                maxTokens = maxTokensFor(effort)
+            )
+        }
+        if (res.ok && res.text.isNotBlank()) return res.text
+        if (!res.noWorker) throw IllegalStateException("node route: ${res.error}")
+    }
     if (cloud != null && cloudKey.isNotBlank()) {
         // A stored model id the provider doesn't know is dropped and retried
         // on the default instead of failing the whole build.
@@ -1358,6 +1375,9 @@ fun WorkspaceScreen(
     // Auto routing: best installed/connected model per project message.
     var autoRoute by remember { mutableStateOf(UserPrefs.autoRoute(ctx)) }
     var lastRouted by remember { mutableStateOf<String?>(null) }
+    // Compute route for this canvas: "" = this phone, "auto" = fastest joined
+    // node, else a worker id. Every model call (scaffold, agents, chat) follows.
+    var workerRoute by remember { mutableStateOf(UserPrefs.workerTarget(ctx)) }
 
     fun routeFor(prompt: String): String {
         if (!autoRoute) return selectedModel
@@ -1442,6 +1462,8 @@ fun WorkspaceScreen(
         cancelChat = false
         project.chat.add(ProjectChat("user", t))
         touchSessionTitle(project, t)
+        // Recently-opened feed for the Home card.
+        RecentActivity.record(ctx, RecentActivity.TYPE_WORKSPACE, project.dir, project.name)
         // Auto routing swaps in the best model for this prompt.
         val sendModel = routeFor(t)
         scope.launch {
@@ -1684,7 +1706,55 @@ fun WorkspaceScreen(
                     if (isReasoningModel(sendModel)) reasoningEffortHint(effort) else "" +
                     if (wantsExplainer(t, ctx)) " $EXPLAINER_STYLE_GUIDE" else "" +
                     UserPrefs.customInstructions(ctx).trim().take(500).let { if (it.isBlank()) "" else " User instructions: $it" }
-            // 6. Assistant reply — live cloud call, on-device GGUF, else canned.
+            // 6. Assistant reply — a joined GPU node when the composer chip
+            // routes there, else live cloud call, on-device GGUF, or canned.
+            val nodeRoute = UserPrefs.workerTarget(ctx)
+            if (nodeRoute.isNotBlank()) {
+                val pickList = LocalApiServer.workerPicks()
+                val pick = pickList.firstOrNull {
+                    it.online && it.state != "paused" && (nodeRoute == "auto" || it.id == nodeRoute)
+                }
+                val nodeLabel = "node " + (
+                    pick?.name ?: pickList.firstOrNull { it.id == nodeRoute }?.name ?: "auto"
+                    )
+                val nodeHistory = mutableListOf<Pair<String, String>>()
+                nodeHistory.add("user" to "$buildInstruction\n\nProject files:\n$modelCtx")
+                project.chat.mapNotNullTo(nodeHistory) { m ->
+                    when (m.role) {
+                        "user" -> "user" to m.text
+                        "assistant" -> "assistant" to m.text
+                        else -> null
+                    }
+                }
+                val nodePairs = if (web != null) {
+                    (nodeHistory + ("user" to "Use these fresh web results where they help. ${WebSearch.GROUNDING_GUIDE}\n$web")).takeLast(localLimit)
+                } else nodeHistory.takeLast(localLimit)
+                val nodeRes = withContext(Dispatchers.IO) {
+                    LocalApiServer.runOnWorker(
+                        sel = nodeRoute,
+                        system = "",
+                        pairs = nodePairs,
+                        temperature = 0.7,
+                        maxTokens = maxTokensFor(effort)
+                    )
+                }
+                if (nodeRes.ok && nodeRes.text.isNotBlank()) {
+                    recordReply(nodeRes.text)
+                    postTurnSummary(tool.name.lowercase(), nodeLabel)
+                    saveProjectState(project)
+                    chatBusy = false
+                    return@launch
+                }
+                if (!nodeRes.noWorker) {
+                    addAssistant("⚠ $nodeLabel: ${nodeRes.error}")
+                    postTurnSummary(tool.name.lowercase(), nodeLabel)
+                    saveProjectState(project)
+                    chatBusy = false
+                    return@launch
+                }
+                // No node could take it — say so, then run on cloud/local below.
+                note("Node unavailable — ran on $sendModel.")
+            }
             val cloud = findCloudProviderByName(sendModel, UserPrefs.customProviders(ctx))
             val cloudKey = cloud?.let { UserPrefs.apiKey(ctx, it.id) }.orEmpty()
             val weightFile = if (cloud == null) ModelDownloader.weightFileFor(ctx, sendModel) else null
@@ -2414,14 +2484,27 @@ fun WorkspaceScreen(
         }
 
         // Composer (ChatScreen-style input for this project)
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .navigationBarsPadding()
                 .imePadding()
-                .padding(horizontal = 14.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically
         ) {
+            // Run-on-node routing: only meaningful while a slave node is joined.
+            WorkerRouteChip(
+                current = workerRoute,
+                onSelect = {
+                    workerRoute = it
+                    UserPrefs.setWorkerTarget(ctx, it)
+                },
+                modifier = Modifier.padding(start = 14.dp)
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
             OutlinedTextField(
                 value = chatInput,
                 onValueChange = { chatInput = it },
@@ -2504,6 +2587,7 @@ fun WorkspaceScreen(
                     Icon(Icons.Default.Send, contentDescription = "Send", tint = Color.White, modifier = Modifier.size(20.dp))
                 }
             }
+        }
         }
     }
 

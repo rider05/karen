@@ -49,8 +49,12 @@ WebRTC signaling.
    `{ok, master:true}` instead of an id, and the page disables the switch with
    an explanation.
 2. **Idle poll** — worker holds `GET /v1/worker/poll` (SSE). Server keeps it open
-   up to 40 s, sending `: ping` every 10 s; each open counts as a heartbeat. On
-   close the worker reconnects immediately (≤ few seconds).
+   up to 5 min (`POLL_HOLD_MS`), sending `: ping` every 30 s; each open counts as
+   a heartbeat. On close the worker reconnects immediately (≤ few seconds).
+   Two guards keep a broken loop from hammering the phone: an invalid token
+   (`401`) stops polling outright (switch off, message shown; saving a valid
+   token rejoins), and a stale id (`404`) re-registers once — if that
+   re-registration fails, polling stops instead of looping.
 3. **Assignment** — a queued task is written as `event: task` and the poll
    returns; worker state becomes `assigned`.
 4. **Load** — worker ensures the requested model is loaded (`WebLLM reload`),
@@ -66,16 +70,19 @@ WebRTC signaling.
 7. **Leave/remove** — worker untick → `POST /v1/worker/leave`. Master-side
    *Disconnect* → `POST /v1/workers/remove`: the worker gets `410` on its next
    call, stops polling and turns its join toggle off (no silent re-join).
+   Master-side *Pause* → `POST /v1/workers/pause`: the node keeps its
+   connection (stays listed and online) but takes no new tasks until resumed;
+   a task already running is not interrupted.
 
 **States** (worker): `idle → assigned → loading → running → idle`; computed
-`offline` when no call for > 75 s. **Task**: `queued → assigned → loading →
+`offline` when no call for > 90 s. **Task**: `queued → assigned → loading →
 running → completed | failed | cancelled`.
 
 ## 3. Protocol (all bearer-token authenticated except the two pages)
 
 | Endpoint | Direction | Payload (essentials) |
 |---|---|---|
-| `GET /v1/workers` | console/master | `{object:"list", data:[{id,name,ip,gpu,gflops,state,loadedModel,defaultModel,models[],lastSeenAt,tasksDone,lastTps,lastTtftMs, cpuCores,cpuArch,memGB,pressure,quotaGB,usageGB,netType,downlinkMbps,netRttMs,jsScore,maxBufferMB,telemetryAt}]}`; the console's 10 s refresh carries its own readings as `?tel=<url-encoded json>` so the dashboard device's node entry stays fresh with zero extra requests |
+| `GET /v1/workers` | console/master | `{object:"list", data:[{id,name,ip,gpu,gflops,state,loadedModel,defaultModel,models[],lastSeenAt,tasksDone,lastTps,lastTtftMs, cpuCores,cpuArch,memGB,pressure,quotaGB,usageGB,netType,downlinkMbps,netRttMs,jsScore,maxBufferMB,telemetryAt,paused}]}`; the console's 10 s refresh carries its own readings as `?tel=<url-encoded json>` so the dashboard device's node entry stays fresh with zero extra requests |
 | `POST /v1/worker/register` | worker → master | `{workerId?, name, gpu, gflops, backend:"webllm", engine:"web-llm@0.2.86", defaultModel, models[], loadedModel, telemetry{c,a,m,p,sq,su,nt,nd,nr,js,ab}}` → `{ok, workerId, pollSeconds, taskTimeoutSeconds}`; **master device → `{ok, master:true}`** (no id; see §2.1) |
 | `GET /v1/worker/poll` | worker → master | header `X-Karen-Worker: <id>`, query `?tel=<url-encoded telemetry json>` (fresh readings every cycle); SSE: `event: task` + `data: {id, model, messages[], temperature, max_tokens}`; `: ping` keepalives; `event: idle` end-of-hold |
 | `POST /v1/worker/progress` | worker → master | `{workerId, taskId, phase:"loading"\|"running", progress?, text?, loadedModel?}` → `{ok, cancel}` |
@@ -84,6 +91,7 @@ running → completed | failed | cancelled`.
 | `POST /v1/worker/leave` | worker → master | `{workerId}` |
 | `POST /v1/nodes/hello` | any page → master | `{name, webgpu, gpu, gflops, telemetry{c,a,m,p,sq,su,nt,nd,nr,js,ab}}` — registers the device and its machine readings (feeds the app's Nodes screen) |
 | `POST /v1/workers/remove` | console/master | `{id}` — force disconnect (worker gets `410` afterwards) |
+| `POST /v1/workers/pause` | console/master | `{id, paused}` — out/in of rotation without a disconnect; `auto` skips paused nodes, explicit routes to one get `503` “node is paused” |
 | `POST /v1/chat/completions` | console → master | existing body + optional `"worker":"auto"\|"w_x"` and `"model"` (worker-side model id) |
 
 Console SSE for worker tasks, in order:
@@ -94,11 +102,13 @@ request behaves exactly as before (phone llama.cpp) — **unchanged**.
 
 ## 4. Scheduling (request-level only)
 
-`auto` chooses, among workers online and with the model in their supported list:
-prefer `loadedModel == requested`, then idle over busy, then GFLOPS desc, then
-fewest tasks. Tasks for busy workers **queue** (worker picks them up on its next
-poll). No work is dispatched to a worker whose list lacks the model. There is
-no promise that adding workers speeds up a single generation.
+`auto` chooses, among workers online, **not paused**, and with the model in their
+supported list: prefer `loadedModel == requested`, then idle over busy, then
+GFLOPS desc, then fewest tasks. Tasks for busy workers **queue** (worker picks
+them up on its next poll). No work is dispatched to a worker whose list lacks
+the model, and a paused node receives nothing until resumed (explicit picks are
+refused with a clear 503 instead of silently running elsewhere). There is no
+promise that adding workers speeds up a single generation.
 
 ## 5. Model strategy (honest boundaries)
 
@@ -129,26 +139,52 @@ no promise that adding workers speeds up a single generation.
   Both the worker page and the dashboard name the real cause on load — the
   insecure origin, WebGPU switched off in the browser, or no GPU adapter —
   and print the tunnel command with the current phone address filled in,
-  instead of a silent "WebGPU unavailable".
+  instead of a silent "WebGPU unavailable". Once the insecure-origin bypass
+  is on, the page also offers an *Undo the bypass* button with copy-able steps
+  that put the browser back to normal.
+- **Which GPU the page gets is the browser's call.** WebGPU has no adapter
+  picker; a page can only ask. The worker page requests
+  `powerPreference: "high-performance"` first (Chrome/Edge honor it on
+  dual-GPU laptops, so an RTX/dGPU is used when available) and falls back to
+  the plain request; it also reads the browser's *default* adapter and, when
+  the two differ, tells the user their default (what WebLLM chat follows) is
+  the slower one and how to fix it — Windows → Settings → System → Display →
+  Graphics → the browser → High performance, or NVIDIA Control Panel →
+  Manage 3D settings → Program Settings. The adapter line on the page and the
+  GFLOPS benchmark always name/show what was actually picked.
 - No new exposure: workers poll outbound; nothing listens in the browser; no
   arbitrary code/file endpoints; logs never contain the token.
 - **Request budget per open page** (was: every page asked for the slave list
   every 5 s, forever): a joined worker tab makes exactly one traffic stream —
-  the SSE long-poll, reconnected every 60 s (`POLL_HOLD_MS`; tasks are handed
-  over the moment they are queued, `: ping` keepalives every 10 s). The slave
-  list refresh runs only on the console, only while its tab is visible, at a
-  10 s cadence. One poll loop per tab is enforced (`S.w.loop`), so duplicate
-  joins cannot double the polling.
+  the SSE long-poll, reconnected every 5 min (`POLL_HOLD_MS`; tasks are handed
+  over the moment they are queued, `: ping` keepalives every 30 s, same TCP
+  request). The slave list refresh runs only on the console, only while its tab
+  is visible, at a 10 s cadence. One poll loop per tab is enforced
+  (`S.w.loop`), so duplicate joins cannot double the polling. Error paths never
+  hot-loop: `401` stops the slave switch with a message, `404` re-registers
+  once and stops if that fails. Steady state is therefore **one request every
+  five minutes per joined node** — the phone's node counter ticking up that
+  rarely is the reconnect, not background chatter. Keepalives are what remains
+  between reconnects: 8-byte `: ping` lines inside the already-open request.
+- **In-app routing** — when a node is joined, Chat and Workspace show a
+  "Run on" chip (This phone / Auto — fastest online node / each node).
+  Selecting a node routes whole turns through `LocalApiServer.runOnWorker`
+  (system prompt + history pairs → task queue → status/delta events → final
+  text) and the reply bubble footer names the node; Auto falls back to the
+  phone when nothing is online, an explicit pick falls back with a toast.
+  The route is stored in prefs (`worker_target`) and applies to chat, scaffold
+  builds, agent tasks and workspace chat alike.
 
 ## 7. Failure & recovery
 
 | Failure | Behavior |
 |---|---|
-| Worker tab closed mid-task | No post for 120 s → task `failed` (“worker went quiet”), console unblocked; worker shows `offline` after 75 s |
+| Worker tab closed mid-task | No post for 120 s → task `failed` (“worker went quiet”), console unblocked; worker shows `offline` after 90 s |
 | Console disconnects | Next worker post gets `cancel:true` → engine interrupted → task `cancelled` |
 | Worker removed by master | Worker receives `410`, stops polling, join toggle off (`karen_worker=0`), toast shown |
 | Master device opens its own dashboard | `/v1/nodes/hello` and `/v1/worker/register` answer `{ok, master:true}`; page disables the slave switch — the master never becomes a worker |
-| Server restarted | Worker poll gets `404` → re-registers automatically (same id) |
+| Server restarted | Worker poll gets `404` → re-registers automatically once (same id); if the token was also rejected, polling stops with a message instead of looping — saving the token rejoins |
+| Node paused from the phone/console | Stays connected and listed (`paused` state), takes no new prompts; `auto` routes elsewhere, explicit picks get `503` “node is paused”; a running task finishes untouched and Resume puts it back in rotation |
 | Model load exceeds RAM | WebLLM throws → task `failed` with the real error text |
 | Task queued, nobody picks up | 120 s with no worker activity → `failed` (“no worker picked up the task”) |
 

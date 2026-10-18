@@ -403,4 +403,12 @@ object UserPrefs {
     fun setPreferredApiModel(ctx: Context, name: String) {
         prefs(ctx).edit().putString(KEY_PREFERRED_API, name.trim().take(80)).apply()
     }
+
+    // Compute route for chat/workspace: "" = this phone, "auto" = fastest
+    // joined node, otherwise a worker id (w_xxxxxx) from LocalApiServer.
+    private const val KEY_WORKER_TARGET = "worker_target"
+    fun workerTarget(ctx: Context): String = prefs(ctx).getString(KEY_WORKER_TARGET, "") ?: ""
+    fun setWorkerTarget(ctx: Context, value: String) {
+        prefs(ctx).edit().putString(KEY_WORKER_TARGET, value.trim().take(40)).apply()
+    }
 }

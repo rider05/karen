@@ -92,6 +92,26 @@ fun KarenApp(startScreen: String = "Home") {
         var openChatId by remember { mutableStateOf<String?>(null) }
         var newChatSignal by remember { mutableStateOf(0) }
 
+        // Recently-opened feed (Home card). Chat and Canvas carry their own
+        // entries — only other screens are recorded here.
+        LaunchedEffect(currentScreen) {
+            val label = when (currentScreen) {
+                "Home", "Chat", "Workspace" -> null
+                "Files" -> "Knowledge Vault"
+                "Memory" -> "Memory"
+                "ModelManager" -> "Model Manager"
+                "Nodes" -> "Network Nodes"
+                "Performance", "Hardware" -> "Performance"
+                "StudyBook" -> "Study Book"
+                "Voice" -> "Voice Chat"
+                "Settings" -> "Settings"
+                else -> currentScreen
+            }
+            if (label != null) {
+                RecentActivity.record(context, RecentActivity.TYPE_SCREEN, currentScreen, label)
+            }
+        }
+
         // Wake-word trigger while the app is alive: jump to Voice mode.
         LaunchedEffect(Unit) {
             var first = true

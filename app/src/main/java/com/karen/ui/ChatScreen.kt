@@ -58,9 +58,10 @@ SAFETY TIERS (colored dots)
 • Blue T1 — reversible actions (open app, timer), auto-run with a visible pill.
 • Amber T2 — calls, messages, calendar, memory: a Run/Cancel card asks first. Nothing sends or dials without your tap. T3 stays disabled.
 
-FILES
-• @name pulls a vault file's content into the turn — text reads direct, PDFs transcribe through a vision-capable cloud key (first pages).
-• Ask follow-ups and the answer is grounded in the file, cited with its name.
+FILES — RAG GROUNDING
+• @name grounds the turn in that vault file: the document is split into chunks and only the passages closest to your question are retrieved and handed to the model — the whole file is not dumped, so long notes still fit.
+• Text files read direct; PDFs transcribe through a vision-capable cloud key (first pages).
+• Type @ anywhere to list vault files; follow-ups stay grounded in the file, cited by name.
 
 MODELS
 • Header pill shows what's answering: a name, or Auto → routed pick.
@@ -93,7 +94,9 @@ sealed class ChatItem {
         /** True when this reply was cut short by Stop. */
         val interrupted: Boolean = false,
         /** Model that wrote this reply (manual pick or Auto route). */
-        val model: String = ""
+        val model: String = "",
+        /** Rendered as the built-in help card instead of a text wall (/help). */
+        val help: Boolean = false
     ) : ChatItem()
 }
 
@@ -259,6 +262,9 @@ fun ChatScreen(
     val karenCtx = androidx.compose.ui.platform.LocalContext.current
     val device = com.karen.rememberDeviceTelemetry()
     var effort by remember { mutableStateOf(UserPrefs.defaultEffort(karenCtx)) }
+    // Compute route for this chat: "" = this phone, "auto" = fastest joined
+    // node, else a worker id (w_xxxxxx). Survives restarts via UserPrefs.
+    var workerRoute by remember { mutableStateOf(UserPrefs.workerTarget(karenCtx)) }
 
     val voiceStt = rememberVoiceStt(
         onResult = { speechText ->
@@ -452,6 +458,12 @@ fun ChatScreen(
             snapshot.filter { (it as? ChatItem.Assistant)?.id != streamingId } else snapshot
         if (cleaned.isEmpty()) return
         ChatHistoryStore.saveConversation(context, conversationId, cleaned)
+        // Recently-opened feed for the Home card (title = the opening ask).
+        val firstAsk = cleaned.firstOrNull { it is ChatItem.User }
+            ?.let { (it as ChatItem.User).text }.orEmpty()
+        if (firstAsk.isNotBlank()) {
+            RecentActivity.record(context, RecentActivity.TYPE_CHAT, conversationId, firstAsk)
+        }
         onHistoryChanged()
     }
 
@@ -473,6 +485,15 @@ fun ChatScreen(
         if (i >= 0) {
             val cur = messages[i] as ChatItem.Assistant
             if (cur.text != text) messages[i] = cur.copy(text = text)
+        }
+    }
+
+    /** Updates the assistant bubble's model footer (node-route fallback honesty). */
+    fun setStreamingModel(id: String, model: String) {
+        val i = messages.indexOfFirst { (it as? ChatItem.Assistant)?.id == id }
+        if (i >= 0) {
+            val cur = messages[i] as ChatItem.Assistant
+            if (cur.model != model) messages[i] = cur.copy(model = model)
         }
     }
 
@@ -1033,6 +1054,96 @@ fun ChatScreen(
      * [regenerateHint] is set it is whispered to the model only (never shown
      * in chat) so the retry thinks and answers quite differently.
      */
+    /**
+     * Runs one chat turn on a joined GPU node (the "Run on" chip above the
+     * composer). Streams status + deltas into the provisional bubble. Returns
+     * true when the turn settled here (done, cancelled, or failed on the
+     * node); false when no node could take it — the caller then runs the turn
+     * on this phone instead.
+     */
+    suspend fun nodeTurn(
+        aid: String,
+        sel: String,
+        label: String,
+        system: String,
+        pairs: List<Pair<String, String>>,
+        pairLimit: Int,
+        maxTok: Int
+    ): Boolean {
+        setStreamingText(aid, "Assigning to $label…")
+        val buf = StringBuilder()
+        val res = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            LocalApiServer.runOnWorker(
+                sel = sel,
+                system = system,
+                pairs = pairs,
+                temperature = 0.7,
+                maxTokens = maxTok,
+                onStatus = { s ->
+                    if (buf.isEmpty()) coroutineScope.launch { setStreamingText(aid, s) }
+                },
+                onDelta = { d ->
+                    buf.append(d)
+                    val snap = buf.toString()
+                    coroutineScope.launch {
+                        streamingContent = true
+                        setStreamingText(aid, snap)
+                        scrollToBottomIfNear()
+                    }
+                },
+                cancelled = { cancelGeneration }
+            )
+        }
+        if (res.noWorker) return false
+        if (res.error == "cancelled" || cancelGeneration) {
+            cancelSettle(aid)
+            return true
+        }
+        val raw = res.text.trim()
+        if (!res.ok || raw.isBlank()) {
+            val why = res.error.ifBlank { "the node returned an empty reply" }
+            if (raw.isNotBlank()) {
+                // Partial output before the failure still lands in the bubble.
+                errorSettle(aid, "$raw\n\n⚠ $why ($label)")
+            } else {
+                errorSettle(aid, "$why (node route: $label)")
+            }
+            return true
+        }
+        val settled = settleTools(aid, cleanReply(raw))
+        var withTools = settled.visible
+        if (settled.docText != null && !cancelGeneration) {
+            setStreamingText(aid, (withTools.trimEnd() + "\n\nReading ${settled.docName} on the node…").trim())
+            val docPair = "user" to
+                "Use this document text to answer the request. ${WebSearch.GROUNDING_GUIDE} Do not emit ///TOOL lines:\n${settled.docText}"
+            val second = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                LocalApiServer.runOnWorker(
+                    sel = sel,
+                    system = system,
+                    pairs = (pairs + docPair).takeLast(pairLimit),
+                    temperature = 0.7,
+                    maxTokens = maxTok,
+                    cancelled = { cancelGeneration }
+                )
+            }
+            val ans = second.text.trim()
+            if (ans.isNotBlank() && !cancelGeneration) {
+                val clean = stripToolCalls(ans, extractToolCalls(ans)).trim()
+                if (clean.isNotBlank()) {
+                    withTools = (withTools.trimEnd() + "\n\n" + clean + "\n(Source: ${settled.docName})").trim()
+                }
+            }
+        }
+        if (hasVisibleContent(withTools)) {
+            setStreamingText(aid, withTools)
+            scrollToBottomIfNear()
+            if (cancelGeneration) cancelSettle(aid) else completeSettle()
+        } else {
+            errorSettle(aid, "The node returned an empty reply.")
+        }
+        return true
+    }
+
     fun runAssistantTurn(
         userText: String,
         sentAttachments: List<Attachment>,
@@ -1066,8 +1177,26 @@ fun ChatScreen(
             streamStartMs = System.currentTimeMillis()
             streamingContent = false
             genLive = null
+            // Node route (the "Run on" chip): resolve the pick up front so the
+            // bubble footer names the node honestly. Offline/paused ⇒ this phone.
+            val nodeRoute = workerRoute
+            val nodePick = if (nodeRoute.isNotBlank()) {
+                val picks = LocalApiServer.workerPicks().filter { it.online && it.state != "paused" }
+                if (nodeRoute == "auto") picks.maxByOrNull { it.gflops } else picks.firstOrNull { it.id == nodeRoute }
+            } else null
+            val nodeLabel = when {
+                nodeRoute.isBlank() -> ""
+                nodeRoute == "auto" -> "node auto" + (nodePick?.let { " · " + it.name } ?: "")
+                else -> "node " + (nodePick?.name ?: nodeRoute)
+            }
             val aid = "asst_${System.currentTimeMillis()}"
-            messages.add(ChatItem.Assistant(id = aid, text = "", model = sendModel))
+            messages.add(
+                ChatItem.Assistant(
+                    id = aid,
+                    text = "",
+                    model = if (nodePick != null) nodeLabel else sendModel
+                )
+            )
             streamingId = aid
             isGenerating = true
             scrollToBottomIfNear()
@@ -1102,6 +1231,43 @@ fun ChatScreen(
                     }
                 }
             }
+            // History as model pairs — shared by the on-device and node routes.
+            val pairLimit = localTurnsFor(UserPrefs.contextTokens(context))
+            val basePairs = messages.mapNotNull { item ->
+                when (item) {
+                    is ChatItem.User -> "user" to (item.text + attachedContext(item))
+                    is ChatItem.Assistant -> if (item.id == aid) null else "assistant" to item.text
+                }
+            }
+            val trimmedPairs = if (web != null) {
+                (basePairs + ("user" to "Use these fresh web results where they help. ${WebSearch.GROUNDING_GUIDE}\n$web")).takeLast(pairLimit)
+            } else basePairs.takeLast(pairLimit)
+            val instructedPairs = if (regenerateHint != null) {
+                (trimmedPairs + ("user" to regenerateHint)).takeLast(pairLimit)
+            } else trimmedPairs
+
+            // Node route: the whole turn runs on the joined GPU node.
+            if (nodePick != null) {
+                val nodeSystem = "You are Karen, a concise on-device assistant." + shapingSuffix(userText)
+                val handled = nodeTurn(
+                    aid = aid,
+                    sel = nodeRoute,
+                    label = nodeLabel,
+                    system = nodeSystem,
+                    pairs = instructedPairs,
+                    pairLimit = pairLimit,
+                    maxTok = maxTokensFor(effort)
+                )
+                if (handled) return@launch
+                // The node vanished between the chip and the send: run here.
+                setStreamingModel(aid, sendModel)
+                android.widget.Toast.makeText(
+                    context,
+                    "Node unavailable — ran on this phone",
+                    android.widget.Toast.LENGTH_SHORT
+                ).show()
+            }
+
             if (cloud != null && cloudKey.isNotBlank()) {
                 cloudTurn(cloud, cloudKey, aid, userText, web, regenerateHint, sentAttachments)
             } else if (weightFile != null) {
@@ -1123,19 +1289,6 @@ fun ChatScreen(
                     try {
                         val threads = maxOf(2, minOf(6, Runtime.getRuntime().availableProcessors()))
                         val window = UserPrefs.contextTokens(context)
-                        val localLimit = localTurnsFor(window)
-                        val basePairs = messages.mapNotNull { item ->
-                            when (item) {
-                                is ChatItem.User -> "user" to (item.text + attachedContext(item))
-                                is ChatItem.Assistant -> if (item.id == aid) null else "assistant" to item.text
-                            }
-                        }
-                        val trimmedPairs = if (web != null) {
-                            (basePairs + ("user" to "Use these fresh web results where they help. ${WebSearch.GROUNDING_GUIDE}\n$web")).takeLast(localLimit)
-                        } else basePairs.takeLast(localLimit)
-                        val instructedPairs = if (regenerateHint != null) {
-                            (trimmedPairs + ("user" to regenerateHint)).takeLast(localLimit)
-                        } else trimmedPairs
                         val shaping = shapingSuffix(userText)
                         // Slow-local guard: blocking native calls run as orphans
                         // on the pool — the timeout abandons the await (a plain
@@ -1212,7 +1365,7 @@ fun ChatScreen(
                                 setStreamingText(aid, (withTools.trimEnd() + "\n\nReading ${settled.docName}…").trim())
                                 val docPairs = (instructedPairs + ("user" to
                                     "Use this document text to answer the request. ${WebSearch.GROUNDING_GUIDE} Do not emit ///TOOL lines:\n${settled.docText}")
-                                    ).takeLast(localLimit)
+                                    ).takeLast(pairLimit)
                                 val ans = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                                     try {
                                         KarenLlama.complete(
@@ -1284,7 +1437,7 @@ fun ChatScreen(
             StyleMemory.bumpMessageCount(context)
             val aid = "asst_$newId"
             streamStartMs = System.currentTimeMillis()
-            messages.add(ChatItem.Assistant(id = aid, text = HELP_TEXT, model = "tools"))
+            messages.add(ChatItem.Assistant(id = aid, text = HELP_TEXT, model = "tools", help = true))
             stampTook(aid)
             persist()
             coroutineScope.launch { scrollToBottomIfNear() }
@@ -1466,6 +1619,12 @@ fun ChatScreen(
         messages.addAll(loaded)
         conversationId = id
         onConversationOpened()
+        // Recently-opened feed for the Home card.
+        val firstAsk = loaded.firstOrNull { it is ChatItem.User }
+            ?.let { (it as ChatItem.User).text }.orEmpty()
+        if (firstAsk.isNotBlank()) {
+            RecentActivity.record(context, RecentActivity.TYPE_CHAT, id, firstAsk)
+        }
     }
 
     // Fresh chat requested from the drawer while already on this screen.
@@ -1665,7 +1824,10 @@ fun ChatScreen(
                                 // Assistant Body: reasoning trace folds into the accordion,
                                 // the rest renders as Markdown with ChatGPT-style code blocks.
                                 val isLiveThinking = isGenerating && item.id == streamingId && !streamingContent
-                                if (isLiveThinking) {
+                                if (item.help || item.text == HELP_TEXT) {
+                                    // /help: structured card instead of the text wall.
+                                    KarenHelpCard(onInsert = { setInputEnd(it) })
+                                } else if (isLiveThinking) {
                                     ThinkingIndicator(
                                         label = item.text.ifBlank { "Thinking" },
                                         elapsed = "%.1fs".format((System.currentTimeMillis() - streamStartMs) / 1000.0)
@@ -2256,6 +2418,15 @@ fun ChatScreen(
                     )
                 }
             }
+            // Run-on-node routing: only meaningful while a slave node is joined.
+            WorkerRouteChip(
+                current = workerRoute,
+                onSelect = {
+                    workerRoute = it
+                    UserPrefs.setWorkerTarget(context, it)
+                },
+                modifier = Modifier.padding(start = 22.dp, bottom = 6.dp)
+            )
             ChatGPTFloatingComposer(
                 value = input,
                 onValueChange = { input = it },
@@ -2624,5 +2795,169 @@ fun ChatScreen(
                 }
             }
         }
+    }
+}
+
+/**
+ * The /help answer as a structured card instead of a text wall: every chip is
+ * tappable and drops that exact command into the composer ("@" opens the vault
+ * file menu). Colors follow the existing chat surfaces.
+ */
+@Composable
+private fun KarenHelpCard(onInsert: (String) -> Unit) {
+    val colors = LocalKarenColors.current
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(colors.surface)
+            .border(1.dp, colors.border, RoundedCornerShape(14.dp))
+            .padding(14.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                Icons.Default.Info,
+                contentDescription = null,
+                tint = colors.accentGreen,
+                modifier = Modifier.size(16.dp)
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                "How Karen works",
+                color = colors.textPrimary,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                "tap a chip to use it",
+                color = colors.textMuted,
+                fontSize = 10.sp,
+                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+            )
+        }
+
+        HelpSectionLabel("SLASH COMMANDS · RUN WITHOUT THE MODEL", colors)
+        HelpRow("/calculator", "1847*23", "solved on the phone itself", "/calculator 1847*23", colors, onInsert)
+        HelpRow("/get_time", "Asia/Kolkata", "real device clock, any timezone", "/get_time Asia/Kolkata", colors, onInsert)
+        HelpRow("/open_app", "Spotify", "launches any installed app", "/open_app Spotify", colors, onInsert)
+        HelpRow("/set_timer", "2 min eggs", "real system timer", "/set_timer 2 min eggs", colors, onInsert)
+        HelpRow("/help", "", "this card", "/help", colors, onInsert)
+
+        HelpSectionLabel("MENTIONS · VAULT GROUNDING (RAG)", colors)
+        HelpRow(
+            "@file", "notes.md",
+            "splits that vault file into chunks and feeds only the passages nearest your question — long documents still fit, follow-ups stay cited",
+            "@", colors, onInsert
+        )
+
+        HelpSectionLabel("SAFETY TIERS · COLORED DOTS", colors)
+        HelpTierRow(colors.accentGreen, "T0", "reads + math — always auto-runs", colors)
+        HelpTierRow(colors.accentBlue, "T1", "reversible (open app, timer) — auto, with a visible pill", colors)
+        HelpTierRow(colors.accentAmber, "T2", "calls, messages, calendar, memory — a Run/Cancel card asks first", colors)
+        HelpTierRow(colors.textMuted, "T3", "irreversible — stays disabled", colors)
+
+        HelpSectionLabel("WHAT ANSWERS · WHERE TO CHANGE IT", colors)
+        HelpRow("header pill", "", "shows the active model; Auto routes per task — Settings → Model Routing", "", colors, onInsert)
+        HelpRow("voice", "", "streams sentence by sentence; wake word lives in Settings → Voice & Speech", "", colors, onInsert)
+
+        Text(
+            "Ask normally too — “call Arun”, “remind me at 6” route exactly like the slash forms.",
+            color = colors.textMuted,
+            fontSize = 11.sp,
+            lineHeight = 15.sp,
+            modifier = Modifier.padding(top = 10.dp)
+        )
+    }
+}
+
+@Composable
+private fun HelpSectionLabel(text: String, colors: KarenColors) {
+    Text(
+        text = text,
+        color = colors.textMuted,
+        fontSize = 10.sp,
+        fontWeight = FontWeight.SemiBold,
+        letterSpacing = 0.6.sp,
+        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+        modifier = Modifier.padding(top = 14.dp, bottom = 6.dp)
+    )
+}
+
+/** One guide row: a mono chip plus its one-line explanation. */
+@Composable
+private fun HelpRow(
+    chip: String,
+    tail: String,
+    desc: String,
+    insert: String,
+    colors: KarenColors,
+    onInsert: (String) -> Unit
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .then(if (insert.isNotBlank()) Modifier.clickable { onInsert(insert) } else Modifier)
+            .padding(vertical = 3.dp)
+    ) {
+        Text(
+            text = if (tail.isBlank()) chip else "$chip $tail",
+            color = colors.accentBlue,
+            fontSize = 11.5.sp,
+            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+            modifier = Modifier
+                .clip(RoundedCornerShape(6.dp))
+                .background(colors.background)
+                .border(1.dp, colors.border, RoundedCornerShape(6.dp))
+                .padding(horizontal = 7.dp, vertical = 2.dp)
+        )
+        if (desc.isNotBlank()) {
+            Spacer(Modifier.width(9.dp))
+            Text(
+                text = desc,
+                color = colors.textSecondary,
+                fontSize = 11.5.sp,
+                lineHeight = 15.sp,
+                modifier = Modifier.weight(1f)
+            )
+        } else {
+            Spacer(Modifier.weight(1f))
+        }
+    }
+}
+
+/** One tier legend line: colored dot, tier tag, meaning. */
+@Composable
+private fun HelpTierRow(dotColor: Color, tier: String, desc: String, colors: KarenColors) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 3.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(8.dp)
+                .clip(CircleShape)
+                .background(dotColor)
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text = tier,
+            color = colors.textPrimary,
+            fontSize = 11.5.sp,
+            fontWeight = FontWeight.SemiBold,
+            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+        )
+        Spacer(Modifier.width(9.dp))
+        Text(
+            text = desc,
+            color = colors.textSecondary,
+            fontSize = 11.5.sp,
+            lineHeight = 15.sp,
+            modifier = Modifier.weight(1f)
+        )
     }
 }

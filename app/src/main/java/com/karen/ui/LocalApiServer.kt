@@ -114,13 +114,17 @@ class WorkerInfo(
     @Volatile var netRttMs: Int = 0,
     @Volatile var jsScore: Double = 0.0,
     @Volatile var maxBufferMB: Int = 0,
-    @Volatile var telemetryAt: Long = 0L
+    @Volatile var telemetryAt: Long = 0L,
+    /** Master-side pause: it keeps polling (stays listed/online) but takes no
+     *  new prompts — "auto" skips it and explicit routes are refused. */
+    @Volatile var paused: Boolean = false
 ) {
     fun online(now: Long): Boolean = now - lastSeenAt < ONLINE_WINDOW_MS
 
     companion object {
-        /** No worker call for this long ⇒ shown as offline / skipped by "auto". */
-        const val ONLINE_WINDOW_MS = 75_000L
+        /** No worker call for this long ⇒ shown as offline / skipped by "auto".
+         *  Sits above the 30 s keepalive so a healthy held poll keeps it fresh. */
+        const val ONLINE_WINDOW_MS = 90_000L
 
         /** A running task with no worker activity for this long fails. */
         const val TASK_STALL_MS = 120_000L
@@ -128,9 +132,10 @@ class WorkerInfo(
         /**
          * How long one poll request is held before the worker reconnects.
          * Tasks are handed over the moment they are queued and keepalives
-         * flow every 10 s, so a longer hold only cuts request churn.
+         * flow every 30 s inside the same request, so a long hold only cuts
+         * reconnect churn: an idle node is one request every 5 minutes.
          */
-        const val POLL_HOLD_MS = 60_000L
+        const val POLL_HOLD_MS = 300_000L
     }
 }
 
@@ -172,6 +177,7 @@ class WorkerTask(
  *   POST /v1/worker/register|progress|stream|done|leave   worker lifecycle
  *   GET  /v1/worker/poll       worker SSE long-poll (X-Karen-Worker header)
  *   POST /v1/workers/remove    master-side disconnect (worker then gets 410)
+ *   POST /v1/workers/pause     master-side pause/resume ({id, paused})
  *   POST /v1/embeddings        501 — no embedding runtime ships on-device
  *   GET  /api/tags             Ollama-shaped model list
  *
@@ -238,6 +244,172 @@ object LocalApiServer {
             if (old != null) removedWorkers.remove(old)
         }
         return true
+    }
+
+    /**
+     * Master-side pause/resume from Network Nodes (or the console). A paused
+     * node keeps polling — so it stays listed and online — but new prompts
+     * skip it: "auto" ignores it and an explicit route is refused. A task
+     * already running is left alone; pause bites on the next assignment.
+     */
+    fun setWorkerPaused(id: String, paused: Boolean): Boolean {
+        val worker = workers[id] ?: return false
+        worker.paused = paused
+        val busy = worker.currentTask.isNotBlank() && tasks.containsKey(worker.currentTask)
+        if (!busy) {
+            worker.state = if (paused) "paused" else "idle"
+            touchNodeWorker(worker.ip, worker.state, worker.loadedModel.ifBlank { worker.defaultModel }, worker.id)
+        }
+        return true
+    }
+
+    /** Disconnect every joined worker (Network Nodes header menu). Count returned. */
+    fun disconnectAllWorkers(): Int {
+        var n = 0
+        workers.keys.toList().forEach { if (disconnectWorker(it)) n += 1 }
+        return n
+    }
+
+    /** One GPU node offered to the app's "run on node" routing (chat/workspace). */
+    data class WorkerPick(
+        val id: String,
+        val name: String,
+        val model: String,
+        val gflops: Double,
+        val state: String,
+        val online: Boolean
+    )
+
+    /** Result of an app-side task run. `noWorker` ⇒ nothing could take it. */
+    data class WorkerRun(
+        val ok: Boolean,
+        val noWorker: Boolean,
+        val text: String,
+        val error: String
+    )
+
+    /**
+     * Live GPU nodes for the chat/workspace routing chip. Reads nodeSnapshot
+     * (Compose state) so screens recompose as nodes come and go.
+     */
+    fun workerPicks(): List<WorkerPick> {
+        val now = System.currentTimeMillis()
+        return nodeSnapshot
+            .filter { it.worker && it.workerId.isNotBlank() }
+            .sortedWith(
+                compareByDescending<NodeInfo> { now - it.lastSeen < WorkerInfo.ONLINE_WINDOW_MS }
+                    .thenByDescending { it.gflops }
+            )
+            .map {
+                val online = now - it.lastSeen < WorkerInfo.ONLINE_WINDOW_MS
+                WorkerPick(
+                    id = it.workerId,
+                    name = it.name,
+                    model = it.workerModel,
+                    gflops = it.gflops,
+                    state = if (online) it.workerState.ifBlank { "idle" } else "offline",
+                    online = online
+                )
+            }
+    }
+
+    /**
+     * App-side task submission (chat/workspace "run on node"): assign one task
+     * to a GPU node and consume its event stream (status → delta → done).
+     * Blocking — call from Dispatchers.IO. `sel` is "auto" or a worker id from
+     * [workerPicks]; onStatus/onDelta fire on the calling thread. Returns
+     * noWorker=true when nothing could take it, so the caller can fall back to
+     * running on this phone.
+     */
+    fun runOnWorker(
+        sel: String,
+        system: String,
+        pairs: List<Pair<String, String>>,
+        temperature: Double = 0.7,
+        maxTokens: Int = 1024,
+        onStatus: ((String) -> Unit)? = null,
+        onDelta: ((String) -> Unit)? = null,
+        cancelled: () -> Boolean = { false }
+    ): WorkerRun {
+        if (sel.isBlank()) return WorkerRun(false, true, "", "no node selected")
+        val worker = resolveWorker(sel, "")
+        if (worker == null) {
+            val w = workers[sel]
+            val why = when {
+                w?.paused == true -> "node \"${w.name}\" is paused — resume it in Network Nodes"
+                w != null && !w.online(System.currentTimeMillis()) -> "node \"${w.name}\" went offline"
+                sel != "auto" -> "that node is no longer connected"
+                else -> "no GPU node is online right now"
+            }
+            return WorkerRun(false, true, "", why)
+        }
+        val messages = JSONArray()
+        if (system.isNotBlank()) messages.put(JSONObject().put("role", "system").put("content", system))
+        pairs.forEach { (role, content) ->
+            messages.put(JSONObject().put("role", role).put("content", content))
+        }
+        val task = WorkerTask(
+            id = "t_" + UUID.randomUUID().toString().replace("-", "").take(6),
+            workerId = worker.id,
+            model = worker.defaultModel,
+            messages = messages,
+            temperature = temperature,
+            maxTokens = maxTokens.coerceIn(1, 4096),
+            createdAt = System.currentTimeMillis()
+        )
+        tasks[task.id] = task
+        workerQueueFor(worker.id).add(task)
+        worker.state = "assigned"
+        worker.currentTask = task.id
+        touchNodeWorker(worker.ip, "assigned", worker.loadedModel.ifBlank { worker.defaultModel }, worker.id)
+        val buf = StringBuilder()
+        try {
+            var lastActivity = System.currentTimeMillis()
+            while (true) {
+                val evt = task.events.poll(1, TimeUnit.SECONDS)
+                if (evt != null) {
+                    lastActivity = System.currentTimeMillis()
+                    when (evt.optString("type")) {
+                        "status" -> onStatus?.invoke(
+                            evt.optString("text").ifBlank { evt.optString("phase") }.ifBlank { "working…" }
+                        )
+                        "delta" -> {
+                            val piece = evt.optString("content")
+                            if (piece.isNotEmpty()) {
+                                buf.append(piece)
+                                onDelta?.invoke(piece)
+                            }
+                        }
+                        "done" -> {
+                            val status = evt.optString("status")
+                            return if (status == "completed") {
+                                WorkerRun(true, false, buf.toString(), "")
+                            } else {
+                                WorkerRun(
+                                    false, false, buf.toString(),
+                                    evt.optString("error").ifBlank { "the node reported a failure" }
+                                )
+                            }
+                        }
+                    }
+                } else if (cancelled()) {
+                    task.cancelRequested = true
+                    task.state = "cancelled"
+                    return WorkerRun(false, false, buf.toString(), "cancelled")
+                } else if (System.currentTimeMillis() - lastActivity > WorkerInfo.TASK_STALL_MS) {
+                    task.cancelRequested = true
+                    task.state = "cancelled"
+                    return WorkerRun(false, false, buf.toString(), "the node went quiet (tab closed?) — task aborted")
+                }
+            }
+        } finally {
+            tasks.remove(task.id)
+            if (worker.currentTask == task.id) {
+                worker.state = if (worker.paused) "paused" else "idle"
+                worker.currentTask = ""
+                touchNodeWorker(worker.ip, worker.state, worker.loadedModel.ifBlank { worker.defaultModel }, worker.id)
+            }
+        }
     }
 
     /**
@@ -348,6 +520,9 @@ object LocalApiServer {
         val key = ip ?: return
         val prev = nodes[key] ?: return
         nodes[key] = prev.copy(
+            // A touch is a sign of life: keepalives, progress and stream chunks
+            // all land here, so a 5-minute poll hold never looks offline.
+            lastSeen = System.currentTimeMillis(),
             worker = true,
             workerState = state,
             workerModel = model.take(80),
@@ -490,18 +665,19 @@ object LocalApiServer {
                         .put("jsScore", w.jsScore)
                         .put("maxBufferMB", w.maxBufferMB)
                         .put("telemetryAt", w.telemetryAt)
+                        .put("paused", w.paused)
                 )
             }
         return JSONObject().put("object", "list").put("data", data)
     }
 
-    /** "auto" picks the best online worker; otherwise the id must match exactly. */
+    /** "auto" picks the best online, unpaused worker; otherwise the id must match exactly. */
     private fun resolveWorker(sel: String, model: String): WorkerInfo? {
         val now = System.currentTimeMillis()
         if (sel == "auto") {
             return workers.values
                 .filter { w ->
-                    w.online(now) && (
+                    w.online(now) && !w.paused && (
                         model.isBlank() ||
                             w.models.isEmpty() ||
                             w.models.any { it.equals(model, ignoreCase = true) } ||
@@ -517,7 +693,7 @@ object LocalApiServer {
                     )
                 )
         }
-        return workers[sel]
+        return workers[sel]?.takeIf { !it.paused }
     }
 
     /** Worker announces itself (and its model list) or refreshes capabilities. */
@@ -560,7 +736,8 @@ object LocalApiServer {
             models = models.take(400),
             joinedAt = prev?.joinedAt ?: now,
             lastSeenAt = now,
-            state = if (busyTask != null) (prev?.state ?: "assigned") else "idle",
+            state = if (busyTask != null) (prev?.state ?: "assigned")
+                    else (if (prev?.paused == true) "paused" else "idle"),
             currentTask = busyTask ?: "",
             loadedModel = body.optString("loadedModel", prev?.loadedModel ?: "").trim().take(90),
             tasksDone = prev?.tasksDone ?: 0,
@@ -577,7 +754,8 @@ object LocalApiServer {
             netRttMs = prev?.netRttMs ?: 0,
             jsScore = prev?.jsScore ?: 0.0,
             maxBufferMB = prev?.maxBufferMB ?: 0,
-            telemetryAt = prev?.telemetryAt ?: 0L
+            telemetryAt = prev?.telemetryAt ?: 0L,
+            paused = prev?.paused ?: false
         )
         val tel = body.optJSONObject("telemetry")
         applyWorkerTelemetry(worker, tel)
@@ -625,8 +803,9 @@ object LocalApiServer {
         val current = worker.currentTask
         if (current.isBlank() || tasks[current] == null) {
             worker.currentTask = ""
-            worker.state = "idle"
-            touchNodeWorker(worker.ip, "idle", worker.loadedModel.ifBlank { worker.defaultModel }, worker.id)
+            val st = if (worker.paused) "paused" else "idle"
+            worker.state = st
+            touchNodeWorker(worker.ip, st, worker.loadedModel.ifBlank { worker.defaultModel }, worker.id)
         }
         val out = socket.getOutputStream()
         try {
@@ -642,7 +821,9 @@ object LocalApiServer {
             val queue = workerQueueFor(workerId)
             val deadline = System.currentTimeMillis() + WorkerInfo.POLL_HOLD_MS
             while (System.currentTimeMillis() < deadline) {
-                val task = queue.poll(10, TimeUnit.SECONDS)
+                // 30 s: keepalive cadence only — tasks still hand over the
+                // instant they are queued (poll returns early).
+                val task = queue.poll(30, TimeUnit.SECONDS)
                 if (task != null) {
                     if (!tasks.containsKey(task.id) || task.cancelRequested) continue
                     val at = System.currentTimeMillis()
@@ -672,6 +853,10 @@ object LocalApiServer {
                     return
                 }
                 worker.lastSeenAt = System.currentTimeMillis()
+                // The keepalive is also the app-visible heartbeat: without
+                // this touch a 5-minute hold would look offline in Network
+                // Nodes / the chat chip after 90 s.
+                touchNodeWorker(worker.ip, if (worker.paused) "paused" else "idle", worker.loadedModel.ifBlank { worker.defaultModel }, worker.id)
                 out.write(": ping\n\n".toByteArray(Charsets.UTF_8))
                 out.flush()
             }
@@ -732,6 +917,8 @@ object LocalApiServer {
         task.lastActivityAt = now
         if (task.state == "assigned" || task.state == "loading") task.state = "running"
         worker.state = "running"
+        // Long generations keep the node fresh in the app-visible list too.
+        touchNodeWorker(worker.ip, "running", worker.loadedModel.ifBlank { worker.defaultModel }, worker.id)
         val delta = body.optString("delta", "")
         if (delta.isNotEmpty()) task.events.add(JSONObject().put("type", "delta").put("content", delta))
         writeJson(socket, 200, JSONObject().put("ok", true).put("cancel", task.cancelRequested))
@@ -833,11 +1020,15 @@ object LocalApiServer {
         }
         val worker = resolveWorker(sel, wanted)
         if (worker == null) {
+            val paused = workers[sel]?.paused == true
             writeJson(
                 socket, 503,
                 JSONObject().put(
                     "error",
-                    errorObj("no worker is online — open the dashboard on a laptop/desktop with WebGPU; it joins automatically as a slave node once the token is saved")
+                    errorObj(
+                        if (paused) "node \"${workers[sel]?.name ?: sel}\" is paused — resume it (Network Nodes on the phone, or Pause/Resume in the console) and retry"
+                        else "no worker is online — open the dashboard on a laptop/desktop with WebGPU; it joins automatically as a slave node once the token is saved"
+                    )
                 )
             )
             return
@@ -979,7 +1170,17 @@ object LocalApiServer {
         }
         val worker = resolveWorker(sel, wanted)
         if (worker == null) {
-            writeJson(socket, 503, JSONObject().put("error", errorObj("no GPU worker is online")))
+            val paused = workers[sel]?.paused == true
+            writeJson(
+                socket, 503,
+                JSONObject().put(
+                    "error",
+                    errorObj(
+                        if (paused) "node \"${workers[sel]?.name ?: sel}\" is paused — resume it to send prompts"
+                        else "no GPU worker is online"
+                    )
+                )
+            )
             return
         }
         val task = WorkerTask(
@@ -1480,6 +1681,16 @@ object LocalApiServer {
                         writeJson(socket, 400, JSONObject().put("error", errorObj("JSON body required")))
                     } else {
                         workerRemove(socket, body)
+                    }
+                }
+                method == "POST" && path == "/v1/workers/pause" -> {
+                    if (body == null) {
+                        writeJson(socket, 400, JSONObject().put("error", errorObj("JSON body required")))
+                    } else {
+                        val id = body.optString("id", body.optString("workerId", ""))
+                        val paused = body.optBoolean("paused", true)
+                        val ok = setWorkerPaused(id, paused)
+                        writeJson(socket, 200, JSONObject().put("ok", ok))
                     }
                 }
                 method == "GET" && path == "/api/tags" -> {
@@ -2061,6 +2272,7 @@ object LocalApiServer {
   <summary id="gpuSummary">GPU offload — checking this device…</summary>
   <div class="filelist">
     <div class="fmeta" id="gpuAdapter"></div>
+    <div class="fmeta" id="gpuNote" style="display:none;color:#8ed5ff"></div>
     <div class="frow">
       <button class="ghost" id="benchBtn" onclick="runBench()">Run GPU benchmark</button>
       <span class="fmeta" id="benchResult"></span>
@@ -2354,6 +2566,77 @@ function toggleBoostText() {
     ? 'Chat runs on THIS device\'s GPU (WebLLM). The first reply downloads the engine + model once, then it is cached.'
     : 'Chat runs on the phone (llama.cpp) over the LAN. Tick boost to run it here instead.';
 }
+function copyText(t) {
+  // navigator.clipboard needs a secure context; on plain-http origins fall
+  // back to execCommand so "copy" still works while the bypass is active.
+  try {
+    var ta = document.createElement('textarea');
+    ta.value = t;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch (e) { return false; }
+}
+function showBypassUndo(origin) {
+  // WebGPU exists although this origin is NOT secure — the only way that
+  // happens is the chrome://flags insecure-origin bypass. Show how to take
+  // it back: remove this origin from that flag's list and set it to Disabled
+  // (browsers block clickable chrome:// links, hence the copy buttons).
+  var hint = el('secureHint');
+  if (!hint || el('bypassUndoBtn')) { return; }
+  var flagsUrl = 'chrome://flags/#unsafely-treat-insecure-origin-as-secure';
+  hint.style.display = 'block';
+  hint.innerHTML =
+    '<b>WebGPU works here through the insecure-origin bypass</b> (' + origin + ' is a plain http:// address). Keep it, or take the browser back to normal any time: ' +
+    '<button class="ghost" id="bypassUndoBtn" type="button">Undo the bypass (back to normal)</button>' +
+    '<div id="bypassUndo" style="display:none;margin-top:8px">' +
+    'Open <b>' + flagsUrl + '</b> (browsers block clickable chrome:// links — use the copy button), ' +
+    'remove <code style="background:#0c0e12;border:1px solid #283042;border-radius:5px;padding:1px 5px">' + origin + '</code> from the list, ' +
+    'set the flag back to <b>Disabled</b>, then press <b>Relaunch</b>. That removes the bypass completely — after it, WebGPU needs a trusted address again ' +
+    '(the tunnel: tools\\karen-tunnel.ps1 → http://127.0.0.1:11434/). Nothing else on the phone changes; slave work resumes the moment WebGPU is available again.' +
+    '<div style="margin-top:8px">' +
+    '<button class="ghost" id="bypassCopyBtn" type="button">Copy the undo steps</button>' +
+    '<button class="ghost" id="bypassCopyFlagBtn" type="button" style="margin-left:6px">Copy the flags address</button>' +
+    '</div></div>';
+  el('bypassUndoBtn').onclick = function () {
+    var d = el('bypassUndo');
+    d.style.display = (d.style.display === 'none') ? 'block' : 'none';
+  };
+  el('bypassCopyBtn').onclick = function () {
+    var steps = 'Open ' + flagsUrl + ', remove ' + origin + ' from "Insecure origins treated as secure", set that flag back to Disabled, then Relaunch the browser.';
+    toast(copyText(steps) ? 'Undo steps copied' : steps);
+  };
+  el('bypassCopyFlagBtn').onclick = function () {
+    toast(copyText(flagsUrl) ? 'Flags address copied — paste it into the address bar' : flagsUrl);
+  };
+}
+function adapterName(ad) {
+  var info = (ad && ad.info) || {};
+  return [info.vendor, info.architecture, info.device, info.description].filter(Boolean).join(' · ') || 'WebGPU adapter';
+}
+async function pickAdapter() {
+  // Ask for the discrete GPU explicitly — Chrome/Edge honour powerPreference
+  // on dual-GPU machines (Intel/AMD iGPU + NVIDIA/AMD dGPU), so an RTX gets
+  // picked when it is available. Also ask for the plain default so the page
+  // can tell the user when the two differ (WebLLM chat follows the default).
+  var hp = null, def = null;
+  try { hp = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' }); } catch (e) {}
+  try { def = await navigator.gpu.requestAdapter(); } catch (e) {}
+  return { ad: hp || def, hp: hp, def: def };
+}
+function gpuAdapterNote(hpName, defName) {
+  // Two different adapters: this browser's default is not the fast one, so
+  // chat (WebLLM requests without a preference) may run on the slow GPU.
+  if (!hpName || !defName || hpName === defName) { return ''; }
+  return 'Heads-up: this browser\'s default GPU is “' + defName + '”, and that is what WebLLM chat would use. ' +
+    'To put chat on the fast GPU too: Windows Settings → System → Display → Graphics → add your browser → High performance ' +
+    '(NVIDIA Control Panel: Manage 3D settings → Program Settings → add the browser → High-performance NVIDIA processor), then reload this page.';
+}
 async function initGpu() {
   var box = el('gpuBoost');
   box.checked = S.boost;
@@ -2376,7 +2659,8 @@ async function initGpu() {
           '<code style="background:#0c0e12;border:1px solid #283042;border-radius:5px;padding:1px 5px">powershell -ExecutionPolicy Bypass -File tools\\karen-tunnel.ps1 -Phone ' + host + ' -Port ' + pport + '</code>' +
           ' and open <a href="http://127.0.0.1:11434/" style="color:#38bdf8">http://127.0.0.1:11434/</a> — 127.0.0.1 is a trusted address, so WebGPU is exposed there.<br>' +
           '<b>Fix 2 — trust this address:</b> open <b>chrome://flags/#unsafely-treat-insecure-origin-as-secure</b>, add ' +
-          '<code style="background:#0c0e12;border:1px solid #283042;border-radius:5px;padding:1px 5px">' + origin + '</code>, set it to Enabled, relaunch the browser.';
+          '<code style="background:#0c0e12;border:1px solid #283042;border-radius:5px;padding:1px 5px">' + origin + '</code>, set it to Enabled, relaunch the browser. ' +
+          'Once that bypass is active this page adds an "Undo the bypass" button that walks the browser back to normal in one look.';
       }
     } else {
       el('gpuSummary').textContent = 'GPU offload — WebGPU is switched off in this browser';
@@ -2399,7 +2683,8 @@ async function initGpu() {
     return;
   }
   try {
-    var ad = await navigator.gpu.requestAdapter();
+    var pick = await pickAdapter();
+    var ad = pick.ad;
     if (!ad) {
       el('gpuSummary').textContent = 'GPU offload — WebGPU is present, but this machine offered no GPU adapter';
       el('gpuAdapter').textContent = 'requestAdapter() found nothing — often software rendering or a blocklisted GPU (the phone keeps answering meanwhile).';
@@ -2416,11 +2701,17 @@ async function initGpu() {
       var mbuf = ad.limits && ad.limits.maxBufferSize;
       if (mbuf) { S.maxBufferMB = Math.round(mbuf / 1048576); }
     } catch (e) {}
-    var info = ad.info || {};
-    S.gpuName = [info.vendor, info.architecture, info.device, info.description].filter(Boolean).join(' · ') || 'WebGPU adapter';
+    S.gpuName = adapterName(ad);
     el('gpuSummary').textContent = 'GPU offload — this device: ' + S.gpuName;
     el('gpuAdapter').textContent = 'Adapter: ' + S.gpuName + ' — benchmark it below, or switch chat onto this GPU.';
+    var adNote = gpuAdapterNote(pick.hp ? adapterName(pick.hp) : '', pick.def ? adapterName(pick.def) : '');
+    var gn = el('gpuNote');
+    if (gn) {
+      if (adNote) { gn.style.display = 'block'; gn.textContent = adNote; }
+      else { gn.style.display = 'none'; }
+    }
     toggleBoostText();
+    if (!secure) { showBypassUndo(origin); }
     await reportNode();
     if (PAGE !== 'worker') { return; }  // the console never auto-joins as a slave
     el('gpuWorker').disabled = false;
@@ -2675,8 +2966,16 @@ async function workerJoin(isAuto) {
     workerStatus('engine unavailable — needs internet once: ' + (e && e.message ? e.message : e));
     return;
   }
-  await workerRegister();
+  var joined = await workerRegister();
   if (S.w.master) { S.w.on = false; el('gpuWorker').checked = false; return; }
+  if (!joined) {
+    // Registration failed (missing/wrong token, network): do NOT start the
+    // poll loop — it used to hammer the phone with a 401/404 retry every 5 s.
+    // Saving a valid token auto-rejoins from saveToken().
+    S.w.on = false;
+    el('gpuWorker').checked = false;
+    return;
+  }
   if (!isAuto) { toast('Working as a slave node'); }
   workerLoop();
 }
@@ -2701,16 +3000,18 @@ async function workerRegister() {
     if (wb) { wb.checked = false; wb.disabled = true; }
     workerStatus('this is the master device (the phone) — other devices work as slave nodes');
     refreshWorkers();
-    return;
+    return false;
   }
   if (j && j.workerId) {
     S.w.id = j.workerId;
     localStorage.setItem('karen_worker_id', S.w.id);
     workerStatus('registered — polling for tasks');
-  } else {
-    workerStatus('registration failed — is the token saved?');
+    refreshWorkers();
+    return true;
   }
+  workerStatus('registration failed — is the token saved?');
   refreshWorkers();
+  return false;
 }
 function workerLeave(reason) {
   S.w.on = false;
@@ -2721,6 +3022,7 @@ function workerLeave(reason) {
 }
 async function workerLoop() {
   if (S.w.loop) { return; }  // exactly one poll loop per tab, ever
+  if (!S.w.id) { return; }   // unregistered: never poll (workerJoin sets the id)
   S.w.loop = true;
   try {
     while (S.w.on) {
@@ -2734,8 +3036,28 @@ async function workerLoop() {
       catch (e) { workerStatus('connection lost — retrying'); await workerSleep(3000); continue; }
       if (!r) { await workerSleep(3000); continue; }
       if (r.status === 410) { workerLeave('disconnected by the phone'); toast('Removed by the phone — slave mode off'); return; }
-      if (r.status === 404) { workerStatus('re-registering…'); await workerRegister(); continue; }
-      if (r.status === 401) { workerStatus('token needed — save it above'); await workerSleep(5000); continue; }
+      if (r.status === 404) {
+        // Stale worker id (server restarted / node removed): re-register once.
+        // If that fails too, stop — a 404 → register → 404 loop with no
+        // backoff was the worst source of "the node keeps asking the phone".
+        workerStatus('re-registering…');
+        var regOk = await workerRegister();
+        if (!regOk) {
+          workerStatus('re-register failed — save a valid token, then switch slave mode on again');
+          S.w.on = false;
+          if (el('gpuWorker')) { el('gpuWorker').checked = false; }
+          return;
+        }
+        continue;
+      }
+      if (r.status === 401) {
+        // Wrong/missing token: stop polling entirely instead of retrying
+        // every 5 s forever. Saving the token re-joins automatically.
+        workerStatus('token rejected — slave mode off. Save a valid token, then switch it back on.');
+        S.w.on = false;
+        if (el('gpuWorker')) { el('gpuWorker').checked = false; }
+        return;
+      }
       if (!r.ok) { workerStatus('poll HTTP ' + r.status); await workerSleep(3000); continue; }
       if (S.w.on) { workerStatus('idle — waiting for tasks'); }
       var reader = r.body.getReader();
@@ -2863,6 +3185,19 @@ function topGpuId(ws) {
   });
   return best ? best.id : '';
 }
+function autoPickId(ws) {
+  // Mirrors the server's "auto": best online node that is not paused
+  // (idle ones first, then GFLOPS) — used for the "auto target" badge.
+  var best = null;
+  (ws || []).forEach(function (w) {
+    if (w.state === 'offline' || w.paused) return;
+    if (!best) { best = w; return; }
+    var a = (w.state === 'idle') ? 1 : 0, b = (best.state === 'idle') ? 1 : 0;
+    if (a !== b) { if (a > b) { best = w; } return; }
+    if ((w.gflops || 0) > (best.gflops || 0)) { best = w; }
+  });
+  return best ? best.id : '';
+}
 function gpuLabel(w) {
   var bits = w.name;
   bits += (w.state === 'offline') ? ' — offline' : (' — ' + w.state);
@@ -2983,12 +3318,13 @@ function refreshWorkers() {
       box.appendChild(d);
     }
     var routed = (el('runner') ? el('runner').value : '') || S.routed || '';
+    var autoId = autoPickId(ws);
     ws.forEach(function (w) {
       var row = document.createElement('div');
       row.className = 'frow';
       var st = document.createElement('span');
-      st.className = 'badge ' + (w.state === 'offline' ? 'off' : (w.state === 'idle' ? 'ok' : 'mid'));
-      st.textContent = w.state;
+      st.className = 'badge ' + (w.state === 'offline' ? 'off' : (w.paused ? '' : (w.state === 'idle' ? 'ok' : 'mid')));
+      st.textContent = w.paused ? 'paused' : w.state;
       row.appendChild(st);
       var nm = document.createElement('span');
       nm.className = 'fname';
@@ -3004,7 +3340,7 @@ function refreshWorkers() {
         fb.textContent = 'fastest GPU';
         row.appendChild(fb);
       }
-      if (routed === w.id || (routed === 'auto' && w.id === topId)) {
+      if (routed === w.id || (routed === 'auto' && w.id === autoId)) {
         var rb = document.createElement('span');
         rb.className = 'badge mid';
         rb.textContent = (routed === 'auto') ? 'auto target' : 'routed here';
@@ -3029,14 +3365,30 @@ function refreshWorkers() {
       rt.textContent = (routed === w.id) ? 'Selected ✓' : 'Select for chat';
       rt.title = (w.state === 'offline')
         ? 'node is offline — it takes no prompts right now'
-        : ('route prompts to ' + gpuLabel(w));
-      rt.disabled = (w.state === 'offline') || (routed === w.id);
+        : (w.paused ? 'node is paused — resume it first' : ('route prompts to ' + gpuLabel(w)));
+      rt.disabled = (w.state === 'offline') || w.paused || (routed === w.id);
       rt.onclick = function () {
         el('runner').value = w.id;
         runnerChanged();
         refreshWorkers();
       };
       row.appendChild(rt);
+      var pb = document.createElement('button');
+      pb.className = 'ghost';
+      pb.textContent = w.paused ? 'Resume' : 'Pause';
+      pb.title = w.paused
+        ? 'back in rotation — auto and manual routes may use it again'
+        : 'stays joined and online, but takes no new prompts until resumed';
+      pb.disabled = (w.state === 'offline');
+      pb.onclick = function () {
+        var want = !w.paused;
+        post('/v1/workers/pause', { id: w.id, paused: want }).then(function (r) {
+          if (!r || !r.ok) { toast('Could not ' + (want ? 'pause' : 'resume') + ' ' + w.name + ' — node gone?'); }
+          else { toast((want ? 'Paused ' : 'Resumed ') + w.name + (want ? ' — it takes no new prompts' : ' — back in rotation')); }
+          refreshWorkers();
+        });
+      };
+      row.appendChild(pb);
       var rm = document.createElement('button');
       rm.className = 'ghost';
       rm.textContent = 'Disconnect';

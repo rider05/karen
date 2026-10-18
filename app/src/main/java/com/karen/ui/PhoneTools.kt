@@ -84,15 +84,22 @@ fun runsDirect(spec: ToolSpec, ctx: Context): Boolean {
     return false
 }
 
+/** Character budget for retrieved vault text in one turn (~900 tokens). */
+internal const val VAULT_RAG_BUDGET = 3600
+
 /**
- * "@file" vault mentions: fetches each named file's content so the model
- * answers from it in the same turn. Text reads direct; PDFs transcribe
- * through DocVision (needs a vision key). Unresolvable tokens stay as-is.
+ * "@file" vault mentions with on-device retrieval (RAG): the named file is
+ * read in full, split into overlapping chunks, and only the passages whose
+ * words overlap the question are handed to the model inside a char budget.
+ * Short files pass through whole. PDFs transcribe through DocVision (needs a
+ * vision key) before the same retrieval runs. Unresolvable tokens stay as-is.
  */
 suspend fun resolveMentions(ctx: Context, raw: String): String {
     val hits = Regex("@([^\\s@]{1,80})").findAll(raw).toList()
     if (hits.isEmpty()) return raw
     val files = withContext(Dispatchers.IO) { vaultFiles(ctx) }
+    // What to retrieve FOR: the message minus the @tokens themselves.
+    val question = raw.replace(Regex("@([^\\s@]{1,80})"), " ")
     var out = raw
     hits.forEach { m ->
         val key = m.groupValues[1].trimEnd('.', ',', ';', ':', '!', '?')
@@ -101,17 +108,122 @@ suspend fun resolveMentions(ctx: Context, raw: String): String {
             ?: files.firstOrNull { it.name.lowercase().contains(key.lowercase()) }
             ?: return@forEach
         val content = when (file.extension.lowercase()) {
-            "pdf" -> DocVision.transcribePdf(ctx, file, 2)
+            "pdf" -> DocVision.transcribePdf(ctx, file, 4)
                 ?.takeIf { it.first.isNotBlank() }
-                ?.let { "[OCR pages 1-${it.second}]\n${it.first.take(3000)}" }
-            in ATTACH_TEXT_EXTS -> withContext(Dispatchers.IO) { readPreview(file, 3000) }
+                ?.let { "[OCR pages 1-${it.second}]\n${it.first}" }
+            in ATTACH_TEXT_EXTS -> withContext(Dispatchers.IO) { readPreview(file, 400_000) }
             else -> null
         }
         if (!content.isNullOrBlank()) {
-            out = out.replaceFirst("@${m.groupValues[1]}", "[File ${file.name} content:\n$content]")
+            out = out.replaceFirst("@${m.groupValues[1]}", vaultGroundedContext(file.name, content, question))
         }
     }
     return out
+}
+
+/**
+ * Builds the grounded context for one vault file: whole document when it fits
+ * the budget, otherwise the best-scoring chunks joined with separators. The
+ * model is told what it got and to cite the file name.
+ */
+internal fun vaultGroundedContext(
+    name: String,
+    text: String,
+    question: String,
+    budget: Int = VAULT_RAG_BUDGET
+): String {
+    val clean = text.replace("\r\n", "\n").trim()
+    if (clean.length <= budget) {
+        return "[Vault file \"$name\" — full document:\n$clean]\n" +
+            "Answer from this document and cite its name."
+    }
+    val chunks = vaultChunks(clean, 1200, 150)
+    val terms = vaultQueryTerms(question)
+    val ranked = if (terms.isEmpty()) {
+        chunks
+    } else {
+        val lowered = chunks.map { it.lowercase() }
+        chunks.indices
+            .sortedByDescending { i -> terms.sumOf { t -> countOccurrences(lowered[i], t) * t.length } }
+            .map { chunks[it] }
+    }
+    val picked = mutableListOf<String>()
+    var used = 0
+    for (c in ranked) {
+        if (picked.isNotEmpty() && used + c.length > budget) continue
+        picked.add(c)
+        used += c.length
+        if (used >= budget) break
+    }
+    return "[Vault file \"$name\" — ${picked.size} of ${chunks.size} passages, chosen as most relevant " +
+        "to this question:\n" + picked.joinToString("\n---\n") + "\n]\n" +
+        "Answer from these passages and cite the file name. If they do not cover the question, say so."
+}
+
+/**
+ * Paragraph-aware chunker: packs paragraphs into ~[target]-char chunks; a
+ * paragraph longer than the target is hard-split with [overlap] chars carried
+ * over so a sentence never lands across a boundary with no context.
+ */
+internal fun vaultChunks(text: String, target: Int, overlap: Int): List<String> {
+    val paras = text.split(Regex("\n\\s*\n"))
+    val chunks = mutableListOf<String>()
+    val cur = StringBuilder()
+    fun flush() {
+        val done = cur.toString().trim()
+        if (done.isNotEmpty()) chunks.add(done)
+        cur.setLength(0)
+    }
+    for (p in paras) {
+        val para = p.trim()
+        if (para.isEmpty()) continue
+        if (para.length > target) {
+            flush()
+            var i = 0
+            while (i < para.length) {
+                val end = minOf(para.length, i + target)
+                chunks.add(para.substring(i, end).trim())
+                if (end >= para.length) break
+                i = (end - overlap).coerceAtLeast(i + 1)
+            }
+        } else if (cur.length + para.length + 2 > target) {
+            flush()
+            cur.append(para)
+        } else {
+            if (cur.isNotEmpty()) cur.append("\n\n")
+            cur.append(para)
+        }
+    }
+    flush()
+    return chunks
+}
+
+/** Question words that matter for retrieval: ≥3 chars, common fillers dropped. */
+internal fun vaultQueryTerms(question: String): List<String> {
+    val stop = setOf(
+        "the", "and", "for", "you", "are", "was", "with", "this", "that", "from",
+        "what", "which", "who", "how", "why", "when", "where", "does", "did",
+        "can", "could", "would", "should", "about", "into", "than", "then",
+        "them", "they", "your", "our", "his", "her", "its", "please", "tell",
+        "explain", "summarize", "summary", "file", "document", "note", "notes"
+    )
+    return question.lowercase()
+        .split(Regex("[^\\p{L}\\p{N}_.-]+"))
+        .filter { it.length >= 3 && it !in stop }
+        .distinct()
+        .take(40)
+}
+
+/** Plain substring count (no regex surprises on real file text). */
+internal fun countOccurrences(haystack: String, needle: String): Int {
+    if (needle.isEmpty()) return 0
+    var n = 0
+    var i = haystack.indexOf(needle)
+    while (i >= 0) {
+        n += 1
+        i = haystack.indexOf(needle, i + needle.length)
+    }
+    return n
 }
 
 object ToolSpecs {

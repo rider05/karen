@@ -20,6 +20,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.karen.rememberDeviceTelemetry
@@ -228,6 +229,64 @@ fun HomeScreen(
                     color = colors.accentGreen,
                     trackColor = colors.surfaceHover
                 )
+
+                Spacer(Modifier.height(12.dp))
+                // Recently opened: chats, canvases and screens — tap to jump back.
+                val recents = remember { RecentActivity.list(ctx).take(3) }
+                if (recents.isNotEmpty()) {
+                    Spacer(Modifier.height(2.dp))
+                    HorizontalDivider(color = colors.border)
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "RECENTLY OPENED",
+                        color = colors.textMuted,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    recents.forEach { r ->
+                        val icon = when (r.type) {
+                            RecentActivity.TYPE_CHAT -> Icons.AutoMirrored.Filled.Chat
+                            RecentActivity.TYPE_WORKSPACE -> Icons.Default.Workspaces
+                            else -> Icons.Default.Layers
+                        }
+                        val typeLabel = when (r.type) {
+                            RecentActivity.TYPE_CHAT -> "Chat"
+                            RecentActivity.TYPE_WORKSPACE -> "Canvas"
+                            else -> "Screen"
+                        }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable {
+                                    when (r.type) {
+                                        RecentActivity.TYPE_CHAT -> onOpenConversation(r.key)
+                                        RecentActivity.TYPE_WORKSPACE -> onNavigate("Workspace")
+                                        else -> onNavigate(r.key)
+                                    }
+                                }
+                                .padding(vertical = 6.dp, horizontal = 4.dp)
+                        ) {
+                            Icon(icon, contentDescription = null, tint = colors.textSecondary, modifier = Modifier.size(15.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                r.title,
+                                color = colors.textPrimary,
+                                fontSize = 12.5.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Text(
+                                "$typeLabel · ${relTimeAgo(r.at)}",
+                                color = colors.textMuted,
+                                fontSize = 10.5.sp,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                    }
+                }
 
                 Spacer(Modifier.height(12.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

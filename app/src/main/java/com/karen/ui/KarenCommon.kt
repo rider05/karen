@@ -3163,6 +3163,111 @@ fun Section(title: String, icon: String = "", content: @Composable ColumnScope.(
     }
 }
 
+/**
+ * "Run on" routing chip for Chat and Workspace. Only rendered while a slave
+ * node is joined (or a node route is already selected, so it can be undone).
+ * "" = this phone, "auto" = fastest online node, else a worker id. Rebuilds
+ * as nodes poll in and out (5 s tick — the online window is time-based).
+ */
+@Composable
+fun WorkerRouteChip(
+    current: String,
+    onSelect: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val colors = LocalKarenColors.current
+    var open by remember { mutableStateOf(false) }
+    var tick by remember { mutableStateOf(0L) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(5000)
+            tick++
+        }
+    }
+    val picks = remember(tick) { LocalApiServer.workerPicks() }
+    if (picks.isEmpty() && current.isBlank()) return
+
+    val active = picks.firstOrNull { current.isNotBlank() && it.id == current }
+    val label = when {
+        current.isBlank() -> "This phone"
+        current == "auto" -> "Auto · " + (picks.firstOrNull { it.online }?.name ?: "no node online")
+        active == null -> "Node (offline)"
+        !active.online -> active.name + " · offline"
+        active.state == "paused" -> active.name + " · paused"
+        else -> active.name
+    }
+    val tint = if (current.isBlank()) colors.textMuted else colors.accentGreen
+
+    Box(modifier = modifier) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .clip(RoundedCornerShape(999.dp))
+                .background(colors.surface)
+                .border(1.dp, if (current.isBlank()) colors.border else tint.copy(alpha = 0.55f), RoundedCornerShape(999.dp))
+                .clickable { open = true }
+                .padding(horizontal = 10.dp, vertical = 5.dp)
+        ) {
+            Icon(Icons.Default.Dns, contentDescription = "Run on", tint = tint, modifier = Modifier.size(12.dp))
+            Spacer(Modifier.width(6.dp))
+            Text("Run on: $label", color = tint, fontSize = 10.5.sp, fontFamily = FontFamily.Monospace)
+            Spacer(Modifier.width(2.dp))
+            Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = tint, modifier = Modifier.size(14.dp))
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            DropdownMenuItem(
+                text = {
+                    Column {
+                        Text("This phone", color = colors.textPrimary, fontSize = 13.sp)
+                        Text("runs everything on-device", color = colors.textMuted, fontSize = 11.sp)
+                    }
+                },
+                trailingIcon = { if (current.isBlank()) Icon(Icons.Default.Check, contentDescription = null, tint = colors.accentGreen, modifier = Modifier.size(16.dp)) },
+                onClick = { open = false; onSelect("") }
+            )
+            DropdownMenuItem(
+                text = {
+                    Column {
+                        Text("Auto — fastest online node", color = colors.textPrimary, fontSize = 13.sp)
+                        Text("falls back to this phone when none are online", color = colors.textMuted, fontSize = 11.sp)
+                    }
+                },
+                trailingIcon = { if (current == "auto") Icon(Icons.Default.Check, contentDescription = null, tint = colors.accentGreen, modifier = Modifier.size(16.dp)) },
+                onClick = { open = false; onSelect("auto") }
+            )
+            picks.forEach { w ->
+                val usable = w.online && w.state != "paused"
+                val sub = buildString {
+                    if (w.model.isNotBlank()) append(w.model)
+                    if (w.gflops > 0.0) {
+                        if (isNotEmpty()) append(" · ")
+                        append("%.0f GF".format(w.gflops))
+                    }
+                    if (!w.online) {
+                        if (isNotEmpty()) append(" · ")
+                        append("offline")
+                    } else if (w.state == "paused") {
+                        if (isNotEmpty()) append(" · ")
+                        append("paused")
+                    }
+                }.ifBlank { "GPU node" }
+                DropdownMenuItem(
+                    text = {
+                        Column {
+                            Text("Run on: " + w.name, color = colors.textPrimary, fontSize = 13.sp)
+                            Text(sub, color = colors.textMuted, fontSize = 11.sp, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                        }
+                    },
+                    enabled = usable,
+                    trailingIcon = { if (current == w.id) Icon(Icons.Default.Check, contentDescription = null, tint = colors.accentGreen, modifier = Modifier.size(16.dp)) },
+                    onClick = { open = false; onSelect(w.id) }
+                )
+            }
+        }
+    }
+}
+
+
 @Composable
 fun KV(label: String, value: String, hl: Boolean = false) {
     val colors = LocalKarenColors.current

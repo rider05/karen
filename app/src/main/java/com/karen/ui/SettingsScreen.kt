@@ -16,8 +16,10 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -1531,6 +1533,9 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                     }
                     if (releaseNotes.isNotBlank() && pendingSha != null) {
                         Spacer(Modifier.height(6.dp))
+                        // Release notes are the full commit message — cap the box and
+                        // let them scroll inside it instead of stretching the page.
+                        val notesOverflow = releaseNotes.length > 380 || releaseNotes.lines().size > 8
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -1539,15 +1544,28 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                                 .border(1.dp, colors.border.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
                                 .padding(10.dp)
                         ) {
-                            Text("Release notes", color = colors.textMuted, fontSize = 10.5.sp, fontWeight = FontWeight.SemiBold)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("Release notes", color = colors.textMuted, fontSize = 10.5.sp, fontWeight = FontWeight.SemiBold)
+                                if (notesOverflow) {
+                                    Spacer(Modifier.weight(1f))
+                                    Text("scroll ↕", color = colors.textMuted, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                                }
+                            }
                             Spacer(Modifier.height(4.dp))
-                            Text(
-                                releaseNotes,
-                                color = colors.textSecondary,
-                                fontSize = 11.5.sp,
-                                fontFamily = FontFamily.Monospace,
-                                lineHeight = 15.sp
-                            )
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(max = 140.dp)
+                                    .verticalScroll(rememberScrollState())
+                            ) {
+                                Text(
+                                    releaseNotes,
+                                    color = colors.textSecondary,
+                                    fontSize = 11.5.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    lineHeight = 15.sp
+                                )
+                            }
                         }
                     }
                     if (downloading) {

@@ -85,7 +85,8 @@ object ChatHistoryStore {
                         model = parts.getOrNull(7)?.let { dec(it) } ?: "",
                         inTokens = parts.getOrNull(8)?.toIntOrNull() ?: 0,
                         reasonTokens = parts.getOrNull(9)?.toIntOrNull() ?: 0,
-                        usageReal = parts.getOrNull(10) == "1"
+                        usageReal = parts.getOrNull(10) == "1",
+                        help = parts.getOrNull(11) == "1"
                     )
                 }
                 else -> null
@@ -100,7 +101,7 @@ object ChatHistoryStore {
         val lines = messages.map { item ->
             when (item) {
                 is ChatItem.User -> "U\t${enc(item.text)}\t${enc(item.attachments.joinToString("\n") { it.name })}\t${enc(item.attachments.joinToString("\n") { it.path ?: "" })}\t${item.tokens}"
-                is ChatItem.Assistant -> "A\t${enc(item.thought ?: "")}\t${enc(item.toolCall ?: "")}\t${enc(item.text)}\t${item.tookMs}\t${item.tokens}\t${if (item.interrupted) 1 else 0}\t${enc(item.model)}\t${item.inTokens}\t${item.reasonTokens}\t${if (item.usageReal) 1 else 0}"
+                is ChatItem.Assistant -> "A\t${enc(item.thought ?: "")}\t${enc(item.toolCall ?: "")}\t${enc(item.text)}\t${item.tookMs}\t${item.tokens}\t${if (item.interrupted) 1 else 0}\t${enc(item.model)}\t${item.inTokens}\t${item.reasonTokens}\t${if (item.usageReal) 1 else 0}\t${if (item.help) 1 else 0}"
             }
         }
         chatFile(ctx, id).writeText(lines.joinToString("\n"))

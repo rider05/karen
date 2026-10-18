@@ -73,11 +73,16 @@ fun NodesScreen(onNavigateToHome: () -> Unit = {}) {
 
     var pendingDisconnect by remember { mutableStateOf<NodeInfo?>(null) }
     var confirmClear by remember { mutableStateOf(false) }
+    var confirmDisconnectAll by remember { mutableStateOf(false) }
 
     KarenHomeBackHandler(onNavigateToHome = onNavigateToHome) {
         when {
             pendingDisconnect != null -> {
                 pendingDisconnect = null
+                true
+            }
+            confirmDisconnectAll -> {
+                confirmDisconnectAll = false
                 true
             }
             confirmClear -> {
@@ -97,6 +102,17 @@ fun NodesScreen(onNavigateToHome: () -> Unit = {}) {
             selectedModel = "Network Nodes",
             onBackClick = onNavigateToHome,
             moreActions = listOf(
+                Triple("Restart server", Icons.Default.Refresh) {
+                    if (LocalApiServer.running) {
+                        restartKarenServer(context)
+                        Toast.makeText(context, "Server restarted", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(context, "Server is stopped — start it below", Toast.LENGTH_SHORT).show()
+                    }
+                },
+                Triple("Disconnect all slaves", Icons.Default.Close) {
+                    confirmDisconnectAll = true
+                },
                 Triple("Clear node history", Icons.Default.Delete) {
                     confirmClear = true
                 }
@@ -134,6 +150,21 @@ fun NodesScreen(onNavigateToHome: () -> Unit = {}) {
                             Toast.makeText(
                                 context,
                                 if (ok) "Task cancelled — the node stops at its next chunk" else "Nothing running to cancel",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        },
+                        onPauseToggle = {
+                            // State control, not a disconnect: a paused node keeps
+                            // its connection but takes no new prompts.
+                            val wantPause = node.workerState.lowercase(Locale.US) != "paused"
+                            val ok = LocalApiServer.setWorkerPaused(node.workerId, wantPause)
+                            Toast.makeText(
+                                context,
+                                when {
+                                    !ok -> "Node already gone"
+                                    wantPause -> "Paused — no new prompts route there"
+                                    else -> "Resumed — back in rotation"
+                                },
                                 Toast.LENGTH_SHORT
                             ).show()
                         },
@@ -196,6 +227,40 @@ fun NodesScreen(onNavigateToHome: () -> Unit = {}) {
         )
     }
 
+    if (confirmDisconnectAll) {
+        AlertDialog(
+            onDismissRequest = { confirmDisconnectAll = false },
+            containerColor = colors.surface,
+            titleContentColor = colors.textPrimary,
+            textContentColor = colors.textSecondary,
+            title = { Text("Disconnect every slave node?") },
+            text = {
+                Text(
+                    if (workers.isEmpty()) {
+                        "No slave nodes are joined right now — nothing to disconnect."
+                    } else {
+                        "All ${workers.size} joined node(s) stop immediately and will not rejoin on their own — " +
+                            "the slave node switch on each device has to be turned back on."
+                    }
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmDisconnectAll = false
+                    val n = LocalApiServer.disconnectAllWorkers()
+                    Toast.makeText(
+                        context,
+                        if (n == 0) "No slave nodes were joined" else "$n slave node(s) disconnected",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }) { Text("Disconnect all", color = colors.accentRed) }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDisconnectAll = false }) { Text("Cancel") }
+            }
+        )
+    }
+
     if (confirmClear) {
         AlertDialog(
             onDismissRequest = { confirmClear = false },
@@ -223,6 +288,15 @@ fun NodesScreen(onNavigateToHome: () -> Unit = {}) {
     }
 }
 
+/** Stops and starts the local server — used by the master panel button and the header menu. */
+private fun restartKarenServer(context: Context) {
+    LocalApiServer.stop()
+    val ok = LocalApiServer.start(context)
+    if (!ok) {
+        Toast.makeText(context, "Could not start the server — check the port in Settings", Toast.LENGTH_SHORT).show()
+    }
+}
+
 /**
  * The phone itself: the two addresses other devices use, live counters, and
  * the server controls — start/stop, LAN exposure, open dashboard, restart.
@@ -244,11 +318,7 @@ private fun MasterPanel(workersOnline: Int, workersTotal: Int, nodesTotal: Int, 
     LaunchedEffect(Unit) { lanOn = UserPrefs.serverLan(context) }
 
     fun restartServer() {
-        LocalApiServer.stop()
-        val ok = LocalApiServer.start(context)
-        if (!ok) {
-            Toast.makeText(context, "Could not start the server — check the port in Settings", Toast.LENGTH_SHORT).show()
-        }
+        restartKarenServer(context)
     }
 
     KPanel(
@@ -380,16 +450,19 @@ private fun WorkerPanel(
     node: NodeInfo,
     now: Long,
     onCancelTask: () -> Unit,
+    onPauseToggle: () -> Unit,
     onDisconnect: () -> Unit
 ) {
     val colors = LocalKarenColors.current
     val online = now - node.lastSeen < WorkerInfo.ONLINE_WINDOW_MS
     val state = node.workerState.lowercase(Locale.US)
+    val paused = online && state == "paused"
     val hasGpu = node.gpu.isNotBlank() || node.webgpu || node.gflops > 0.0
     val busy = online && state in listOf("assigned", "loading", "running")
 
     val tone = when {
         !online -> KTone.Muted
+        paused -> KTone.Amber
         state == "running" -> KTone.Primary
         state == "loading" || state == "assigned" -> KTone.Amber
         else -> KTone.Success
@@ -458,6 +531,13 @@ private fun WorkerPanel(
                     tone = KTone.Amber
                 )
             }
+            KSecondaryButton(
+                label = if (paused) "Resume" else "Pause",
+                onClick = onPauseToggle,
+                modifier = Modifier.weight(1f),
+                enabled = online,
+                tone = if (paused) KTone.Success else KTone.Muted
+            )
             KSecondaryButton(
                 label = "Disconnect",
                 onClick = onDisconnect,
@@ -564,7 +644,7 @@ private fun FooterNote() {
     Text(
         "Names come from each device or its network host name. A slave node runs prompts on its own GPU — " +
             "Cancel task stops its current prompt, Disconnect stops the node for good. It shows offline " +
-            "after 75 s without a call. CPU, RAM, disk and network are reported by each device itself: " +
+            "after 90 s without a call. CPU, RAM, disk and network are reported by each device itself: " +
             "browsers expose no temperature sensor, so a slave node's heat shows as its CPU pressure state, " +
             "while this phone's card shows the real battery °C and thermal status. RAM is the browser's own " +
             "estimate (capped at 8 GB), disk is the storage quota (~free space).",

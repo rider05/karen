@@ -16,6 +16,8 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -35,7 +37,10 @@ data class NodeInfo(
     val requests: Int,
     val webgpu: Boolean = false,
     val gpu: String = "",
-    val gflops: Double = 0.0
+    val gflops: Double = 0.0,
+    val worker: Boolean = false,
+    val workerState: String = "",
+    val workerModel: String = ""
 )
 
 /** One model artifact actually found on disk, with its real runtime verdict. */
@@ -51,15 +56,79 @@ data class LocalModelFile(
 )
 
 /**
+ * One GPU worker: a dashboard page that joined worker mode and runs inference
+ * tasks on its own GPU (WebLLM). See docs/distributed-ai-architecture.md.
+ */
+class WorkerInfo(
+    val id: String,
+    val name: String,
+    val ip: String,
+    val gpu: String,
+    val gflops: Double,
+    val backend: String,
+    val engine: String,
+    val defaultModel: String,
+    val models: List<String>,
+    val joinedAt: Long,
+    @Volatile var lastSeenAt: Long,
+    @Volatile var state: String,
+    @Volatile var currentTask: String,
+    @Volatile var loadedModel: String,
+    @Volatile var tasksDone: Int,
+    @Volatile var lastTps: Double,
+    @Volatile var lastTtftMs: Long
+) {
+    fun online(now: Long): Boolean = now - lastSeenAt < ONLINE_WINDOW_MS
+
+    companion object {
+        /** No worker call for this long ⇒ shown as offline / skipped by "auto". */
+        const val ONLINE_WINDOW_MS = 75_000L
+
+        /** A running task with no worker activity for this long fails. */
+        const val TASK_STALL_MS = 120_000L
+
+        /** How long one poll request is held before the worker reconnects. */
+        const val POLL_HOLD_MS = 40_000L
+    }
+}
+
+/** One inference task handed to a worker; events relay to the requesting console. */
+class WorkerTask(
+    val id: String,
+    val workerId: String,
+    val model: String,
+    val messages: JSONArray,
+    val temperature: Double,
+    val maxTokens: Int,
+    val createdAt: Long
+) {
+    val events = LinkedBlockingQueue<JSONObject>()
+
+    @Volatile
+    var state: String = "queued"
+
+    @Volatile
+    var cancelRequested: Boolean = false
+
+    @Volatile
+    var lastActivityAt: Long = System.currentTimeMillis()
+}
+
+/**
  * On-device OpenAI-compatible API (Thinai-style local server, no new deps).
  *
  * Plain ServerSocket HTTP/1.1 on localhost:11434 by default:
  *   GET  /                    browser dashboard — chat + on-device model files
  *   GET  /v1/models            installed weights + runnable .gguf files
  *   GET  /v1/files             every model file found on disk (fmt + runtime)
- *   POST /v1/chat/completions  runs the loaded local GGUF (stream:true → SSE)
+ *   POST /v1/chat/completions  runs the loaded local GGUF (stream:true → SSE);
+ *                              "worker":"auto"|<id> routes it to a GPU worker
  *   POST /v1/probe             loads a file with its real runtime (ORT/GGUF)
  *   POST /v1/nodes/hello       nodes report WebGPU/GPU capability + GFLOPS
+ *   GET  /v1/workers           GPU workers (dashboard pages in worker mode)
+ *   POST /v1/worker/register|progress|stream|done|leave   worker lifecycle
+ *   GET  /v1/worker/poll       worker SSE long-poll (X-Karen-Worker header)
+ *   POST /v1/workers/remove    master-side disconnect (worker then gets 410)
  *   POST /v1/embeddings        501 — no embedding runtime ships on-device
  *   GET  /api/tags             Ollama-shaped model list
  *
@@ -89,6 +158,13 @@ object LocalApiServer {
     private val nodeNames = ConcurrentHashMap<String, String>()
     private val dnsInFlight = ConcurrentHashMap.newKeySet<String>()
 
+    /** GPU workers: dashboard pages that joined worker mode (execution plane). */
+    private val workers = ConcurrentHashMap<String, WorkerInfo>()
+    private val workerQueues = ConcurrentHashMap<String, LinkedBlockingQueue<WorkerTask>>()
+    private val tasks = ConcurrentHashMap<String, WorkerTask>()
+    private val removedWorkers = ConcurrentHashMap.newKeySet<String>()
+    private val removedOrder = LinkedBlockingQueue<String>()
+
     /** Clears node history (Network Nodes screen → "Clear"). */
     fun clearNodes() {
         nodes.clear()
@@ -113,7 +189,10 @@ object LocalApiServer {
                 requests = (prev?.requests ?: 0) + 1,
                 webgpu = prev?.webgpu ?: false,
                 gpu = prev?.gpu ?: "",
-                gflops = prev?.gflops ?: 0.0
+                gflops = prev?.gflops ?: 0.0,
+                worker = prev?.worker ?: false,
+                workerState = prev?.workerState ?: "",
+                workerModel = prev?.workerModel ?: ""
             )
             nodeSnapshot = nodes.values.sortedByDescending { it.lastSeen }
             if (nodeNames[ip] == null) {
@@ -144,6 +223,610 @@ object LocalApiServer {
                 dnsInFlight.remove(ip)
             }
         }
+    }
+
+    // ---- GPU workers (distributed inference, request-level) ----------------
+    //
+    // A "worker" is a dashboard page on another device that loaded WebLLM and
+    // long-polls for tasks. The phone never pushes to a browser: the worker
+    // always starts the conversation (poll → task → progress/stream/done).
+    // See docs/distributed-ai-architecture.md for the protocol contract.
+
+    private fun peerIp(socket: Socket): String? = try {
+        socket.inetAddress?.hostAddress
+    } catch (_: Exception) {
+        null
+    }
+
+    private fun newWorkerId(): String =
+        "w_" + UUID.randomUUID().toString().replace("-", "").take(6)
+
+    private fun workerQueueFor(id: String): LinkedBlockingQueue<WorkerTask> =
+        workerQueues.getOrPut(id) { LinkedBlockingQueue() }
+
+    /** Mirror worker state onto the node list so the app's Nodes screen shows it. */
+    private fun touchNodeWorker(ip: String?, state: String, model: String) {
+        val key = ip ?: return
+        val prev = nodes[key] ?: return
+        nodes[key] = prev.copy(worker = true, workerState = state, workerModel = model.take(80))
+        nodeSnapshot = nodes.values.sortedByDescending { it.lastSeen }
+    }
+
+    private fun clearNodeWorker(ip: String?) {
+        val key = ip ?: return
+        val prev = nodes[key] ?: return
+        if (!prev.worker) return
+        nodes[key] = prev.copy(worker = false, workerState = "", workerModel = "")
+        nodeSnapshot = nodes.values.sortedByDescending { it.lastSeen }
+    }
+
+    private fun workersListJson(): JSONObject {
+        val now = System.currentTimeMillis()
+        val data = JSONArray()
+        workers.values
+            .sortedWith(compareByDescending<WorkerInfo> { it.online(now) }.thenByDescending { it.gflops })
+            .forEach { w ->
+                val models = JSONArray()
+                w.models.forEach { models.put(it) }
+                data.put(
+                    JSONObject()
+                        .put("id", w.id)
+                        .put("name", w.name)
+                        .put("ip", w.ip)
+                        .put("gpu", w.gpu)
+                        .put("gflops", w.gflops)
+                        .put("backend", w.backend)
+                        .put("engine", w.engine)
+                        .put("state", if (w.online(now)) w.state else "offline")
+                        .put("loadedModel", w.loadedModel)
+                        .put("defaultModel", w.defaultModel)
+                        .put("modelCount", w.models.size)
+                        .put("models", models)
+                        .put("lastSeenAt", w.lastSeenAt)
+                        .put("tasksDone", w.tasksDone)
+                        .put("lastTps", w.lastTps)
+                        .put("lastTtftMs", w.lastTtftMs)
+                )
+            }
+        return JSONObject().put("object", "list").put("data", data)
+    }
+
+    /** "auto" picks the best online worker; otherwise the id must match exactly. */
+    private fun resolveWorker(sel: String, model: String): WorkerInfo? {
+        val now = System.currentTimeMillis()
+        if (sel == "auto") {
+            return workers.values
+                .filter { w ->
+                    w.online(now) && (
+                        model.isBlank() ||
+                            w.models.isEmpty() ||
+                            w.models.any { it.equals(model, ignoreCase = true) } ||
+                            w.loadedModel.equals(model, ignoreCase = true)
+                        )
+                }
+                .maxWithOrNull(
+                    compareBy(
+                        { if (it.state == "idle") 1 else 0 },
+                        { if (it.loadedModel.equals(model, ignoreCase = true)) 1 else 0 },
+                        { it.gflops },
+                        { -it.tasksDone }
+                    )
+                )
+        }
+        return workers[sel]
+    }
+
+    /** Worker announces itself (and its model list) or refreshes capabilities. */
+    private fun registerWorker(socket: Socket, body: JSONObject) {
+        val ip = peerIp(socket)
+        val proposed = body.optString("workerId", "").trim()
+        val id = if (proposed.startsWith("w_") && !removedWorkers.contains(proposed)) {
+            proposed
+        } else {
+            newWorkerId()
+        }
+        val now = System.currentTimeMillis()
+        val prev = workers[id]
+        val name = body.optString("name", "").trim().ifBlank { prev?.name ?: ("Worker " + id.takeLast(4)) }
+        val models = body.optJSONArray("models")?.let { arr ->
+            (0 until arr.length()).mapNotNull { i ->
+                arr.optString(i, "").trim().takeIf { it.isNotBlank() }
+            }
+        } ?: prev?.models ?: emptyList()
+        val busyTask = prev?.currentTask?.takeIf { it.isNotBlank() && tasks.containsKey(it) }
+        val worker = WorkerInfo(
+            id = id,
+            name = name.take(40),
+            ip = ip ?: "?",
+            gpu = body.optString("gpu", prev?.gpu ?: "").trim().take(90),
+            gflops = body.optDouble("gflops", prev?.gflops ?: 0.0),
+            backend = body.optString("backend", prev?.backend ?: "webllm").take(24),
+            engine = body.optString("engine", prev?.engine ?: "").take(48),
+            defaultModel = body.optString("defaultModel", prev?.defaultModel ?: "").trim().take(90),
+            models = models.take(400),
+            joinedAt = prev?.joinedAt ?: now,
+            lastSeenAt = now,
+            state = if (busyTask != null) (prev?.state ?: "assigned") else "idle",
+            currentTask = busyTask ?: "",
+            loadedModel = body.optString("loadedModel", prev?.loadedModel ?: "").trim().take(90),
+            tasksDone = prev?.tasksDone ?: 0,
+            lastTps = prev?.lastTps ?: 0.0,
+            lastTtftMs = prev?.lastTtftMs ?: 0L
+        )
+        workers[id] = worker
+        workerQueueFor(id)
+        removedWorkers.remove(id)
+        touchNodeWorker(ip, worker.state, worker.loadedModel.ifBlank { worker.defaultModel })
+        writeJson(
+            socket, 200,
+            JSONObject().put("ok", true)
+                .put("workerId", id)
+                .put("pollSeconds", (WorkerInfo.POLL_HOLD_MS / 1000).toInt())
+                .put("taskTimeoutSeconds", (WorkerInfo.TASK_STALL_MS / 1000).toInt())
+        )
+    }
+
+    /**
+     * SSE long-poll: hands the worker one queued task, otherwise keepalives.
+     * The hold is bounded; the worker reconnects immediately after.
+     */
+    private fun workerPoll(socket: Socket, workerId: String) {
+        val worker = workers[workerId]
+        if (worker == null) {
+            val gone = removedWorkers.contains(workerId)
+            writeJson(
+                socket, if (gone) 410 else 404,
+                JSONObject().put(
+                    "error",
+                    errorObj(
+                        if (gone) "worker removed by the master — stop polling"
+                        else "unknown worker — register again"
+                    )
+                )
+            )
+            return
+        }
+        worker.lastSeenAt = System.currentTimeMillis()
+        val current = worker.currentTask
+        if (current.isBlank() || tasks[current] == null) {
+            worker.currentTask = ""
+            worker.state = "idle"
+            touchNodeWorker(worker.ip, "idle", worker.loadedModel.ifBlank { worker.defaultModel })
+        }
+        val out = socket.getOutputStream()
+        try {
+            out.write(
+                (
+                    "HTTP/1.1 200 OK\r\n" +
+                        "Content-Type: text/event-stream\r\n" +
+                        "Cache-Control: no-cache\r\n" +
+                        "Connection: close\r\n\r\n"
+                    ).toByteArray(Charsets.UTF_8)
+            )
+            out.flush()
+            val queue = workerQueueFor(workerId)
+            val deadline = System.currentTimeMillis() + WorkerInfo.POLL_HOLD_MS
+            while (System.currentTimeMillis() < deadline) {
+                val task = queue.poll(10, TimeUnit.SECONDS)
+                if (task != null) {
+                    if (!tasks.containsKey(task.id) || task.cancelRequested) continue
+                    val at = System.currentTimeMillis()
+                    worker.lastSeenAt = at
+                    worker.state = "assigned"
+                    worker.currentTask = task.id
+                    task.state = "assigned"
+                    task.lastActivityAt = at
+                    touchNodeWorker(worker.ip, "assigned", worker.loadedModel.ifBlank { worker.defaultModel })
+                    task.events.add(
+                        JSONObject().put("type", "status").put("phase", "assigned")
+                            .put("text", "worker picked up the task").put("model", task.model)
+                    )
+                    out.write(
+                        (
+                            "event: task\ndata: " +
+                                JSONObject()
+                                    .put("id", task.id)
+                                    .put("model", task.model)
+                                    .put("messages", task.messages)
+                                    .put("temperature", task.temperature)
+                                    .put("max_tokens", task.maxTokens) +
+                                "\n\n"
+                            ).toByteArray(Charsets.UTF_8)
+                    )
+                    out.flush()
+                    return
+                }
+                worker.lastSeenAt = System.currentTimeMillis()
+                out.write(": ping\n\n".toByteArray(Charsets.UTF_8))
+                out.flush()
+            }
+            out.write("event: idle\ndata: {}\n\n".toByteArray(Charsets.UTF_8))
+            out.flush()
+        } catch (_: Exception) {
+            // Worker disconnected mid-hold — staleness rules cover it.
+        }
+    }
+
+    /** Worker reports load/generation progress; the console gets a status event. */
+    private fun workerProgress(socket: Socket, body: JSONObject) {
+        val worker = workers[body.optString("workerId", "")]
+        if (worker == null) {
+            writeJson(socket, 410, JSONObject().put("error", errorObj("unknown or removed worker — register again")))
+            return
+        }
+        val now = System.currentTimeMillis()
+        worker.lastSeenAt = now
+        val loaded = body.optString("loadedModel", "").trim()
+        if (loaded.isNotBlank()) worker.loadedModel = loaded.take(90)
+        val task = tasks[body.optString("taskId", "")]
+        if (task != null) {
+            task.lastActivityAt = now
+            val phase = body.optString("phase", "")
+            if (phase == "loading") task.state = "loading"
+            if (phase == "running") task.state = "running"
+            if (phase == "loading" || phase == "running") {
+                worker.state = phase
+                val evt = JSONObject().put("type", "status").put("phase", phase)
+                    .put("text", body.optString("text", "")).put("model", worker.loadedModel)
+                val progress = body.optDouble("progress", -1.0)
+                if (progress >= 0.0) evt.put("progress", progress)
+                task.events.add(evt)
+            }
+            touchNodeWorker(worker.ip, worker.state, worker.loadedModel.ifBlank { worker.defaultModel })
+        }
+        writeJson(
+            socket, 200,
+            JSONObject().put("ok", task != null).put("cancel", task?.cancelRequested ?: true)
+        )
+    }
+
+    /** One streamed chunk of generated text; the response carries the cancel flag. */
+    private fun workerStream(socket: Socket, body: JSONObject) {
+        val worker = workers[body.optString("workerId", "")]
+        if (worker == null) {
+            writeJson(socket, 410, JSONObject().put("error", errorObj("unknown or removed worker — register again")))
+            return
+        }
+        val now = System.currentTimeMillis()
+        worker.lastSeenAt = now
+        val task = tasks[body.optString("taskId", "")]
+        if (task == null) {
+            writeJson(socket, 200, JSONObject().put("ok", false).put("cancel", true).put("stale", true))
+            return
+        }
+        task.lastActivityAt = now
+        if (task.state == "assigned" || task.state == "loading") task.state = "running"
+        worker.state = "running"
+        val delta = body.optString("delta", "")
+        if (delta.isNotEmpty()) task.events.add(JSONObject().put("type", "delta").put("content", delta))
+        writeJson(socket, 200, JSONObject().put("ok", true).put("cancel", task.cancelRequested))
+    }
+
+    /** Task terminal report: stats land on the worker, the console gets "done". */
+    private fun workerDone(socket: Socket, body: JSONObject) {
+        val worker = workers[body.optString("workerId", "")]
+        if (worker == null) {
+            writeJson(socket, 410, JSONObject().put("error", errorObj("unknown or removed worker — register again")))
+            return
+        }
+        val now = System.currentTimeMillis()
+        worker.lastSeenAt = now
+        val task = tasks[body.optString("taskId", "")]
+        if (task == null) {
+            writeJson(socket, 200, JSONObject().put("ok", false).put("stale", true))
+            return
+        }
+        task.lastActivityAt = now
+        val status = body.optString("status", "completed")
+        task.state = when (status) {
+            "failed" -> "failed"
+            "cancelled" -> "cancelled"
+            else -> "completed"
+        }
+        val stats = body.optJSONObject("stats")
+        if (task.state == "completed") {
+            worker.tasksDone += 1
+            val tps = stats?.optDouble("tps", 0.0) ?: 0.0
+            val ttft = stats?.optLong("ttftMs", 0L) ?: 0L
+            if (tps > 0.0) worker.lastTps = tps
+            if (ttft > 0L) worker.lastTtftMs = ttft
+            worker.loadedModel = task.model
+        }
+        worker.state = "idle"
+        worker.currentTask = ""
+        touchNodeWorker(worker.ip, "idle", worker.loadedModel.ifBlank { worker.defaultModel })
+        task.events.add(
+            JSONObject().put("type", "done")
+                .put("status", task.state)
+                .put("error", body.optString("error", ""))
+                .put("stats", stats ?: JSONObject())
+        )
+        writeJson(socket, 200, JSONObject().put("ok", true))
+    }
+
+    private fun workerLeave(socket: Socket, body: JSONObject) {
+        val id = body.optString("workerId", "")
+        val worker = workers.remove(id)
+        if (worker != null) {
+            cancelWorkerTask(worker, "worker left")
+            failQueued(worker, "worker left")
+            workerQueues.remove(id)
+            clearNodeWorker(worker.ip)
+        }
+        writeJson(socket, 200, JSONObject().put("ok", true))
+    }
+
+    /** Master-side disconnect: the worker gets 410 afterwards and stops for good. */
+    private fun workerRemove(socket: Socket, body: JSONObject) {
+        val id = body.optString("id", body.optString("workerId", ""))
+        val worker = workers.remove(id)
+        if (worker != null) {
+            cancelWorkerTask(worker, "worker was disconnected by the master")
+            failQueued(worker, "worker was disconnected by the master")
+            workerQueues.remove(id)
+            clearNodeWorker(worker.ip)
+            removedWorkers.add(id)
+            removedOrder.add(id)
+            while (removedOrder.size > 64) {
+                val old = removedOrder.poll()
+                if (old != null) removedWorkers.remove(old)
+            }
+        }
+        writeJson(socket, 200, JSONObject().put("ok", true))
+    }
+
+    private fun cancelWorkerTask(worker: WorkerInfo, reason: String) {
+        val task = tasks[worker.currentTask] ?: return
+        task.state = "cancelled"
+        task.cancelRequested = true
+        task.events.add(
+            JSONObject().put("type", "done").put("status", "cancelled")
+                .put("error", reason).put("stats", JSONObject())
+        )
+    }
+
+    private fun failQueued(worker: WorkerInfo, reason: String) {
+        val queue = workerQueues[worker.id] ?: return
+        while (true) {
+            val task = queue.poll() ?: break
+            if (tasks.containsKey(task.id)) {
+                task.state = "cancelled"
+                task.events.add(
+                    JSONObject().put("type", "done").put("status", "cancelled")
+                        .put("error", reason).put("stats", JSONObject())
+                )
+            }
+        }
+    }
+
+    /** Worker-routed streaming chat: queue the task, relay SSE to the console. */
+    private fun workerChatSse(socket: Socket, body: JSONObject) {
+        val sel = body.optString("worker", "").trim()
+        val wanted = body.optString("model", "").trim()
+        val messages = body.optJSONArray("messages") ?: JSONArray()
+        if (messages.length() == 0) {
+            writeJson(socket, 400, JSONObject().put("error", errorObj("messages[] required")))
+            return
+        }
+        val worker = resolveWorker(sel, wanted)
+        if (worker == null) {
+            writeJson(
+                socket, 503,
+                JSONObject().put(
+                    "error",
+                    errorObj("no GPU worker is online — open the dashboard on a laptop/desktop with WebGPU and join as worker")
+                )
+            )
+            return
+        }
+        if (wanted.isNotBlank() && worker.models.isNotEmpty() &&
+            worker.models.none { it.equals(wanted, ignoreCase = true) } &&
+            !worker.loadedModel.equals(wanted, ignoreCase = true)
+        ) {
+            writeJson(
+                socket, 400,
+                JSONObject().put("error", errorObj("worker '${worker.name}' does not offer model '$wanted'"))
+            )
+            return
+        }
+        val task = WorkerTask(
+            id = "t_" + UUID.randomUUID().toString().replace("-", "").take(6),
+            workerId = worker.id,
+            model = if (wanted.isNotBlank()) wanted else worker.defaultModel,
+            messages = messages,
+            temperature = body.optDouble("temperature", 0.7),
+            maxTokens = body.optInt("max_tokens", 512).coerceIn(1, 4096),
+            createdAt = System.currentTimeMillis()
+        )
+        tasks[task.id] = task
+        workerQueueFor(worker.id).add(task)
+        worker.state = "assigned"
+        worker.currentTask = task.id
+        touchNodeWorker(worker.ip, "assigned", worker.loadedModel.ifBlank { worker.defaultModel })
+        val out = socket.getOutputStream()
+        var gone = false
+        val emitRaw = { s: String ->
+            if (!gone) {
+                try {
+                    out.write(s.toByteArray(Charsets.UTF_8))
+                    out.flush()
+                } catch (_: Exception) {
+                    gone = true
+                    task.cancelRequested = true
+                }
+            }
+        }
+        try {
+            out.write(
+                (
+                    "HTTP/1.1 200 OK\r\n" +
+                        "Content-Type: text/event-stream\r\n" +
+                        "Cache-Control: no-cache\r\n" +
+                        "Connection: close\r\n\r\n"
+                    ).toByteArray(Charsets.UTF_8)
+            )
+            out.flush()
+            emitRaw(
+                "data: " + JSONObject().put("id", task.id).put("object", "worker.status")
+                    .put("phase", "queued").put("text", "waiting for " + worker.name) + "\n\n"
+            )
+            relayTask(task, emitRaw)
+        } catch (_: Exception) {
+        } finally {
+            tasks.remove(task.id)
+            if (worker.currentTask == task.id) {
+                worker.state = "idle"
+                worker.currentTask = ""
+                touchNodeWorker(worker.ip, "idle", worker.loadedModel.ifBlank { worker.defaultModel })
+            }
+            try {
+                socket.close()
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    /** Consumes a task's events: relays status/chunk/done to the caller's stream. */
+    private fun relayTask(task: WorkerTask, emitRaw: (String) -> Unit) {
+        var lastActivity = System.currentTimeMillis()
+        while (true) {
+            val evt = task.events.poll(1, TimeUnit.SECONDS)
+            if (evt != null) {
+                lastActivity = System.currentTimeMillis()
+                when (evt.optString("type")) {
+                    "status" -> {
+                        val j = JSONObject().put("id", task.id).put("object", "worker.status")
+                            .put("phase", evt.optString("phase"))
+                            .put("text", evt.optString("text"))
+                            .put("model", evt.optString("model"))
+                        val progress = evt.optDouble("progress", -1.0)
+                        if (progress >= 0.0) j.put("progress", progress)
+                        emitRaw("data: $j\n\n")
+                    }
+                    "delta" -> {
+                        val chunk = JSONObject().put("id", task.id)
+                            .put("object", "chat.completion.chunk")
+                            .put("model", task.model)
+                            .put(
+                                "choices",
+                                JSONArray().put(
+                                    JSONObject().put("index", 0)
+                                        .put("delta", JSONObject().put("content", evt.optString("content")))
+                                )
+                            )
+                        emitRaw("data: $chunk\n\n")
+                    }
+                    "done" -> {
+                        emitRaw(
+                            "data: " + JSONObject().put("id", task.id).put("object", "worker.done")
+                                .put("state", evt.optString("status"))
+                                .put("stats", evt.optJSONObject("stats") ?: JSONObject()) + "\n\n"
+                        )
+                        if (evt.optString("status") == "failed") {
+                            emitRaw(
+                                "data: " + JSONObject().put("id", task.id).put("object", "worker.error")
+                                    .put("error", errorObj(evt.optString("error").ifBlank { "worker reported failure" })) + "\n\n"
+                            )
+                        }
+                        emitRaw("data: [DONE]\n\n")
+                        return
+                    }
+                }
+            } else if (System.currentTimeMillis() - lastActivity > WorkerInfo.TASK_STALL_MS) {
+                task.state = "failed"
+                task.cancelRequested = true
+                emitRaw(
+                    "data: " + JSONObject().put("id", task.id).put("object", "worker.error")
+                        .put("error", errorObj("the worker went quiet (tab closed?) — task aborted")) + "\n\n"
+                )
+                emitRaw("data: [DONE]\n\n")
+                return
+            }
+        }
+    }
+
+    /** Worker-routed non-streaming chat: waits for the task, returns one JSON reply. */
+    private fun workerChatJson(socket: Socket, body: JSONObject) {
+        val sel = body.optString("worker", "").trim()
+        val wanted = body.optString("model", "").trim()
+        val messages = body.optJSONArray("messages") ?: JSONArray()
+        if (messages.length() == 0) {
+            writeJson(socket, 400, JSONObject().put("error", errorObj("messages[] required")))
+            return
+        }
+        val worker = resolveWorker(sel, wanted)
+        if (worker == null) {
+            writeJson(socket, 503, JSONObject().put("error", errorObj("no GPU worker is online")))
+            return
+        }
+        val task = WorkerTask(
+            id = "t_" + UUID.randomUUID().toString().replace("-", "").take(6),
+            workerId = worker.id,
+            model = if (wanted.isNotBlank()) wanted else worker.defaultModel,
+            messages = messages,
+            temperature = body.optDouble("temperature", 0.7),
+            maxTokens = body.optInt("max_tokens", 512).coerceIn(1, 4096),
+            createdAt = System.currentTimeMillis()
+        )
+        tasks[task.id] = task
+        workerQueueFor(worker.id).add(task)
+        worker.state = "assigned"
+        worker.currentTask = task.id
+        val text = StringBuilder()
+        var stats = JSONObject()
+        var failure: String? = null
+        var lastActivity = System.currentTimeMillis()
+        try {
+            while (true) {
+                val evt = task.events.poll(1, TimeUnit.SECONDS)
+                if (evt == null) {
+                    if (System.currentTimeMillis() - lastActivity > WorkerInfo.TASK_STALL_MS) {
+                        failure = "the worker went quiet (tab closed?) — task aborted"
+                        break
+                    }
+                    continue
+                }
+                lastActivity = System.currentTimeMillis()
+                when (evt.optString("type")) {
+                    "delta" -> text.append(evt.optString("content"))
+                    "done" -> {
+                        stats = evt.optJSONObject("stats") ?: JSONObject()
+                        if (evt.optString("status") == "failed") {
+                            failure = evt.optString("error").ifBlank { "worker reported failure" }
+                        }
+                        break
+                    }
+                }
+            }
+        } finally {
+            tasks.remove(task.id)
+            if (worker.currentTask == task.id) {
+                worker.state = "idle"
+                worker.currentTask = ""
+                touchNodeWorker(worker.ip, "idle", worker.loadedModel.ifBlank { worker.defaultModel })
+            }
+        }
+        if (failure != null) {
+            writeJson(socket, 502, JSONObject().put("error", errorObj(failure)))
+            return
+        }
+        writeJson(
+            socket, 200,
+            JSONObject()
+                .put("id", task.id)
+                .put("object", "chat.completion")
+                .put("created", System.currentTimeMillis() / 1000)
+                .put("model", task.model)
+                .put(
+                    "choices",
+                    JSONArray().put(
+                        JSONObject().put("index", 0)
+                            .put("message", JSONObject().put("role", "assistant").put("content", text.toString()))
+                            .put("finish_reason", "stop")
+                    )
+                )
+                .put("karen", JSONObject().put("worker", worker.id).put("stats", stats))
+        )
     }
 
     // ---- On-device model file scan (real files, real runtimes) --------------
@@ -503,6 +1186,55 @@ object LocalApiServer {
                         registerNodeCapabilities(socket, body)
                     }
                 }
+                method == "GET" && path == "/v1/workers" -> {
+                    writeJson(socket, 200, workersListJson())
+                }
+                method == "POST" && path == "/v1/worker/register" -> {
+                    if (body == null) {
+                        writeJson(socket, 400, JSONObject().put("error", errorObj("JSON body required")))
+                    } else {
+                        registerWorker(socket, body)
+                    }
+                }
+                method == "GET" && path == "/v1/worker/poll" -> {
+                    // SSE long-poll; the worker id travels in a header (GET has no body).
+                    workerPoll(socket, headers["x-karen-worker"].orEmpty().trim())
+                }
+                method == "POST" && path == "/v1/worker/progress" -> {
+                    if (body == null) {
+                        writeJson(socket, 400, JSONObject().put("error", errorObj("JSON body required")))
+                    } else {
+                        workerProgress(socket, body)
+                    }
+                }
+                method == "POST" && path == "/v1/worker/stream" -> {
+                    if (body == null) {
+                        writeJson(socket, 400, JSONObject().put("error", errorObj("JSON body required")))
+                    } else {
+                        workerStream(socket, body)
+                    }
+                }
+                method == "POST" && path == "/v1/worker/done" -> {
+                    if (body == null) {
+                        writeJson(socket, 400, JSONObject().put("error", errorObj("JSON body required")))
+                    } else {
+                        workerDone(socket, body)
+                    }
+                }
+                method == "POST" && path == "/v1/worker/leave" -> {
+                    if (body == null) {
+                        writeJson(socket, 400, JSONObject().put("error", errorObj("JSON body required")))
+                    } else {
+                        workerLeave(socket, body)
+                    }
+                }
+                method == "POST" && path == "/v1/workers/remove" -> {
+                    if (body == null) {
+                        writeJson(socket, 400, JSONObject().put("error", errorObj("JSON body required")))
+                    } else {
+                        workerRemove(socket, body)
+                    }
+                }
                 method == "GET" && path == "/api/tags" -> {
                     val models = JSONArray()
                     UserPrefs.models(ctx).filter { !isCloudProviderName(it) }.forEach { name ->
@@ -513,6 +1245,13 @@ object LocalApiServer {
                 method == "POST" && path == "/v1/chat/completions" -> {
                     if (body == null) {
                         writeJson(socket, 400, JSONObject().put("error", errorObj("JSON body required")))
+                    } else if (body.optString("worker", "").isNotBlank()) {
+                        // Request-level distribution: a GPU worker runs this one.
+                        if (body.optBoolean("stream", false)) {
+                            workerChatSse(socket, body)
+                        } else {
+                            workerChatJson(socket, body)
+                        }
                     } else if (body.optBoolean("stream", false)) {
                         chatCompletionSse(ctx, socket, body)
                     } else {
@@ -692,7 +1431,10 @@ object LocalApiServer {
             requests = prev?.requests ?: 0,
             webgpu = body.optBoolean("webgpu", prev?.webgpu ?: false),
             gpu = body.optString("gpu", prev?.gpu ?: "").take(90),
-            gflops = body.optDouble("gflops", prev?.gflops ?: 0.0)
+            gflops = body.optDouble("gflops", prev?.gflops ?: 0.0),
+            worker = prev?.worker ?: false,
+            workerState = prev?.workerState ?: "",
+            workerModel = prev?.workerModel ?: ""
         )
         nodeSnapshot = nodes.values.sortedByDescending { it.lastSeen }
         writeJson(socket, 200, JSONObject().put("ok", true))
@@ -892,14 +1634,17 @@ object LocalApiServer {
             400 -> "Bad Request"
             401 -> "Unauthorized"
             404 -> "Not Found"
+            410 -> "Gone"
             429 -> "Too Many Requests"
             500 -> "Internal Server Error"
             501 -> "Not Implemented"
+            502 -> "Bad Gateway"
             503 -> "Service Unavailable"
             else -> "Error"
         }
         val head = "HTTP/1.1 $code $status\r\n" +
             "Content-Type: application/json\r\n" +
+            "Cache-Control: no-store\r\n" +
             "Content-Length: ${body.size}\r\n" +
             "Connection: close\r\n\r\n"
         val out = socket.getOutputStream()
@@ -1025,6 +1770,7 @@ object LocalApiServer {
   .frow button { padding: 5px 10px; font-size: 11px; border-radius: 7px; }
   .probe { font-size: 11px; color: #94a3b8; font-family: 'JetBrains Mono', monospace; padding: 2px 6px 4px; word-break: break-word; }
   input[type=checkbox] { width: 15px; height: 15px; padding: 0; accent-color: #10A37F; }
+  .meta { color: #64748b; font-size: 10.5px; font-family: 'JetBrains Mono', monospace; margin: -4px 0 6px 6px; }
   .toast { position: fixed; bottom: 96px; left: 50%; transform: translateX(-50%);
            background: #1b2029; border: 1px solid #38bdf8; color: #cce5ff;
            padding: 9px 16px; border-radius: 20px; font-size: 12.5px; opacity: 0;
@@ -1037,7 +1783,7 @@ object LocalApiServer {
   <div class="logo">K</div>
   <div>
     <h1>Karen Dashboard</h1>
-    <div class="sub">the model runs on the phone — this page is just the window</div>
+    <div class="sub">the model runs on the phone — or on a device that joined as GPU worker</div>
   </div>
   <div class="status"><span class="dot" id="dot"></span><span id="statusText">connecting…</span></div>
 </header>
@@ -1046,6 +1792,11 @@ object LocalApiServer {
   <button class="ghost" onclick="saveToken()">Save</button>
   <select id="model" style="min-width:180px"><option value="">(pick model)</option></select>
   <button class="ghost" onclick="loadModels()">Refresh</button>
+  <select id="runner" style="min-width:200px" onchange="runnerChanged()" title="Where the prompt runs">
+    <option value="">Runner: Phone (llama.cpp)</option>
+    <option value="auto">Runner: Auto — best GPU worker</option>
+  </select>
+  <select id="wmodel" style="min-width:220px;display:none" onchange="runnerChanged()" title="Model on the selected worker"></select>
 </div>
 <details class="files" id="filesPanel">
   <summary id="filesSummary">On-device model files — loading…</summary>
@@ -1067,7 +1818,20 @@ object LocalApiServer {
       <select id="boostModel" style="max-width:330px" onchange="saveBoostModel()"></select>
     </div>
     <div class="fmeta" id="boostStatus">Chat runs on the phone (llama.cpp) over the LAN.</div>
+    <div class="frow" style="border-top:1px solid #283042;padding-top:10px;margin-top:6px">
+      <label class="fmeta" style="display:flex;align-items:center;gap:8px;flex:1;min-width:260px">
+        <input type="checkbox" id="gpuWorker" onclick="toggleWorker(this.checked)">
+        <span>Join as <b>GPU worker</b> — this device runs prompts sent from any dashboard's Runner picker (keep this tab open)</span>
+      </label>
+      <select id="workerModel" style="max-width:330px" onchange="saveWorkerModel()"></select>
+    </div>
+    <div class="fmeta" id="workerStatus">Worker mode off — prompts run on the phone.</div>
+    <div class="fmeta" id="secureHint" style="display:none;color:#f59e0b"></div>
   </div>
+</details>
+<details class="files" id="workersPanel">
+  <summary id="workersSummary">GPU workers — loading…</summary>
+  <div class="filelist" id="workerList"></div>
 </details>
 <main id="chat"></main>
 <div class="hint">Enter sends · Shift+Enter makes a new line · Stop cancels generation</div>
@@ -1078,7 +1842,9 @@ object LocalApiServer {
 </footer>
 <div class="toast" id="toast"></div>
 <script>
-var S = { token: localStorage.getItem('karen_token') || '', busy: false, ctrl: null, log: [], node: nodeName(), boost: localStorage.getItem('karen_gpu_boost') === '1', llm: null, llmMod: null, llmModel: '', adapter: null, gpuName: '', gflops: 0 };
+var S = { token: localStorage.getItem('karen_token') || '', busy: false, ctrl: null, log: [], node: nodeName(), boost: localStorage.getItem('karen_gpu_boost') === '1', llm: null, llmMod: null, llmModel: '', adapter: null, gpuName: '', gflops: 0,
+  w: { on: localStorage.getItem('karen_worker') === '1', id: localStorage.getItem('karen_worker_id') || '', model: localStorage.getItem('karen_worker_model') || '', loaded: '', engine: null, interrupted: false },
+  wModels: [], wlist: [] };
 function el(id) { return document.getElementById(id); }
 function nodeName() {
   var ua = navigator.userAgent, os = 'Device', br = 'Browser';
@@ -1257,6 +2023,18 @@ async function initGpu() {
     box.checked = false;
     S.boost = false;
     el('boostStatus').textContent = 'GPU boost unavailable on this device.';
+    var wbox0 = el('gpuWorker');
+    if (wbox0) { wbox0.disabled = true; wbox0.checked = false; }
+    S.w.on = false;
+    el('workerStatus').textContent = 'Worker mode needs WebGPU on this device.';
+    if (el('workerModel')) { el('workerModel').disabled = true; }
+    var host = location.hostname;
+    var localish = host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1';
+    if (!localish) {
+      var hint = el('secureHint');
+      hint.style.display = 'block';
+      hint.textContent = 'Heads-up: browsers hide WebGPU on http://' + host + '. On this PC run  tools\\karen-tunnel.ps1 -Phone <phone-ip>  then open http://127.0.0.1:11434 (or allow this origin in chrome://flags/#unsafely-treat-insecure-origin-as-secure).';
+    }
     return;
   }
   try {
@@ -1274,6 +2052,8 @@ async function initGpu() {
     el('gpuAdapter').textContent = 'Adapter: ' + S.gpuName + ' — benchmark it below, or switch chat onto this GPU.';
     toggleBoostText();
     reportNode();
+    el('gpuWorker').disabled = false;
+    if (S.w.on) { workerStatus('rejoining…'); workerJoin(); }
   } catch (e) {
     el('gpuSummary').textContent = 'GPU offload — adapter check failed: ' + (e && e.message ? e.message : e);
     el('benchBtn').disabled = true;
@@ -1355,11 +2135,39 @@ async function runBench() {
     btn.disabled = false;
   }
 }
-function populateBoostModels(m) {
-  var sel = el('boostModel');
-  var list = ((m.prebuiltAppConfig && m.prebuiltAppConfig.model_list) || [])
+function boostModelList(m) {
+  return ((m.prebuiltAppConfig && m.prebuiltAppConfig.model_list) || [])
     .filter(function (x) { return /q4f16_1|q4f32_1/.test(x.model_id); })
     .sort(function (a, b) { return a.vram_required_MB - b.vram_required_MB; });
+}
+function populateWorkerModels(list) {
+  var sel = el('workerModel');
+  if (!sel) return;
+  var qwen = list.filter(function (x) { return /^Qwen2\.5/.test(x.model_id); });
+  var rest = list.filter(function (x) { return !/^Qwen2\.5/.test(x.model_id); });
+  var ordered = qwen.concat(rest.slice(0, 40));
+  S.wModels = ordered.map(function (x) { return x.model_id; });
+  sel.innerHTML = '';
+  ordered.forEach(function (x) {
+    var o = document.createElement('option');
+    o.value = x.model_id;
+    o.textContent = x.model_id + ' (' + Math.round(x.vram_required_MB) + ' MB VRAM)';
+    sel.appendChild(o);
+  });
+  var want = sel.value || localStorage.getItem('karen_worker_model') || '';
+  if (want) { sel.value = want; }
+  if (!sel.value && sel.options.length) { sel.selectedIndex = 0; }
+  S.w.model = sel.value || '';
+}
+function saveWorkerModel() {
+  S.w.model = el('workerModel').value;
+  localStorage.setItem('karen_worker_model', S.w.model);
+  toast('Worker model: ' + S.w.model);
+  if (S.w.on) { workerRegister(); }
+}
+function populateBoostModels(m) {
+  var sel = el('boostModel');
+  var list = boostModelList(m);
   sel.innerHTML = '';
   list.forEach(function (x) {
     var o = document.createElement('option');
@@ -1371,6 +2179,7 @@ function populateBoostModels(m) {
   if (want) { sel.value = want; }
   if (!sel.value && sel.options.length) { sel.selectedIndex = 0; }
   S.llmModel = sel.value || '';
+  populateWorkerModels(list);
 }
 function saveBoostModel() {
   S.llmModel = el('boostModel').value;
@@ -1437,9 +2246,385 @@ function stopGen() {
   if (S.ctrl) { S.ctrl.abort(); }
   if (S.llm && S.boost) { try { S.llm.interrupt(); } catch (e) {} }
 }
+// ---- GPU worker mode: this device runs tasks sent by any dashboard -------
+function post(url, obj) {
+  return fetch(url, { method: 'POST', headers: headers(true), body: JSON.stringify(obj) })
+    .then(function (r) { return r.json().catch(function () { return null; }); })
+    .catch(function () { return null; });
+}
+function workerSleep(ms) { return new Promise(function (res) { setTimeout(res, ms); }); }
+function workerStatus(text) { el('workerStatus').textContent = 'Worker ' + (S.w.id ? '(' + S.w.id + ') ' : '') + text; }
+function addMeta(bubble, text) {
+  var d = document.createElement('div'); d.className = 'meta'; d.textContent = text;
+  if (bubble.parentNode) { bubble.parentNode.insertBefore(d, bubble.nextSibling); }
+}
+function toggleWorker(on) {
+  if (on && !S.adapter) {
+    el('gpuWorker').checked = false;
+    toast('No WebGPU adapter on this device');
+    return;
+  }
+  localStorage.setItem('karen_worker', on ? '1' : '0');
+  if (on) { workerJoin(); } else { workerLeave('left from this device'); }
+}
+async function workerJoin() {
+  S.w.on = true;
+  el('gpuWorker').checked = true;
+  workerStatus('starting…');
+  try {
+    if (!S.llmMod) {
+      S.llmMod = await import('https://esm.run/@mlc-ai/web-llm@0.2.86');
+      populateWorkerModels(boostModelList(S.llmMod));
+    }
+  } catch (e) {
+    workerStatus('engine unavailable — needs internet once: ' + (e && e.message ? e.message : e));
+    return;
+  }
+  await workerRegister();
+  toast('Joined as GPU worker');
+  workerLoop();
+}
+async function workerRegister() {
+  var j = await post('/v1/worker/register', {
+    workerId: S.w.id,
+    name: S.node,
+    gpu: S.gpuName || '',
+    gflops: S.gflops || 0,
+    backend: 'webllm',
+    engine: 'web-llm@0.2.86',
+    defaultModel: (el('workerModel') && el('workerModel').value) || S.w.model || '',
+    models: S.wModels,
+    loadedModel: S.w.loaded || ''
+  });
+  if (j && j.workerId) {
+    S.w.id = j.workerId;
+    localStorage.setItem('karen_worker_id', S.w.id);
+    workerStatus('registered — polling for tasks');
+  } else {
+    workerStatus('registration failed — is the token saved?');
+  }
+  refreshWorkers();
+}
+function workerLeave(reason) {
+  S.w.on = false;
+  localStorage.setItem('karen_worker', '0');
+  el('gpuWorker').checked = false;
+  if (S.w.id) { post('/v1/worker/leave', { workerId: S.w.id }).then(function () { refreshWorkers(); }); }
+  workerStatus('off — ' + (reason || 'left'));
+}
+async function workerLoop() {
+  while (S.w.on) {
+    var r = null;
+    try { r = await fetch('/v1/worker/poll', { headers: headers(true) }); }
+    catch (e) { workerStatus('connection lost — retrying'); await workerSleep(3000); continue; }
+    if (!r) { await workerSleep(3000); continue; }
+    if (r.status === 410) { workerLeave('disconnected by the phone'); toast('Removed by the phone — worker mode off'); return; }
+    if (r.status === 404) { workerStatus('re-registering…'); await workerRegister(); continue; }
+    if (r.status === 401) { workerStatus('token needed — save it above'); await workerSleep(5000); continue; }
+    if (!r.ok) { workerStatus('poll HTTP ' + r.status); await workerSleep(3000); continue; }
+    if (S.w.on) { workerStatus('idle — waiting for tasks'); }
+    var reader = r.body.getReader();
+    var dec = new TextDecoder();
+    var buf = '';
+    try {
+      while (true) {
+        var step = await reader.read();
+        if (step.done) break;
+        buf += dec.decode(step.value, { stream: true });
+        var i;
+        while ((i = buf.indexOf('\n\n')) >= 0) {
+          var block = buf.slice(0, i); buf = buf.slice(i + 2);
+          if (block.indexOf('event: task') !== 0) continue;
+          var dl = null;
+          var lines = block.split('\n');
+          for (var k = 0; k < lines.length; k++) { if (lines[k].indexOf('data: ') === 0) { dl = lines[k].slice(6); break; } }
+          if (!dl) continue;
+          try { var task = JSON.parse(dl); await workerRunTask(task); }
+          catch (e) { workerStatus('bad task: ' + (e && e.message ? e.message : e)); }
+        }
+      }
+    } catch (e) {
+      workerStatus('poll stream error — retrying');
+    }
+  }
+}
+async function workerEnsureEngine(model, taskId) {
+  if (!S.w.engine) { S.w.engine = new S.llmMod.MLCEngine(); S.w.loaded = ''; }
+  var target = model || S.w.loaded;
+  if (!target) { throw new Error('no model selected for this worker'); }
+  if (S.w.loaded === target) { return; }
+  var lastReport = 0;
+  S.w.engine.setInitProgressCallback(function (p) {
+    var txt = (p && p.text) ? p.text : 'loading';
+    workerStatus('loading ' + target + ' — ' + txt);
+    var now = performance.now();
+    if (now - lastReport > 400) {
+      lastReport = now;
+      post('/v1/worker/progress', {
+        workerId: S.w.id, taskId: taskId, phase: 'loading',
+        progress: (p && typeof p.progress === 'number') ? p.progress : -1,
+        text: txt
+      }).then(function (r) { if (r && r.cancel) { S.w.interrupted = true; } });
+    }
+  });
+  await S.w.engine.reload(target);
+  S.w.loaded = target;
+}
+async function workerCancel(id) {
+  try { S.w.engine.interrupt(); } catch (e) {}
+  await post('/v1/worker/done', { workerId: S.w.id, taskId: id, status: 'cancelled' });
+  workerStatus('idle — last task cancelled');
+  refreshWorkers();
+}
+async function workerRunTask(task) {
+  var id = task.id;
+  S.w.interrupted = false;
+  var model = task.model || S.w.model || (el('workerModel') ? el('workerModel').value : '');
+  workerStatus('running ' + id + ' → ' + (model || 'default'));
+  var t0 = 0, ttft = 0, tokens = 0;
+  try {
+    await post('/v1/worker/progress', { workerId: S.w.id, taskId: id, phase: 'loading', text: 'preparing ' + (model || 'model') });
+    await workerEnsureEngine(model, id);
+    if (S.w.interrupted) { await workerCancel(id); return; }
+    var pr = await post('/v1/worker/progress', { workerId: S.w.id, taskId: id, phase: 'running', text: 'generating', loadedModel: S.w.loaded });
+    if (pr && pr.cancel) { await workerCancel(id); return; }
+    t0 = performance.now();
+    var it = await S.w.engine.chat.completions.create({
+      messages: task.messages || [],
+      stream: true,
+      temperature: task.temperature || 0.7,
+      max_tokens: task.max_tokens || 512
+    });
+    var buf = '', lastFlush = 0, cancel = false;
+    for await (var piece of it) {
+      if (S.w.interrupted) { cancel = true; break; }
+      var d = piece.choices && piece.choices[0] && piece.choices[0].delta ? piece.choices[0].delta.content : '';
+      if (!d) continue;
+      if (!ttft) { ttft = performance.now() - t0; }
+      tokens += 1;
+      buf += d;
+      var now = performance.now();
+      if (now - lastFlush >= 40) {
+        lastFlush = now;
+        var chunk = buf; buf = '';
+        var resp = await post('/v1/worker/stream', { workerId: S.w.id, taskId: id, delta: chunk });
+        if (resp && resp.cancel) { cancel = true; S.w.interrupted = true; break; }
+      }
+    }
+    if (buf && !cancel) { await post('/v1/worker/stream', { workerId: S.w.id, taskId: id, delta: buf }); }
+    if (cancel) { try { S.w.engine.interrupt(); } catch (e) {} }
+    var elapsed = Math.max(1, performance.now() - t0);
+    var tps = Math.round(tokens / (elapsed / 1000) * 10) / 10;
+    await post('/v1/worker/done', {
+      workerId: S.w.id, taskId: id,
+      status: cancel ? 'cancelled' : 'completed',
+      stats: { ttftMs: Math.round(ttft), tokens: tokens, elapsedMs: Math.round(elapsed), tps: tps }
+    });
+    workerStatus(cancel ? 'idle — last task cancelled' : ('idle — last ' + tps + ' tok/s'));
+    refreshWorkers();
+  } catch (e) {
+    await post('/v1/worker/done', { workerId: S.w.id, taskId: id, status: 'failed', error: (e && e.message ? e.message : String(e)) });
+    workerStatus('idle — last task failed: ' + (e && e.message ? e.message : e));
+  }
+}
+function runnerName(id) {
+  for (var i = 0; i < S.wlist.length; i++) { if (S.wlist[i].id === id) { return S.wlist[i].name; } }
+  return id;
+}
+function syncRunnerUi() {
+  var sel = el('runner');
+  var box = el('wmodel');
+  if (!sel.value || sel.value === 'auto') { box.style.display = 'none'; return; }
+  box.style.display = '';
+  var cur = box.value;
+  box.innerHTML = '';
+  var o0 = document.createElement('option');
+  o0.value = ''; o0.textContent = '(worker default model)';
+  box.appendChild(o0);
+  var w = null;
+  for (var i = 0; i < S.wlist.length; i++) { if (S.wlist[i].id === sel.value) { w = S.wlist[i]; break; } }
+  if (w) {
+    (w.models || []).slice(0, 60).forEach(function (m) {
+      var o = document.createElement('option'); o.value = m; o.textContent = m; box.appendChild(o);
+    });
+    var has = false;
+    for (var k = 0; k < box.options.length; k++) { if (box.options[k].value === cur) { has = true; break; } }
+    if (has) { box.value = cur; }
+    else if (w.loadedModel) {
+      for (var k2 = 0; k2 < box.options.length; k2++) { if (box.options[k2].value === w.loadedModel) { box.value = w.loadedModel; break; } }
+    }
+  }
+}
+function runnerChanged() {
+  syncRunnerUi();
+  var v = el('runner').value;
+  if (v === '') { toast('Runner: the phone (llama.cpp)'); }
+  else if (v === 'auto') { toast('Runner: auto — best online GPU worker'); }
+  else { toast('Runner: ' + runnerName(v)); }
+}
+function renderRunner(ws) {
+  var sel = el('runner');
+  var cur = sel.value;
+  sel.innerHTML = '';
+  var online = 0;
+  (ws || []).forEach(function (w) { if (w.state !== 'offline') online += 1; });
+  var o0 = document.createElement('option');
+  o0.value = ''; o0.textContent = 'Runner: Phone (llama.cpp)';
+  sel.appendChild(o0);
+  var oa = document.createElement('option');
+  oa.value = 'auto'; oa.textContent = 'Runner: Auto — best GPU worker (' + online + ' online)';
+  sel.appendChild(oa);
+  (ws || []).forEach(function (w) {
+    var o = document.createElement('option');
+    o.value = w.id; o.textContent = 'Runner: ' + w.name + ' (' + w.state + ')';
+    sel.appendChild(o);
+  });
+  var has = false;
+  for (var i = 0; i < sel.options.length; i++) { if (sel.options[i].value === cur) { has = true; break; } }
+  sel.value = has ? cur : '';
+  syncRunnerUi();
+}
+function refreshWorkers() {
+  fetch('/v1/workers', { headers: headers(false) }).then(function (r) {
+    if (r.status === 401) { el('workersSummary').textContent = 'GPU workers — save the token to list them'; return null; }
+    if (!r.ok) { return null; }
+    return r.json();
+  }).then(function (j) {
+    if (!j) return;
+    var ws = j.data || [];
+    S.wlist = ws;
+    var online = 0;
+    for (var i = 0; i < ws.length; i++) { if (ws[i].state !== 'offline') online += 1; }
+    el('workersSummary').textContent = 'GPU workers (' + ws.length + ') — ' + online + ' online';
+    var box = el('workerList');
+    box.innerHTML = '';
+    if (!ws.length) {
+      var d = document.createElement('div');
+      d.className = 'fmeta';
+      d.textContent = 'No GPU workers yet. On a laptop/desktop open this dashboard, tick "Join as GPU worker" in the GPU panel, then pick it in Runner.';
+      box.appendChild(d);
+    }
+    ws.forEach(function (w) {
+      var row = document.createElement('div');
+      row.className = 'frow';
+      var st = document.createElement('span');
+      st.className = 'badge ' + (w.state === 'offline' ? 'off' : (w.state === 'idle' ? 'ok' : 'mid'));
+      st.textContent = w.state;
+      row.appendChild(st);
+      var nm = document.createElement('span');
+      nm.className = 'fname';
+      nm.textContent = w.name + ' — ' + (w.gpu || 'GPU');
+      row.appendChild(nm);
+      var gp = document.createElement('span');
+      gp.className = 'badge mid';
+      gp.textContent = w.gflops ? (Math.round(w.gflops) + ' GFLOPS') : 'no bench';
+      row.appendChild(gp);
+      var md = document.createElement('span');
+      md.className = 'fmeta';
+      md.textContent = (w.loadedModel ? 'loaded: ' + w.loadedModel : 'default: ' + (w.defaultModel || '—')) +
+        ' · ' + w.tasksDone + ' task(s)' +
+        (w.lastTps ? (' · last ' + w.lastTps + ' tok/s · ttft ' + ((w.lastTtftMs || 0) / 1000).toFixed(2) + ' s') : '');
+      row.appendChild(md);
+      var rm = document.createElement('button');
+      rm.className = 'ghost';
+      rm.textContent = 'Disconnect';
+      rm.onclick = function () {
+        post('/v1/workers/remove', { id: w.id }).then(function () { toast('Disconnected ' + w.name); refreshWorkers(); });
+      };
+      row.appendChild(rm);
+      box.appendChild(row);
+    });
+    renderRunner(ws);
+  }).catch(function () {});
+}
+function workerSend(text, runner, wmodel) {
+  el('input').value = '';
+  add('user', text);
+  S.log.push({ role: 'user', content: text });
+  var bubble = add('assistant', '…');
+  S.busy = true; el('send').disabled = true; el('stop').disabled = false;
+  S.ctrl = new AbortController();
+  var full = '';
+  fetch('/v1/chat/completions', {
+    method: 'POST',
+    headers: headers(true),
+    body: JSON.stringify({ worker: runner, model: wmodel || '', messages: S.log.slice(-12), stream: true, temperature: 0.7, max_tokens: 1024 }),
+    signal: S.ctrl.signal
+  }).then(function (r) {
+    if (!r.ok) {
+      return r.text().then(function (t) {
+        bubble.className = 'msg sys';
+        bubble.textContent = 'Worker route error ' + r.status + ' — ' + t.slice(0, 240);
+        if (S.log.length && S.log[S.log.length - 1].role === 'user') { S.log.pop(); }
+      });
+    }
+    var reader = r.body.getReader();
+    var dec = new TextDecoder();
+    var buf = '';
+    function pump() {
+      return reader.read().then(function (step) {
+        if (step.done) return;
+        buf += dec.decode(step.value, { stream: true });
+        var i;
+        while ((i = buf.indexOf('\n\n')) >= 0) {
+          var evt = buf.slice(0, i); buf = buf.slice(i + 2);
+          if (!evt.startsWith('data:')) continue;
+          var payload = evt.slice(5).trim();
+          if (payload === '[DONE]') continue;
+          try {
+            var j = JSON.parse(payload);
+            if (j.object === 'worker.status') {
+              if (!full) { bubble.textContent = '(' + (j.phase || '…') + ') ' + (j.text || ''); }
+              continue;
+            }
+            if (j.object === 'worker.done') {
+              var st = j.stats || {};
+              if (full && j.state !== 'failed') {
+                addMeta(bubble, 'GPU worker · ' + (st.tokens || 0) + ' tok · ' + (st.tps || 0) + ' tok/s · ttft ' + (((st.ttftMs || 0) / 1000).toFixed(2)) + ' s');
+              }
+              continue;
+            }
+            if (j.object === 'worker.error') {
+              var msg = (j.error && j.error.message) ? j.error.message : 'worker error';
+              bubble.className = 'msg sys';
+              bubble.textContent = 'Worker error — ' + msg;
+              continue;
+            }
+            var ch = j.choices && j.choices[0];
+            var d = ch && ch.delta && ch.delta.content;
+            if (d) { full += d; bubble.textContent = full; el('chat').scrollTop = el('chat').scrollHeight; }
+          } catch (e) {}
+        }
+        return pump();
+      });
+    }
+    return pump().then(function () {
+      if (full) { S.log.push({ role: 'assistant', content: full }); }
+      else if (bubble.className.indexOf('sys') < 0) {
+        bubble.className = 'msg sys'; bubble.textContent = '(no tokens — worker finished empty)';
+        if (S.log.length && S.log[S.log.length - 1].role === 'user') { S.log.pop(); }
+      }
+    });
+  }).catch(function () {
+    if (full) { S.log.push({ role: 'assistant', content: full }); bubble.textContent = full + ' [stopped]'; }
+    else {
+      bubble.className = 'msg sys'; bubble.textContent = 'stopped';
+      if (S.log.length && S.log[S.log.length - 1].role === 'user') { S.log.pop(); }
+    }
+  }).then(function () {
+    S.busy = false; el('send').disabled = false; el('stop').disabled = true; S.ctrl = null;
+    refreshWorkers();
+  });
+}
 function send() {
   var text = el('input').value.trim();
   if (!text || S.busy) return;
+  var runner = el('runner') ? el('runner').value : '';
+  if (runner) {
+    if (!S.token) { toast('Paste the bearer token first'); return; }
+    workerSend(text, runner, runner === 'auto' ? '' : el('wmodel').value);
+    return;
+  }
   if (S.boost) { boostSend(text); return; }
   if (!S.token) { toast('Paste the bearer token first'); return; }
   var model = el('model').value;
@@ -1507,9 +2692,11 @@ el('input').addEventListener('keydown', function (e) {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
 });
 el('token').value = S.token;
-add('sys', 'Hello from Karen — connected to $ip:$port. ${models.size} installed model(s). Paste the token from Settings → Local Server, then pick a model — .gguf files found on disk can run too (expand the On-device model files panel below).');
+add('sys', 'Hello from Karen — connected to $ip:$port. ${models.size} installed model(s). Paste the token from Settings → Local Server, then pick a model — .gguf files found on disk can run too (expand the On-device model files panel below). Runner → Auto hands prompts to a laptop GPU that joined in the GPU offload panel.');
 loadModels();
 initGpu();
+refreshWorkers();
+if (window.setInterval) { setInterval(refreshWorkers, 5000); }
 </script>
 </body>
 </html>

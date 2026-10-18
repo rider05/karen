@@ -139,7 +139,7 @@ fun NodesScreen(onNavigateToHome: () -> Unit = {}) {
 
             item {
                 Text(
-                    "Names come from the device itself (dashboard header) or its network host name. Web pages and API calls both count as connections.",
+                    "Names come from the device itself (dashboard header) or its network host name. Web pages and API calls both count as connections. A device that joined as GPU worker shows its worker state and model below — prompts can be routed to it from the dashboard's Runner picker.",
                     color = colors.textMuted,
                     fontSize = 11.sp
                 )
@@ -203,6 +203,22 @@ private fun NodeRow(node: NodeInfo, colors: KarenColors, tick: Long) {
                     }
                 },
                 color = colors.accentBlue,
+                fontSize = 11.sp,
+                fontFamily = FontFamily.Monospace
+            )
+        }
+        if (node.worker) {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                buildString {
+                    append("WORKER · ")
+                    append(node.workerState.ifBlank { "idle" })
+                    if (node.workerModel.isNotBlank()) {
+                        append(" · ")
+                        append(node.workerModel)
+                    }
+                },
+                color = colors.accentGreen,
                 fontSize = 11.sp,
                 fontFamily = FontFamily.Monospace
             )

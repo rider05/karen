@@ -167,6 +167,13 @@ responding (documented); phone RAM is untouched by worker tasks.
    simulation (`hello`/`register` return `master:true`) = switch disabled,
    explanation shown, no register call even when previously joined. No console
    errors in any run.
+   **Real-app guard pass (same day, emulator build, PC connection via
+   `adb forward` arrives as loopback)**: the actual Kotlin server answered
+   `/v1/nodes/hello` and `/v1/worker/register` with `{ok, master:true}`, the
+   served dashboard disabled the switch and showed the master explanation, the
+   phone stayed at 0 slaves / 0 devices while its requests counter increased.
+   The mock QA and this real-server pass together cover the guard end to end;
+   the Wi-Fi laptop-worker path remains the open checklist below.
 3. **On-device acceptance checklist** (manual, first run on user's hardware):
    join from a laptop; run a prompt from the phone console; watch tokens; Stop;
    close the tab mid-task and confirm the task fails cleanly; rejoin.

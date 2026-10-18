@@ -75,13 +75,14 @@ running → completed | failed | cancelled`.
 
 | Endpoint | Direction | Payload (essentials) |
 |---|---|---|
-| `GET /v1/workers` | console/master | `{object:"list", data:[{id,name,ip,gpu,gflops,state,loadedModel,defaultModel,models[],lastSeenAt,tasksDone,lastTps,lastTtftMs}]}` |
-| `POST /v1/worker/register` | worker → master | `{workerId?, name, gpu, gflops, backend:"webllm", engine:"web-llm@0.2.86", defaultModel, models[], loadedModel}` → `{ok, workerId, pollSeconds, taskTimeoutSeconds}`; **master device → `{ok, master:true}`** (no id; see §2.1) |
-| `GET /v1/worker/poll` | worker → master | header `X-Karen-Worker: <id>`; SSE: `event: task` + `data: {id, model, messages[], temperature, max_tokens}`; `: ping` keepalives; `event: idle` end-of-hold |
+| `GET /v1/workers` | console/master | `{object:"list", data:[{id,name,ip,gpu,gflops,state,loadedModel,defaultModel,models[],lastSeenAt,tasksDone,lastTps,lastTtftMs, cpuCores,cpuArch,memGB,pressure,quotaGB,usageGB,netType,downlinkMbps,netRttMs,jsScore,maxBufferMB,telemetryAt}]}`; the console's 10 s refresh carries its own readings as `?tel=<url-encoded json>` so the dashboard device's node entry stays fresh with zero extra requests |
+| `POST /v1/worker/register` | worker → master | `{workerId?, name, gpu, gflops, backend:"webllm", engine:"web-llm@0.2.86", defaultModel, models[], loadedModel, telemetry{c,a,m,p,sq,su,nt,nd,nr,js,ab}}` → `{ok, workerId, pollSeconds, taskTimeoutSeconds}`; **master device → `{ok, master:true}`** (no id; see §2.1) |
+| `GET /v1/worker/poll` | worker → master | header `X-Karen-Worker: <id>`, query `?tel=<url-encoded telemetry json>` (fresh readings every cycle); SSE: `event: task` + `data: {id, model, messages[], temperature, max_tokens}`; `: ping` keepalives; `event: idle` end-of-hold |
 | `POST /v1/worker/progress` | worker → master | `{workerId, taskId, phase:"loading"\|"running", progress?, text?, loadedModel?}` → `{ok, cancel}` |
 | `POST /v1/worker/stream` | worker → master | `{workerId, taskId, delta}` → `{ok, cancel}` |
 | `POST /v1/worker/done` | worker → master | `{workerId, taskId, status, error?, stats:{ttftMs, tokens, elapsedMs, tps}}` → `{ok, stale?}` |
 | `POST /v1/worker/leave` | worker → master | `{workerId}` |
+| `POST /v1/nodes/hello` | any page → master | `{name, webgpu, gpu, gflops, telemetry{c,a,m,p,sq,su,nt,nd,nr,js,ab}}` — registers the device and its machine readings (feeds the app's Nodes screen) |
 | `POST /v1/workers/remove` | console/master | `{id}` — force disconnect (worker gets `410` afterwards) |
 | `POST /v1/chat/completions` | console → master | existing body + optional `"worker":"auto"\|"w_x"` and `"model"` (worker-side model id) |
 
@@ -159,6 +160,21 @@ responding (documented); phone RAM is untouched by worker tasks.
 - Worker GFLOPS: the shipped WGSL matmul benchmark (user-triggered).
 - Per task: TTFT, tokens, elapsed, tok/s — counted by the worker and stored on
   the registry entry (`lastTps`, `lastTtftMs`, `tasksDone`).
+- **Node telemetry** (cpu / ram / disk / network / heat), shown on the console
+  node rows and the app's Nodes screen:
+  - Browser workers report only what the platform exposes: CPU cores, arch and
+    a fixed-loop CPU score; `deviceMemory` (spec-capped at 8 GB); the storage
+    estimate (`quota` ≈ free disk, `usage`); Network Information
+    (`effectiveType`, `downlink`, `rtt`); the WebGPU adapter's `maxBufferSize`
+    (a VRAM-tier proxy).
+  - **Heat:** no browser has a temperature API. A slave node shows the Compute
+    Pressure API state (`nominal/fair/serious/critical`, Chrome/Edge 125+), the
+    closest real load/thermal signal; the phone's own card shows the actual
+    battery °C plus `THERMAL_STATUS_*` (Android), its real RAM/storage and the
+    active link type with downstream/upstream bandwidth.
+  - Telemetry rides requests that were happening anyway — poll query string,
+    register/hello bodies, the console's list refresh — so it adds **zero**
+    additional traffic, consistent with §6's request budget.
 - Nothing is estimated or back-filled; missing metrics show as blank.
 
 ## 9. Testing strategy

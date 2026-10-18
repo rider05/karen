@@ -42,7 +42,26 @@ data class NodeInfo(
     val workerState: String = "",
     val workerModel: String = "",
     /** Joined worker's id (`w_xxxxxx`) while the node is an active worker. */
-    val workerId: String = ""
+    val workerId: String = "",
+    // Self-reported machine telemetry (browser pages — see the worker page JS).
+    // Browsers have no temperature sensor: `pressure` is the Compute Pressure
+    // API CPU state, the closest honest heat/load signal; `memGB` is the
+    // browser's approximate device memory; `quotaGB` is the storage estimate
+    // (~free disk); `netType`/`downlinkMbps`/`netRttMs` come from the Network
+    // Information API; `jsScore` is a fixed-loop CPU speed measure; `maxBufferMB`
+    // is the WebGPU adapter's max buffer size (a VRAM tier proxy).
+    val cpuCores: Int = 0,
+    val cpuArch: String = "",
+    val memGB: Double = 0.0,
+    val pressure: String = "",
+    val quotaGB: Double = 0.0,
+    val usageGB: Double = 0.0,
+    val netType: String = "",
+    val downlinkMbps: Double = 0.0,
+    val netRttMs: Int = 0,
+    val jsScore: Double = 0.0,
+    val maxBufferMB: Int = 0,
+    val telemetryAt: Long = 0L
 )
 
 /** One model artifact actually found on disk, with its real runtime verdict. */
@@ -78,7 +97,24 @@ class WorkerInfo(
     @Volatile var loadedModel: String,
     @Volatile var tasksDone: Int,
     @Volatile var lastTps: Double,
-    @Volatile var lastTtftMs: Long
+    @Volatile var lastTtftMs: Long,
+    // Machine telemetry the worker page reports (poll query + register body):
+    // cores/arch/score = CPU, memGB = device RAM estimate, pressure = Compute
+    // Pressure API state (browsers expose no °C), quota/usage = storage
+    // estimate (≈disk), netType/downlinkMbps/netRttMs = connection, maxBufferMB
+    // = WebGPU adapter max buffer (VRAM tier proxy).
+    @Volatile var cpuCores: Int = 0,
+    @Volatile var cpuArch: String = "",
+    @Volatile var memGB: Double = 0.0,
+    @Volatile var pressure: String = "",
+    @Volatile var quotaGB: Double = 0.0,
+    @Volatile var usageGB: Double = 0.0,
+    @Volatile var netType: String = "",
+    @Volatile var downlinkMbps: Double = 0.0,
+    @Volatile var netRttMs: Int = 0,
+    @Volatile var jsScore: Double = 0.0,
+    @Volatile var maxBufferMB: Int = 0,
+    @Volatile var telemetryAt: Long = 0L
 ) {
     fun online(now: Long): Boolean = now - lastSeenAt < ONLINE_WINDOW_MS
 
@@ -245,7 +281,7 @@ object LocalApiServer {
                 workerState = prev?.workerState ?: "",
                 workerModel = prev?.workerModel ?: "",
                 workerId = prev?.workerId ?: ""
-            )
+            ).carryTelemetry(prev)
             nodeSnapshot = nodes.values.sortedByDescending { it.lastSeen }
             if (nodeNames[ip] == null) {
                 resolveNodeName(ip)
@@ -328,6 +364,94 @@ object LocalApiServer {
         nodeSnapshot = nodes.values.sortedByDescending { it.lastSeen }
     }
 
+    // ---- Node telemetry ------------------------------------------------------
+    //
+    // Browser pages measure what the platform actually exposes and attach it to
+    // requests they were going to make anyway (worker poll query string, nodes
+    // hello body, console workers refresh) — no extra traffic. Browsers cannot
+    // read temperatures; every "heat" figure here is either the CPU pressure
+    // state (browser) or the phone's real battery/thermal sensors (app).
+
+    /** One `name=value` entry of a URL query string (percent-decoded). */
+    private fun queryParam(query: String, name: String): String? {
+        if (query.isBlank()) return null
+        for (part in query.split('&')) {
+            val eq = part.indexOf('=')
+            if (eq <= 0 || part.substring(0, eq) != name) continue
+            return try {
+                java.net.URLDecoder.decode(part.substring(eq + 1), "UTF-8")
+            } catch (_: Exception) {
+                part.substring(eq + 1)
+            }
+        }
+        return null
+    }
+
+    /** Telemetry blob a browser page attaches to its request (`?tel=<json>`). */
+    private fun queryTelemetry(query: String): JSONObject? = try {
+        queryParam(query, "tel")?.let { JSONObject(it) }
+    } catch (_: Exception) {
+        null
+    }
+
+    /** Carry self-reported telemetry over a node-record rewrite (see recordNode). */
+    private fun NodeInfo.carryTelemetry(prev: NodeInfo?): NodeInfo = if (prev == null) {
+        this
+    } else {
+        copy(
+            cpuCores = prev.cpuCores,
+            cpuArch = prev.cpuArch,
+            memGB = prev.memGB,
+            pressure = prev.pressure,
+            quotaGB = prev.quotaGB,
+            usageGB = prev.usageGB,
+            netType = prev.netType,
+            downlinkMbps = prev.downlinkMbps,
+            netRttMs = prev.netRttMs,
+            jsScore = prev.jsScore,
+            maxBufferMB = prev.maxBufferMB,
+            telemetryAt = prev.telemetryAt
+        )
+    }
+
+    /** Store self-reported telemetry on the node list (the app's Nodes screen). */
+    private fun applyNodeTelemetry(ip: String?, tel: JSONObject?) {
+        if (ip == null || tel == null) return
+        val prev = nodes[ip] ?: return
+        nodes[ip] = prev.copy(
+            cpuCores = tel.optInt("c", prev.cpuCores),
+            cpuArch = tel.optString("a", prev.cpuArch).take(28),
+            memGB = tel.optDouble("m", prev.memGB),
+            pressure = tel.optString("p", prev.pressure).take(12),
+            quotaGB = tel.optDouble("sq", prev.quotaGB),
+            usageGB = tel.optDouble("su", prev.usageGB),
+            netType = tel.optString("nt", prev.netType).take(12),
+            downlinkMbps = tel.optDouble("nd", prev.downlinkMbps),
+            netRttMs = tel.optInt("nr", prev.netRttMs),
+            jsScore = tel.optDouble("js", prev.jsScore),
+            maxBufferMB = tel.optInt("ab", prev.maxBufferMB),
+            telemetryAt = System.currentTimeMillis()
+        )
+        nodeSnapshot = nodes.values.sortedByDescending { it.lastSeen }
+    }
+
+    /** Same telemetry on the worker record the console's node list reads. */
+    private fun applyWorkerTelemetry(w: WorkerInfo, tel: JSONObject?) {
+        if (tel == null) return
+        w.cpuCores = tel.optInt("c", w.cpuCores)
+        w.cpuArch = tel.optString("a", w.cpuArch).take(28)
+        w.memGB = tel.optDouble("m", w.memGB)
+        w.pressure = tel.optString("p", w.pressure).take(12)
+        w.quotaGB = tel.optDouble("sq", w.quotaGB)
+        w.usageGB = tel.optDouble("su", w.usageGB)
+        w.netType = tel.optString("nt", w.netType).take(12)
+        w.downlinkMbps = tel.optDouble("nd", w.downlinkMbps)
+        w.netRttMs = tel.optInt("nr", w.netRttMs)
+        w.jsScore = tel.optDouble("js", w.jsScore)
+        w.maxBufferMB = tel.optInt("ab", w.maxBufferMB)
+        w.telemetryAt = System.currentTimeMillis()
+    }
+
     private fun workersListJson(): JSONObject {
         val now = System.currentTimeMillis()
         val data = JSONArray()
@@ -354,6 +478,18 @@ object LocalApiServer {
                         .put("tasksDone", w.tasksDone)
                         .put("lastTps", w.lastTps)
                         .put("lastTtftMs", w.lastTtftMs)
+                        .put("cpuCores", w.cpuCores)
+                        .put("cpuArch", w.cpuArch)
+                        .put("memGB", w.memGB)
+                        .put("pressure", w.pressure)
+                        .put("quotaGB", w.quotaGB)
+                        .put("usageGB", w.usageGB)
+                        .put("netType", w.netType)
+                        .put("downlinkMbps", w.downlinkMbps)
+                        .put("netRttMs", w.netRttMs)
+                        .put("jsScore", w.jsScore)
+                        .put("maxBufferMB", w.maxBufferMB)
+                        .put("telemetryAt", w.telemetryAt)
                 )
             }
         return JSONObject().put("object", "list").put("data", data)
@@ -429,8 +565,23 @@ object LocalApiServer {
             loadedModel = body.optString("loadedModel", prev?.loadedModel ?: "").trim().take(90),
             tasksDone = prev?.tasksDone ?: 0,
             lastTps = prev?.lastTps ?: 0.0,
-            lastTtftMs = prev?.lastTtftMs ?: 0L
+            lastTtftMs = prev?.lastTtftMs ?: 0L,
+            cpuCores = prev?.cpuCores ?: 0,
+            cpuArch = prev?.cpuArch ?: "",
+            memGB = prev?.memGB ?: 0.0,
+            pressure = prev?.pressure ?: "",
+            quotaGB = prev?.quotaGB ?: 0.0,
+            usageGB = prev?.usageGB ?: 0.0,
+            netType = prev?.netType ?: "",
+            downlinkMbps = prev?.downlinkMbps ?: 0.0,
+            netRttMs = prev?.netRttMs ?: 0,
+            jsScore = prev?.jsScore ?: 0.0,
+            maxBufferMB = prev?.maxBufferMB ?: 0,
+            telemetryAt = prev?.telemetryAt ?: 0L
         )
+        val tel = body.optJSONObject("telemetry")
+        applyWorkerTelemetry(worker, tel)
+        applyNodeTelemetry(ip, tel)
         workers[id] = worker
         workerQueueFor(id)
         removedWorkers.remove(id)
@@ -448,7 +599,7 @@ object LocalApiServer {
      * SSE long-poll: hands the worker one queued task, otherwise keepalives.
      * The hold is bounded; the worker reconnects immediately after.
      */
-    private fun workerPoll(socket: Socket, workerId: String) {
+    private fun workerPoll(socket: Socket, workerId: String, tel: JSONObject? = null) {
         val worker = workers[workerId]
         if (worker == null) {
             val gone = removedWorkers.contains(workerId)
@@ -463,6 +614,12 @@ object LocalApiServer {
                 )
             )
             return
+        }
+        // Fresh machine telemetry rides along with the poll the worker makes
+        // anyway — zero extra requests for cpu/ram/disk/network updates.
+        if (tel != null) {
+            applyWorkerTelemetry(worker, tel)
+            applyNodeTelemetry(worker.ip, tel)
         }
         worker.lastSeenAt = System.currentTimeMillis()
         val current = worker.currentTask
@@ -1133,6 +1290,9 @@ object LocalApiServer {
             }
             val method = parts[0].uppercase()
             val path = parts[1].substringBefore('?')
+            // Query strings carry node telemetry on requests that happen anyway
+            // (worker poll, console refresh) — see queryTelemetry().
+            val query = parts[1].substringAfter('?', "")
             val peer = try {
                 socket.inetAddress?.hostAddress ?: "?"
             } catch (_: Exception) {
@@ -1265,6 +1425,10 @@ object LocalApiServer {
                     }
                 }
                 method == "GET" && path == "/v1/workers" -> {
+                    // The console refresh also carries its own machine telemetry
+                    // in the query — the device you run the dashboard on shows up
+                    // in the app's node list with live cpu/ram/disk/network too.
+                    applyNodeTelemetry(peerIp(socket), queryTelemetry(query))
                     writeJson(socket, 200, workersListJson())
                 }
                 method == "POST" && path == "/v1/worker/register" -> {
@@ -1275,8 +1439,13 @@ object LocalApiServer {
                     }
                 }
                 method == "GET" && path == "/v1/worker/poll" -> {
-                    // SSE long-poll; the worker id travels in a header (GET has no body).
-                    workerPoll(socket, headers["x-karen-worker"].orEmpty().trim())
+                    // SSE long-poll; the worker id travels in a header (GET has
+                    // no body), fresh machine telemetry in the query string.
+                    workerPoll(
+                        socket,
+                        headers["x-karen-worker"].orEmpty().trim(),
+                        queryTelemetry(query)
+                    )
                 }
                 method == "POST" && path == "/v1/worker/progress" -> {
                     if (body == null) {
@@ -1514,7 +1683,8 @@ object LocalApiServer {
             workerState = prev?.workerState ?: "",
             workerModel = prev?.workerModel ?: "",
             workerId = prev?.workerId ?: ""
-        )
+        ).carryTelemetry(prev)
+        applyNodeTelemetry(ip, body.optJSONObject("telemetry"))
         nodeSnapshot = nodes.values.sortedByDescending { it.lastSeen }
         writeJson(socket, 200, JSONObject().put("ok", true))
     }
@@ -1931,7 +2101,8 @@ object LocalApiServer {
 var PAGE = '$mode';
 var S = { token: localStorage.getItem('karen_token') || '', busy: false, ctrl: null, log: [], node: nodeName(), boost: localStorage.getItem('karen_gpu_boost') === '1', llm: null, llmMod: null, llmModel: '', adapter: null, gpuName: '', gflops: 0,
   w: { on: localStorage.getItem('karen_worker') !== '0' && !!localStorage.getItem('karen_token'), saved: localStorage.getItem('karen_worker') === '1', master: false, id: localStorage.getItem('karen_worker_id') || '', model: localStorage.getItem('karen_worker_model') || '', loaded: '', engine: null, interrupted: false, loop: false },
-  wModels: [], wlist: [], routed: localStorage.getItem('karen_runner') || '' };
+  wModels: [], wlist: [], routed: localStorage.getItem('karen_runner') || '',
+  tel: {}, pressure: '', jsScore: 0, maxBufferMB: 0 };
 function el(id) { return document.getElementById(id); }
 function nodeName() {
   var ua = navigator.userAgent, os = 'Device', br = 'Browser';
@@ -2094,12 +2265,77 @@ var WGSL_MM = [
 '  if (row < M && col < N) { C[row * N + col] = acc; }',
 '}'
 ].join('\n');
-function reportNode() {
-  if (!S.token) return Promise.resolve(null);
+// ---- machine telemetry -----------------------------------------------------
+// What a browser can honestly read about its own machine. There is no
+// temperature API in any browser: where the UI says "heat" for a slave node it
+// shows the CPU pressure state from PressureObserver (Chrome/Edge 125+) — the
+// closest real load/thermal signal — while the phone app shows its real
+// battery temperature and thermal status. deviceMemory is capped at 8 GB by
+// spec; storage.estimate().quota ≈ free disk; downlink/rtt are browser
+// estimates; maxBufferSize is a WebGPU VRAM-tier proxy.
+function measureCpu() {
+  try {
+    var t0 = performance.now(), x = 0;
+    for (var i = 1; i < 2000000; i++) { x = (x + i) % 99991; }
+    var dt = performance.now() - t0;
+    if (dt > 0 && x >= 0) { S.jsScore = Math.round(400000 / dt) / 100; }
+  } catch (e) {}
+}
+function initPressure() {
+  try {
+    if (!window.PressureObserver) { return; }
+    var po = new PressureObserver(function (recs) {
+      if (recs && recs.length) { S.pressure = recs[recs.length - 1].state || ''; }
+    });
+    po.observe('cpu', { sampleInterval: 30000 }).catch(function () {});
+  } catch (e) {}
+}
+function collectTelemetry() {
+  var t = S.tel || {};
+  try { t.c = navigator.hardwareConcurrency || t.c || 0; } catch (e) {}
+  try { t.m = navigator.deviceMemory || t.m || 0; } catch (e) {}
+  try { if (S.pressure) { t.p = S.pressure; } } catch (e) {}
+  try { if (S.jsScore) { t.js = S.jsScore; } } catch (e) {}
+  try { if (S.maxBufferMB) { t.ab = S.maxBufferMB; } } catch (e) {}
+  try {
+    var conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+    if (conn) {
+      t.nt = conn.effectiveType || t.nt || '';
+      t.nd = conn.downlink || t.nd || 0;
+      t.nr = conn.rtt || t.nr || 0;
+    }
+  } catch (e) {}
+  S.tel = t;
+  return t;
+}
+async function collectTelemetryDeep() {
+  try {
+    if (!S.tel.a && navigator.userAgentData && navigator.userAgentData.getHighEntropyValues) {
+      var h = await navigator.userAgentData.getHighEntropyValues(['architecture', 'bitness']);
+      var bits = [];
+      if (h.architecture) { bits.push(h.architecture); }
+      if (h.bitness) { bits.push(h.bitness + '-bit'); }
+      if (bits.length) { S.tel.a = bits.join(' '); }
+    }
+  } catch (e) {}
+  try {
+    var est = await navigator.storage.estimate();
+    if (est && est.quota) { S.tel.sq = Math.round(est.quota / 10737418.24) / 100; }
+    if (est && est.usage) { S.tel.su = Math.round(est.usage / 10737418.24) / 100; }
+  } catch (e) {}
+  return collectTelemetry();
+}
+function telQuery() {
+  try { collectTelemetry(); return '?tel=' + encodeURIComponent(JSON.stringify(S.tel)); }
+  catch (e) { return ''; }
+}
+async function reportNode() {
+  if (!S.token) return null;
+  try { await collectTelemetryDeep(); } catch (e) {}
   return fetch('/v1/nodes/hello', {
     method: 'POST',
     headers: headers(true),
-    body: JSON.stringify({ name: S.node, webgpu: !!S.adapter, gpu: S.gpuName || '', gflops: S.gflops || 0 })
+    body: JSON.stringify({ name: S.node, webgpu: !!S.adapter, gpu: S.gpuName || '', gflops: S.gflops || 0, telemetry: collectTelemetry() })
   }).then(function (r) { return r.json().catch(function () { return null; }); })
     .then(function (j) {
       if (j && j.master) {
@@ -2176,6 +2412,10 @@ async function initGpu() {
       return;
     }
     S.adapter = ad;
+    try {
+      var mbuf = ad.limits && ad.limits.maxBufferSize;
+      if (mbuf) { S.maxBufferMB = Math.round(mbuf / 1048576); }
+    } catch (e) {}
     var info = ad.info || {};
     S.gpuName = [info.vendor, info.architecture, info.device, info.description].filter(Boolean).join(' · ') || 'WebGPU adapter';
     el('gpuSummary').textContent = 'GPU offload — this device: ' + S.gpuName;
@@ -2441,6 +2681,7 @@ async function workerJoin(isAuto) {
   workerLoop();
 }
 async function workerRegister() {
+  try { await Promise.race([collectTelemetryDeep(), workerSleep(1500)]); } catch (e) {}
   var j = await post('/v1/worker/register', {
     workerId: S.w.id,
     name: S.node,
@@ -2450,7 +2691,8 @@ async function workerRegister() {
     engine: 'web-llm@0.2.86',
     defaultModel: (el('workerModel') && el('workerModel').value) || S.w.model || '',
     models: S.wModels,
-    loadedModel: S.w.loaded || ''
+    loadedModel: S.w.loaded || '',
+    telemetry: collectTelemetry()
   });
   if (j && j.master) {
     S.w.master = true;
@@ -2483,7 +2725,12 @@ async function workerLoop() {
   try {
     while (S.w.on) {
       var r = null;
-      try { r = await fetch('/v1/worker/poll', { headers: headers(true) }); }
+      var tq = '';
+      // Fresh telemetry rides on the poll that was happening anyway — the
+      // console/app see live cpu/ram/disk/network with zero extra requests.
+      try { await Promise.race([collectTelemetryDeep(), workerSleep(1500)]); } catch (e) {}
+      try { tq = telQuery(); } catch (e) {}
+      try { r = await fetch('/v1/worker/poll' + tq, { headers: headers(true) }); }
       catch (e) { workerStatus('connection lost — retrying'); await workerSleep(3000); continue; }
       if (!r) { await workerSleep(3000); continue; }
       if (r.status === 410) { workerLeave('disconnected by the phone'); toast('Removed by the phone — slave mode off'); return; }
@@ -2623,6 +2870,27 @@ function gpuLabel(w) {
   bits += w.gflops ? (' · ' + Math.round(w.gflops) + ' GFLOPS') : ' · no bench';
   return bits;
 }
+function telemetryLine(w) {
+  // One compact line of what the worker page honestly measured about itself.
+  var tp = [];
+  try {
+    if (w.cpuCores || w.cpuArch) {
+      tp.push('CPU ' + (w.cpuCores ? w.cpuCores + 'c' : '') + ((w.cpuCores && w.cpuArch) ? ' ' : '') + (w.cpuArch || ''));
+    }
+    if (w.jsScore) { tp.push('score ' + w.jsScore); }
+    if (w.memGB) { tp.push('RAM ≈' + w.memGB + ' GB'); }
+    if (w.pressure) { tp.push('pressure ' + w.pressure); }
+    if (w.quotaGB) { tp.push('disk ≈' + w.quotaGB + ' GB' + (w.usageGB ? ' (used ' + w.usageGB + ')' : '')); }
+    if (w.netType || w.downlinkMbps || w.netRttMs) {
+      var net = w.netType || 'net';
+      if (w.downlinkMbps) { net += ' ↓' + w.downlinkMbps + ' Mbps'; }
+      if (w.netRttMs) { net += ' rtt ' + w.netRttMs + ' ms'; }
+      tp.push(net);
+    }
+    if (w.maxBufferMB) { tp.push('GPU buf ' + w.maxBufferMB + ' MB'); }
+  } catch (e) {}
+  return tp.join(' · ');
+}
 function syncRunnerUi() {
   var sel = el('runner');
   var box = el('wmodel');
@@ -2692,7 +2960,7 @@ function refreshWorkers() {
   // every 5 s from every open tab — on worker pages that was the bulk of the
   // "slaves keep sending requests" traffic.
   if (PAGE !== 'console') { return; }
-  fetch('/v1/workers', { headers: headers(false) }).then(function (r) {
+  fetch('/v1/workers' + telQuery(), { headers: headers(false) }).then(function (r) {
     if (r.status === 401) { el('workersSummary').textContent = 'Slave nodes — save the token to list them'; return null; }
     if (!r.ok) { return null; }
     return r.json();
@@ -2748,6 +3016,14 @@ function refreshWorkers() {
         ' · ' + w.tasksDone + ' task(s)' +
         (w.lastTps ? (' · last ' + w.lastTps + ' tok/s · ttft ' + ((w.lastTtftMs || 0) / 1000).toFixed(2) + ' s') : '');
       row.appendChild(md);
+      var tp = telemetryLine(w);
+      if (tp) {
+        var tl = document.createElement('span');
+        tl.className = 'fmeta';
+        tl.textContent = tp;
+        tl.title = 'Reported by the worker page itself. Browsers expose no temperature sensor — pressure is the CPU pressure state (nominal/fair/serious/critical); RAM is the browser estimate (capped at 8 GB); disk is the storage quota (~free disk); downlink/rtt are browser network estimates.';
+        row.appendChild(tl);
+      }
       var rt = document.createElement('button');
       rt.className = 'ghost';
       rt.textContent = (routed === w.id) ? 'Selected ✓' : 'Select for chat';
@@ -2928,6 +3204,9 @@ el('input').addEventListener('keydown', function (e) {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
 });
 el('token').value = S.token;
+measureCpu();
+initPressure();
+collectTelemetryDeep().catch(function () {});
 if (PAGE === 'console') {
   add('sys', 'Hello from Karen — connected to $ip:$port. ${models.size} installed model(s). Paste the token from Settings → Local Server, then pick a model — .gguf files found on disk can run too (expand the On-device model files panel below). Runner → Auto hands prompts to a laptop/desktop working as a slave node — open the worker page ($workerUrl) on that device; it joins automatically once the token is saved.');
 }

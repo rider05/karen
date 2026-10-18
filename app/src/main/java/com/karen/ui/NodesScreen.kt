@@ -1,8 +1,17 @@
 package com.karen.ui
 
+import android.app.ActivityManager
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
+import android.os.BatteryManager
 import android.os.Build
+import android.os.Environment
+import android.os.PowerManager
+import android.os.StatFs
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -105,7 +114,8 @@ fun NodesScreen(onNavigateToHome: () -> Unit = {}) {
                 MasterPanel(
                     workersOnline = workersOnline,
                     workersTotal = workers.size,
-                    nodesTotal = nodes.size
+                    nodesTotal = nodes.size,
+                    now = now
                 )
             }
 
@@ -219,9 +229,12 @@ fun NodesScreen(onNavigateToHome: () -> Unit = {}) {
  * Tapping an address copies it.
  */
 @Composable
-private fun MasterPanel(workersOnline: Int, workersTotal: Int, nodesTotal: Int) {
+private fun MasterPanel(workersOnline: Int, workersTotal: Int, nodesTotal: Int, now: Long) {
     val colors = LocalKarenColors.current
     val context = LocalContext.current
+    // Real device readings — unlike browser workers, the phone can read its own
+    // battery temperature and thermal status, actual RAM and storage.
+    val tel = remember(now) { readPhoneTelemetry(context) }
     val running = LocalApiServer.running
     val lanUrl = LocalApiServer.lanUrl(context)
     val localUrl = "http://127.0.0.1:${UserPrefs.serverPort(context)}"
@@ -281,6 +294,22 @@ private fun MasterPanel(workersOnline: Int, workersTotal: Int, nodesTotal: Int) 
         }
 
         Spacer(Modifier.height(12.dp))
+        KHairline()
+        Spacer(Modifier.height(10.dp))
+
+        val heatColor = when (tel.thermal) {
+            "light" -> colors.accentBlue
+            "moderate" -> colors.accentAmber
+            "severe", "critical", "emergency", "shutdown" -> colors.accentRed
+            else -> colors.textSecondary
+        }
+        KTelemetryRow("CPU", tel.cpu, valueColor = colors.textSecondary)
+        KTelemetryRow("RAM", tel.ram, valueColor = colors.textSecondary)
+        KTelemetryRow("Storage", tel.storage, valueColor = colors.textSecondary)
+        KTelemetryRow("Heat", tel.heat, valueColor = heatColor)
+        KTelemetryRow("Network", tel.network, valueColor = colors.textSecondary)
+
+        Spacer(Modifier.height(10.dp))
         KHairline()
         Spacer(Modifier.height(8.dp))
 
@@ -380,7 +409,10 @@ private fun WorkerPanel(
         )
         KTelemetryRow(
             "GPU",
-            node.gpu.ifBlank { if (node.webgpu) "WebGPU ready" else "not reported" },
+            buildString {
+                append(node.gpu.ifBlank { if (node.webgpu) "WebGPU ready" else "not reported" })
+                if (node.maxBufferMB > 0) append(" · buf ${node.maxBufferMB} MB")
+            },
             valueColor = if (hasGpu) colors.accentBlue else colors.textMuted
         )
         if (node.gflops > 0.0) {
@@ -390,6 +422,19 @@ private fun WorkerPanel(
                 valueColor = colors.accentBlue
             )
         }
+        // Machine telemetry the worker page measured about itself. Browser
+        // estimates: RAM is deviceMemory (capped at 8 GB), disk is the storage
+        // quota, heat is the CPU pressure state (no °C API exists in browsers).
+        val cpuText = nodeCpuText(node)
+        val ramText = nodeRamText(node)
+        val heatText = nodeHeatText(node)
+        val diskText = nodeDiskText(node)
+        val netText = nodeNetText(node)
+        if (cpuText != null) KTelemetryRow("CPU", cpuText, valueColor = colors.textSecondary)
+        if (ramText != null) KTelemetryRow("RAM", ramText, valueColor = colors.textSecondary)
+        if (heatText != null) KTelemetryRow("Heat", heatText, valueColor = pressureColor(node.pressure, colors))
+        if (diskText != null) KTelemetryRow("Disk", diskText, valueColor = colors.textSecondary)
+        if (netText != null) KTelemetryRow("Network", netText, valueColor = colors.textSecondary)
         KTelemetryRow("Requests", "${node.requests}", valueColor = colors.textSecondary)
         KTelemetryRow(
             "Last seen",
@@ -460,10 +505,21 @@ private fun DevicePanel(node: NodeInfo, now: Long, onForget: () -> Unit) {
                     if (node.gflops > 0.0) {
                         append(String.format(Locale.US, " · %.0f GFLOPS", node.gflops))
                     }
+                    if (node.maxBufferMB > 0) append(" · buf ${node.maxBufferMB} MB")
                 },
                 valueColor = colors.accentBlue
             )
         }
+        val cpuText = nodeCpuText(node)
+        val ramText = nodeRamText(node)
+        val heatText = nodeHeatText(node)
+        val diskText = nodeDiskText(node)
+        val netText = nodeNetText(node)
+        if (cpuText != null) KTelemetryRow("CPU", cpuText, valueColor = colors.textSecondary)
+        if (ramText != null) KTelemetryRow("RAM", ramText, valueColor = colors.textSecondary)
+        if (heatText != null) KTelemetryRow("Heat", heatText, valueColor = pressureColor(node.pressure, colors))
+        if (diskText != null) KTelemetryRow("Disk", diskText, valueColor = colors.textSecondary)
+        if (netText != null) KTelemetryRow("Network", netText, valueColor = colors.textSecondary)
         KTelemetryRow("Requests", "${node.requests}", valueColor = colors.textSecondary)
         KTelemetryRow(
             "Last seen",
@@ -508,7 +564,10 @@ private fun FooterNote() {
     Text(
         "Names come from each device or its network host name. A slave node runs prompts on its own GPU — " +
             "Cancel task stops its current prompt, Disconnect stops the node for good. It shows offline " +
-            "after 75 s without a call.",
+            "after 75 s without a call. CPU, RAM, disk and network are reported by each device itself: " +
+            "browsers expose no temperature sensor, so a slave node's heat shows as its CPU pressure state, " +
+            "while this phone's card shows the real battery °C and thermal status. RAM is the browser's own " +
+            "estimate (capped at 8 GB), disk is the storage quota (~free space).",
         color = LocalKarenColors.current.textMuted,
         fontSize = 11.sp,
         lineHeight = 15.sp,
@@ -614,4 +673,152 @@ private fun relTime(deltaMs: Long): String = when {
     deltaMs < 3_600_000 -> "${deltaMs / 60_000}m ago"
     deltaMs < 86_400_000 -> "${deltaMs / 3_600_000}h ago"
     else -> "${deltaMs / 86_400_000}d ago"
+}
+
+// ---- telemetry formatting (worker/device nodes) ---------------------------
+
+/** "16 threads · x86 64-bit · score 512" — null when nothing was reported. */
+private fun nodeCpuText(n: NodeInfo): String? {
+    val parts = mutableListOf<String>()
+    if (n.cpuCores > 0) parts.add("${n.cpuCores} threads")
+    if (n.cpuArch.isNotBlank()) parts.add(n.cpuArch)
+    if (n.jsScore > 0.0) parts.add(String.format(Locale.US, "score %.0f", n.jsScore))
+    return parts.takeIf { it.isNotEmpty() }?.joinToString(" · ")
+}
+
+private fun nodeRamText(n: NodeInfo): String? =
+    if (n.memGB > 0.0) String.format(Locale.US, "≈%.0f GB (browser estimate)", n.memGB) else null
+
+/**
+ * Browsers expose no temperature sensor. The Compute Pressure API state is the
+ * closest real heat/load signal for a slave node; the phone card shows the
+ * actual °C.
+ */
+private fun nodeHeatText(n: NodeInfo): String? =
+    if (n.pressure.isNotBlank()) "CPU pressure ${n.pressure} — no °C in browsers" else null
+
+/** Storage estimate ≈ free disk (Chrome quota ≈ 60% of remaining space). */
+private fun nodeDiskText(n: NodeInfo): String? {
+    if (n.quotaGB <= 0.0) return null
+    var text = String.format(Locale.US, "≈%.1f GB free (quota)", n.quotaGB)
+    if (n.usageGB > 0.0) text += String.format(Locale.US, " · %.2f used", n.usageGB)
+    return text
+}
+
+private fun nodeNetText(n: NodeInfo): String? {
+    val parts = mutableListOf<String>()
+    if (n.netType.isNotBlank()) parts.add(n.netType)
+    if (n.downlinkMbps > 0.0) parts.add(String.format(Locale.US, "↓%.0f Mbps", n.downlinkMbps))
+    if (n.netRttMs > 0) parts.add("rtt ${n.netRttMs} ms")
+    return parts.takeIf { it.isNotEmpty() }?.joinToString(" · ")
+}
+
+private fun pressureColor(pressure: String, colors: KarenColors): Color = when (pressure.lowercase(Locale.US)) {
+    "nominal" -> colors.accentGreen
+    "fair" -> colors.accentBlue
+    "serious" -> colors.accentAmber
+    "critical" -> colors.accentRed
+    else -> colors.textSecondary
+}
+
+// ---- telemetry of the phone itself (the master) ----------------------------
+
+/** Ready-to-show readings from this device — real sensors, not estimates. */
+private data class PhoneTel(
+    val cpu: String,
+    val ram: String,
+    val storage: String,
+    val heat: String,
+    val thermal: String,
+    val network: String
+)
+
+private fun readPhoneTelemetry(context: Context): PhoneTel {
+    val cores = Runtime.getRuntime().availableProcessors()
+    val soc = if (Build.VERSION.SDK_INT >= 31) Build.SOC_MODEL.ifBlank { Build.HARDWARE } else Build.HARDWARE
+    val cpu = buildString {
+        append("$cores cores")
+        if (soc.isNotBlank() && !soc.equals("unknown", ignoreCase = true)) {
+            append(" · ").append(soc.replace('_', ' '))
+        }
+    }
+
+    var ram = "not reported"
+    try {
+        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        val mi = ActivityManager.MemoryInfo()
+        am.getMemoryInfo(mi)
+        ram = String.format(
+            Locale.US, "%.1f / %.1f GB used",
+            (mi.totalMem - mi.availMem) / 1073741824.0, mi.totalMem / 1073741824.0
+        )
+    } catch (_: Exception) {
+    }
+
+    var storage = "not reported"
+    try {
+        val st = StatFs(Environment.getDataDirectory().path)
+        storage = String.format(
+            Locale.US, "%.0f / %.0f GB free",
+            st.availableBytes / 1073741824.0, st.totalBytes / 1073741824.0
+        )
+    } catch (_: Exception) {
+    }
+
+    var tempC = 0.0
+    try {
+        // Sticky broadcast — no receiver registered, no permission needed.
+        val battery = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        val tenths = battery?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) ?: 0
+        if (tenths > 0) tempC = tenths / 10.0
+    } catch (_: Exception) {
+    }
+
+    var thermal = ""
+    if (Build.VERSION.SDK_INT >= 29) {
+        try {
+            val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+            thermal = when (pm.currentThermalStatus) {
+                PowerManager.THERMAL_STATUS_NONE -> "nominal"
+                PowerManager.THERMAL_STATUS_LIGHT -> "light"
+                PowerManager.THERMAL_STATUS_MODERATE -> "moderate"
+                PowerManager.THERMAL_STATUS_SEVERE -> "severe"
+                PowerManager.THERMAL_STATUS_CRITICAL -> "critical"
+                PowerManager.THERMAL_STATUS_EMERGENCY -> "emergency"
+                PowerManager.THERMAL_STATUS_SHUTDOWN -> "shutdown"
+                else -> ""
+            }
+        } catch (_: Exception) {
+        }
+    }
+    val heat = buildString {
+        if (tempC > 0.0) append(String.format(Locale.US, "%.1f °C battery", tempC))
+        if (thermal.isNotBlank()) {
+            if (isNotEmpty()) append(" · ")
+            append("thermal ").append(thermal)
+        }
+        if (isEmpty()) append("not reported")
+    }
+
+    var network = "not reported"
+    try {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val active = cm.activeNetwork
+        val caps = active?.let { cm.getNetworkCapabilities(it) }
+        if (caps != null) {
+            val kind = when {
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "Wi-Fi"
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "Cellular"
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "Ethernet"
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) -> "VPN"
+                else -> "network"
+            }
+            val down = caps.linkDownstreamBandwidthKbps / 1000
+            val up = caps.linkUpstreamBandwidthKbps / 1000
+            network = if (down > 0 || up > 0) "$kind · ↓$down / ↑$up Mbps" else kind
+        }
+    } catch (_: Exception) {
+    }
+
+    return PhoneTel(cpu = cpu, ram = ram, storage = storage, heat = heat, thermal = thermal, network = network)
 }

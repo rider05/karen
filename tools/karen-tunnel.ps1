@@ -12,6 +12,12 @@
     powershell -ExecutionPolicy Bypass -File tools\karen-tunnel.ps1 -Phone 192.168.1.7
     then open  http://127.0.0.1:11434  on this PC.
 
+  Port note:
+    If 11434 is already taken on this PC (Ollama defaults to it), the script
+    stops with an error. Pick a free listen port and open that one instead:
+    powershell -ExecutionPolicy Bypass -File tools\karen-tunnel.ps1 -Phone 192.168.1.7 -Listen 11500
+    then open  http://127.0.0.1:11500
+
   Notes:
     - Keep this window open while using the dashboard / worker mode.
     - The phone must be reachable (same Wi-Fi; Karen -> Settings -> Local Server
@@ -28,7 +34,8 @@ $ErrorActionPreference = 'Continue'
 $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Listen)
 try { $listener.Start() } catch {
   Write-Host "Could not listen on 127.0.0.1:$Listen - $($_.Exception.Message)"
-  Write-Host "If another Karen tunnel is already running, keep that one (or close it and retry)."
+  Write-Host "Another program may own port $Listen (Ollama uses 11434 by default)."
+  Write-Host "Rerun with a free port, e.g.:  -Listen 11500   then open http://127.0.0.1:11500"
   exit 1
 }
 Write-Host ("Karen tunnel: http://127.0.0.1:{0}  ->  {1}:{2}   (Ctrl+C to stop)" -f $Listen, $Phone, $Port)

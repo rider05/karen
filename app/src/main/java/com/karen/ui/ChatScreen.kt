@@ -82,8 +82,14 @@ sealed class ChatItem {
         val codeJson: String? = null,
         /** How long this reply took to generate, ms. 0 = unknown/not finished. */
         val tookMs: Long = 0L,
-        /** Approx. reply tokens (chars/4). 0 = unknown/not finished. */
+        /** Output tokens: provider-reported when [usageReal], else ≈chars/4. 0 = unknown. */
         val tokens: Int = 0,
+        /** Input tokens for the turn: provider-reported or ≈prompt chars/4. 0 = unknown. */
+        val inTokens: Int = 0,
+        /** Reasoning/thinking tokens: provider-reported or ≈think-block chars/4. */
+        val reasonTokens: Int = 0,
+        /** True when the token counts came from provider usage, not estimates. */
+        val usageReal: Boolean = false,
         /** True when this reply was cut short by Stop. */
         val interrupted: Boolean = false,
         /** Model that wrote this reply (manual pick or Auto route). */
@@ -529,7 +535,10 @@ fun ChatScreen(
         val i = messages.indexOfFirst { (it as? ChatItem.Assistant)?.id == id }
         if (i >= 0) {
             (messages[i] as? ChatItem.Assistant)?.let {
-                messages[i] = it.copy(tookMs = elapsed, tokens = tokens ?: it.text.length / 4)
+                // Provider-reported output tokens win over the chars/4 estimate.
+                val approx = tokens ?: it.text.length / 4
+                val out = if (it.usageReal && it.tokens > 0) it.tokens else approx
+                messages[i] = it.copy(tookMs = elapsed, tokens = out)
             }
         }
     }
@@ -847,6 +856,11 @@ fun ChatScreen(
             // SSE deltas land in the bubble live, so the answer is visible
             // while it generates instead of after the whole wait.
             val fullReply = StringBuilder()
+            // Provider token usage for this turn (0 = not reported).
+            var turnIn = 0
+            var turnOut = 0
+            var turnReason = 0
+            var turnReal = false
             val live = StringBuilder()
             var lastUiMs = 0L
             fun liveView(): String {
@@ -901,6 +915,14 @@ fun ChatScreen(
                     }
                 }
                 if (cancelGeneration) break
+                res.usage?.let { u ->
+                    if (u.any) {
+                        turnReal = true
+                        turnIn += u.input
+                        turnOut += u.output
+                        turnReason += u.reasoning
+                    }
+                }
                 fullReply.append(res.text)
                 cut = res.truncated && res.text.isNotBlank()
                 rounds++
@@ -912,6 +934,19 @@ fun ChatScreen(
             if (cancelGeneration) {
                 cancelSettle(aid)
                 return
+            }
+            // Token usage for the Usage-stats dialog: provider-reported when
+            // available, otherwise estimates from prompt/reply text length.
+            run {
+                val ui = messages.indexOfFirst { (it as? ChatItem.Assistant)?.id == aid }
+                if (ui >= 0) (messages[ui] as? ChatItem.Assistant)?.let {
+                    messages[ui] = it.copy(
+                        inTokens = if (turnIn > 0) turnIn else styled.sumOf { m -> m.second.length } / 4,
+                        reasonTokens = if (turnReason > 0) turnReason else (splitThinkBlock(reply).first?.length ?: 0) / 4,
+                        usageReal = turnReal,
+                        tokens = if (turnReal && turnOut > 0) turnOut else it.tokens
+                    )
+                }
             }
             // Realtime tools: validate + run ///TOOL calls before showing.
             val settled = settleTools(aid, reply)
@@ -1213,7 +1248,7 @@ fun ChatScreen(
                     }
                 }
             } else {
-                // Simulate Karen on-device response (token streaming)
+                // No provider available — explain how to connect one.
                 val fileNote = if (sentAttachments.isNotEmpty()) {
                     val names = sentAttachments.joinToString(", ") { it.name }
                     " I received ${sentAttachments.size} file(s): $names. Files are stored locally in the vault — 0 bytes sent externally."
@@ -1222,7 +1257,7 @@ fun ChatScreen(
                 val fullText = if (web != null) {
                     "Fresh web results:\n$web"
                 } else {
-                    "No data found — connect a local model in Model Manager.$fileNote$regenNote"
+                    "No model is connected yet — pick a cloud provider in the model sheet, or download a local GGUF in Model Manager → Catalog.$fileNote$regenNote"
                 }
                 kotlinx.coroutines.delay(400)
                 if (cancelGeneration) {
@@ -2426,7 +2461,11 @@ fun ChatScreen(
         if (showUsage) {
             val users = messages.filterIsInstance<ChatItem.User>()
             val replies = messages.filterIsInstance<ChatItem.Assistant>().filter { it.text.isNotBlank() }
-            val tokens = replies.sumOf { it.tokens }
+            val inTokens = replies.sumOf { it.inTokens }
+            val outTokens = replies.sumOf { it.tokens }
+            val reasonTokens = replies.sumOf { it.reasonTokens }
+            val approx = replies.any { it.tokens > 0 && !it.usageReal }
+            val pre = if (approx) "≈" else ""
             val modelCounts = replies.filter { it.model.isNotBlank() }
                 .groupingBy { it.model }.eachCount()
             var switches = 0
@@ -2448,7 +2487,17 @@ fun ChatScreen(
                         KV("Started", started)
                         KV("Requests", users.size.toString())
                         KV("Responses", replies.size.toString())
-                        KV("Tokens used", "≈$tokens tok")
+                        KV("Input tokens", "$pre$inTokens tok")
+                        KV("Output tokens", "$pre$outTokens tok")
+                        KV("Reasoning tokens", "$pre$reasonTokens tok")
+                        if (approx) {
+                            Text(
+                                "≈ estimated from text length where the provider didn't report usage",
+                                color = colors.textMuted,
+                                fontSize = 10.5.sp,
+                                lineHeight = 14.sp
+                            )
+                        }
                         KV("Model switches", switches.toString())
                         KV("Queued", queue.size.toString())
                         if (modelCounts.isNotEmpty()) {

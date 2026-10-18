@@ -33,10 +33,25 @@ fun intentReason(intent: TaskIntent): String = when (intent) {
     TaskIntent.SIMPLE -> "quick chat"
 }
 
+/** Bundle + remote catalog entry for a display name (if known). */
+fun catalogEntryFor(name: String): CatalogModel? {
+    val catalog = ModelDownloader.catalogModels()
+    catalog.find { it.name == name }?.let { return it }
+    // Hugging Face pulls register under the file's base name — match that too.
+    return catalog.find { it.fileName.substringBeforeLast('.').equals(name, ignoreCase = true) }
+}
+
+/** Params in billions: catalog value, else read from the name (…-27B-…). */
+fun paramsOf(name: String): Float {
+    catalogEntryFor(name)?.paramsB?.takeIf { it > 0f }?.let { return it }
+    val m = Regex("(?i)(\\d+(?:\\.\\d+)?)b").find(name)
+    return m?.groupValues?.get(1)?.toFloatOrNull() ?: 1f
+}
+
 /** Higher wins. Quick chats prefer the smallest (fast, cool) model. */
 fun scoreLocal(name: String, intent: TaskIntent): Double {
-    val e = modelCatalog.find { it.name == name }
-    val size = (e?.paramsB ?: 1f).toDouble()
+    val e = catalogEntryFor(name)
+    val size = paramsOf(name).toDouble()
     return when (intent) {
         TaskIntent.SIMPLE -> -size
         TaskIntent.LONG -> size
@@ -123,7 +138,7 @@ fun scoreCloud(providerId: String, intent: TaskIntent): Int = when (intent) {
 /** True for thinking models: reasoning cloud providers or reasoning catalog weights. */
 fun isReasoningModel(name: String): Boolean {
     if (findCloudProviderByName(name)?.reasoning == true) return true
-    return modelCatalog.any { it.name == name && it.reasoning }
+    return catalogEntryFor(name)?.reasoning == true
 }
 
 /** System-prompt nudge so effort levels steer local thinkers, not just caps. */
@@ -142,12 +157,11 @@ fun isSelectableModel(ctx: Context, name: String): Boolean {
     if (isCloudProviderName(name, customs)) {
         return findCloudProviderByName(name, customs)?.let { UserPrefs.apiKey(ctx, it.id).isNotBlank() } ?: false
     }
-    return name in UserPrefs.models(ctx) || modelCatalog.any { it.name == name }
+    return name in UserPrefs.models(ctx) || catalogEntryFor(name) != null
 }
 
 /** True for embedding-only weights: downloaded, but never chat-routed. */
-fun isEmbeddingModel(name: String): Boolean =
-    modelCatalog.any { it.name == name && it.embedding }
+fun isEmbeddingModel(name: String): Boolean = catalogEntryFor(name)?.embedding == true
 
 /**
  * Returns the best model for [prompt], or null when nothing usable is
@@ -172,7 +186,7 @@ fun routeModel(
         scoreLocal(it, intent) + if (it == preferredLocal) 0.5 else 0.0
     }
     val bestLocalSize = bestLocal
-        ?.let { name -> modelCatalog.find { it.name == name }?.paramsB ?: 1f }
+        ?.let { name -> paramsOf(name) }
         ?: 0f
     if (!allowCloud || keyedClouds.isEmpty()) {
         return bestLocal?.let { RouteDecision(it, reason) }

@@ -42,6 +42,11 @@ val modelCatalog = listOf(
         paramsB = 0.5f
     ),
     CatalogModel(
+        "Underdog Saluki 27B · IQ2", "Underdog-Saluki-27B-1.0-IQ2-mix.gguf", "≈7.9 GB", "IQ2-mix", "10 GB",
+        "https://huggingface.co/ConwayResearch/Underdog-Saluki-27B-1.0/resolve/main/Underdog-Saluki-27B-1.0-IQ2-mix.gguf",
+        paramsB = 27f, reasoning = true
+    ),
+    CatalogModel(
         "Qwen 3.5 2B", "Qwen3.5-2B-IQ4_XS.gguf", "≈1.1 GB", "IQ4_XS", "2.0 GB",
         "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-IQ4_XS.gguf",
         paramsB = 2f, code = true
@@ -185,6 +190,13 @@ object ModelDownloader {
         else -> "GGUF"
     }
 
+    /** Best-effort quant tag read from a file name (Q4_K_M, IQ2_XS, BF16…). */
+    fun quantOf(fileName: String): String {
+        val stem = fileName.substringBeforeLast('.')
+        val m = Regex("(?i)(iq\\d[\\w]*|q\\d[\\w]*|bf16|f16|fp16)").find(stem)
+        return m?.value?.uppercase() ?: "GGUF"
+    }
+
     /** True when the installed weight can actually run (llama.cpp = GGUF only). */
     fun isRunnableWeight(ctx: Context, displayName: String): Boolean {
         if (isCloudProviderName(displayName)) return false
@@ -193,6 +205,149 @@ object ModelDownloader {
     }
 
     fun modelFile(ctx: Context, fileName: String): File = File(modelsDir(ctx), fileName)
+
+    // ---- Hugging Face repo resolution ----
+    //
+    // "Download via URL" accepts a Hugging Face repo id (`org/name`) besides a
+    // direct file URL. The repo id is resolved against the public HF API, the
+    // GGUF files it contains are listed (vision projectors skipped), and the
+    // picked file lands in models/ like any catalog download — so it shows up
+    // in the model manager and the picker with no extra step.
+
+    /** Direct file URL, HF repo id, or something we cannot use. */
+    data class ModelInput(val kind: Kind, val value: String = "", val revision: String = "main") {
+        enum class Kind { DIRECT_URL, HF_REPO, INVALID }
+    }
+
+    /**
+     * Interprets the dialog text: trims quotes, strips a huggingface.co host,
+     * turns /blob/ file pages into their /resolve/ download URL, and reads
+     * `org/name/tree/<rev>` style links. Everything else with a scheme stays
+     * a direct URL.
+     */
+    fun parseModelInput(raw: String): ModelInput {
+        var s = raw.trim().trim('"', '\'')
+        if (s.isEmpty()) return ModelInput(ModelInput.Kind.INVALID)
+        val lower = s.lowercase()
+        val hfHosts = listOf(
+            "https://huggingface.co/", "http://huggingface.co/",
+            "https://hf.co/", "http://hf.co/",
+            "huggingface.co/", "hf.co/"
+        )
+        val host = hfHosts.firstOrNull { lower.startsWith(it) }
+        if (host != null) s = s.substring(host.length)
+        s = s.substringBefore('?').substringBefore('#').trimEnd('/')
+        if (s.isEmpty()) return ModelInput(ModelInput.Kind.INVALID)
+        if (s.contains("/blob/")) {
+            val repo = s.substringBefore("/blob/")
+            val rest = s.substringAfter("/blob/")
+            val rev = rest.substringBefore('/').ifBlank { "main" }
+            val file = rest.substringAfter('/', "")
+            if (file.isBlank()) return ModelInput(ModelInput.Kind.INVALID)
+            return ModelInput(ModelInput.Kind.DIRECT_URL, "https://huggingface.co/$repo/resolve/$rev/$file")
+        }
+        if (s.contains("/resolve/")) {
+            return ModelInput(ModelInput.Kind.DIRECT_URL, "https://huggingface.co/$s")
+        }
+        if (s.startsWith("http://") || s.startsWith("https://")) {
+            return ModelInput(ModelInput.Kind.DIRECT_URL, s)
+        }
+        val segs = s.trim('/').split('/')
+        if (segs.size < 2) return ModelInput(ModelInput.Kind.INVALID)
+        val repo = segs[0] + "/" + segs[1]
+        if (!Regex("^[A-Za-z0-9][\\w.-]*/[A-Za-z0-9][\\w.-]*$").matches(repo)) {
+            return ModelInput(ModelInput.Kind.INVALID)
+        }
+        val rev = if (segs.size >= 4 && segs[2] == "tree") segs[3].ifBlank { "main" } else "main"
+        return ModelInput(ModelInput.Kind.HF_REPO, repo, rev)
+    }
+
+    /** One downloadable GGUF inside a Hugging Face repo. */
+    data class HfFile(val path: String, val sizeBytes: Long, val url: String) {
+        val name: String get() = path.substringAfterLast('/')
+        /** Name shown in the model manager and used as the installed-model key. */
+        val displayName: String get() = name.removeSuffix(".gguf").ifBlank { name }
+        val sizeLabel: String
+            get() = if (sizeBytes > 0) "≈%.2f GB".format(sizeBytes / 1073741824.0) else "size unknown"
+    }
+
+    sealed interface HfResolveResult {
+        data class Ok(val repoId: String, val revision: String, val files: List<HfFile>) : HfResolveResult
+        data class Failed(val message: String) : HfResolveResult
+    }
+
+    /**
+     * Lists the GGUF files of a HF repo (public API, no token — anonymous rate
+     * limits apply). Gated/private repos answer 401/403 and say so honestly.
+     */
+    suspend fun resolveHuggingFace(repoId: String, revision: String = "main"): HfResolveResult =
+        withContext(Dispatchers.IO) {
+            try {
+                val rev = revision.ifBlank { "main" }
+                val api = if (rev == "main") {
+                    "https://huggingface.co/api/models/$repoId?blobs=true"
+                } else {
+                    "https://huggingface.co/api/models/$repoId/revision/$rev?blobs=true"
+                }
+                val conn = (java.net.URL(api).openConnection() as java.net.HttpURLConnection).apply {
+                    requestMethod = "GET"
+                    setRequestProperty("User-Agent", "Karen-Android")
+                    setRequestProperty("Accept", "application/json")
+                    connectTimeout = 12000
+                    readTimeout = 20000
+                }
+                val code = conn.responseCode
+                val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+                val text = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+                conn.disconnect()
+                when (code) {
+                    401, 403 -> return@withContext HfResolveResult.Failed("repo is gated or private — a HF login token is required")
+                    404 -> return@withContext HfResolveResult.Failed("repo not found on huggingface.co")
+                }
+                if (code !in 200..299) return@withContext HfResolveResult.Failed("Hugging Face HTTP $code")
+                val root = try {
+                    JSONObject(text)
+                } catch (_: Exception) {
+                    return@withContext HfResolveResult.Failed("unreadable reply from huggingface.co")
+                }
+                val siblings = root.optJSONArray("siblings")
+                    ?: return@withContext HfResolveResult.Failed("repo listed no files")
+                val files = mutableListOf<HfFile>()
+                var skippedProjectors = 0
+                for (i in 0 until siblings.length()) {
+                    val o = siblings.optJSONObject(i) ?: continue
+                    val path = o.optString("rfilename", "").trim()
+                    if (path.isEmpty() || !path.lowercase().endsWith(".gguf")) continue
+                    val base = path.substringAfterLast('/').lowercase()
+                    if (base.contains("mmproj")) {
+                        skippedProjectors++
+                        continue
+                    }
+                    val size = o.optJSONObject("lfs")?.optLong("size", 0L) ?: o.optLong("size", 0L)
+                    files.add(
+                        HfFile(
+                            path = path,
+                            sizeBytes = size,
+                            url = "https://huggingface.co/$repoId/resolve/$rev/$path"
+                        )
+                    )
+                }
+                // Smallest first: fastest to fetch, easiest to try.
+                files.sortBy { if (it.sizeBytes > 0) it.sizeBytes else Long.MAX_VALUE }
+                if (files.isEmpty()) {
+                    return@withContext HfResolveResult.Failed(
+                        if (skippedProjectors > 0) {
+                            "only vision projector (mmproj) GGUFs here — those cannot chat alone"
+                        } else {
+                            "no .gguf files in this repo — Karen runs GGUF weights only"
+                        }
+                    )
+                }
+                HfResolveResult.Ok(repoId, rev, files.take(20))
+            } catch (e: Exception) {
+                HfResolveResult.Failed("lookup failed (${e.message ?: "network error"})")
+            }
+        }
 
     // ---- Voice models (whistle.cact, sherpa-onnx files) ----
     // Separate slot + registry so voice downloads never pollute chat weights.

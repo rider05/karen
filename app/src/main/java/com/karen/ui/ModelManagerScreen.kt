@@ -95,13 +95,29 @@ fun ModelManagerScreen(
 
     val ctx = androidx.compose.ui.platform.LocalContext.current
     val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
+
+    /** Real size/quant/RAM info for an installed weight (no fake values). */
+    fun describeInstalled(name: String): GgufModel {
+        val file = ModelDownloader.weightFileFor(ctx, name)
+        val bytes = file?.length() ?: 0L
+        val sizeLabel = when {
+            bytes >= 1073741824L -> "%.2f GB".format(bytes / 1073741824.0)
+            bytes >= 1048576L -> "%.1f MB".format(bytes / 1048576.0)
+            bytes > 0 -> "${bytes / 1024} KB"
+            else -> "file missing"
+        }
+        val ramLabel = if (bytes > 0) "≈%.1f GB".format(bytes * 1.25 / 1073741824.0) else "-"
+        val quant = file?.name?.let { ModelDownloader.quantOf(it) } ?: ModelDownloader.quantOf(name)
+        return GgufModel(name, sizeLabel, ramLabel, "-", quant)
+    }
+
     val models = remember {
         mutableStateListOf<GgufModel>().apply {
             // Heal prefs: cloud names must never live in installed weights.
             val stored = UserPrefs.models(ctx)
             val cleaned = stored.filter { !isCloudProviderName(it) }
             if (cleaned.size != stored.size) UserPrefs.saveModels(ctx, cleaned)
-            cleaned.forEach { n -> add(GgufModel(n, "-", "-", "-", ModelDownloader.formatOf(n))) }
+            cleaned.forEach { n -> add(describeInstalled(n)) }
         }
     }
 
@@ -124,7 +140,7 @@ fun ModelManagerScreen(
     fun reloadModels() {
         models.clear()
         UserPrefs.models(ctx).filter { !isCloudProviderName(it) }
-            .forEach { n -> models.add(GgufModel(n, "-", "-", "-", ModelDownloader.formatOf(n))) }
+            .forEach { n -> models.add(describeInstalled(n)) }
         if (activeModel != null && models.none { it.name == activeModel?.name }) activeModel = null
     }
 
@@ -201,6 +217,20 @@ fun ModelManagerScreen(
     // Download catalog collapse: 3 cards by default.
     var catalogExpanded by remember { mutableStateOf(false) }
     var pendingDelete by remember { mutableStateOf<GgufModel?>(null) }
+    // URL / Hugging Face dialog state (reset every time the dialog opens).
+    var urlInput by remember { mutableStateOf("") }
+    var hfBusy by remember { mutableStateOf(false) }
+    var hfRepo by remember { mutableStateOf<String?>(null) }
+    var hfFiles by remember { mutableStateOf<List<ModelDownloader.HfFile>?>(null) }
+    var hfError by remember { mutableStateOf<String?>(null) }
+
+    fun resetUrlDialog() {
+        urlInput = ""
+        hfBusy = false
+        hfRepo = null
+        hfFiles = null
+        hfError = null
+    }
 
     // System back: dismiss dialogs first, otherwise route to Home.
     KarenHomeBackHandler(onNavigateToHome = onNavigateToHome) {
@@ -402,6 +432,33 @@ fun ModelManagerScreen(
         }
     }
 
+    /** Starts a download from a direct file URL (dialog "Find files" path). */
+    fun startDirectDownload(clean: String) {
+        val fileName = clean.substringAfterLast('/').substringBefore('?')
+        val isOnnx = fileName.lowercase().endsWith(".onnx")
+        val safeName = fileName.ifBlank { if (isOnnx) "remote.onnx" else "remote.gguf" }
+        val displayName = safeName.removeSuffix(".gguf").removeSuffix(".onnx").ifBlank { safeName }
+        when {
+            ModelDownloader.activeName != null ->
+                Toast.makeText(ctx, "One download at a time", Toast.LENGTH_SHORT).show()
+            isOnnx -> {
+                if (ModelDownloader.startVoiceUrl(ctx, displayName, safeName, clean)) {
+                    Toast.makeText(ctx, "Downloading $displayName (voice model)", Toast.LENGTH_SHORT).show()
+                    showUrlDialog = false
+                    resetUrlDialog()
+                } else {
+                    Toast.makeText(ctx, "Could not start download", Toast.LENGTH_SHORT).show()
+                }
+            }
+            ModelDownloader.start(ctx, displayName, safeName, clean) -> {
+                Toast.makeText(ctx, "Downloading $displayName", Toast.LENGTH_SHORT).show()
+                showUrlDialog = false
+                resetUrlDialog()
+            }
+            else -> Toast.makeText(ctx, "Could not start download", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -413,9 +470,13 @@ fun ModelManagerScreen(
             onBackClick = onNavigateToHome,
             moreActions = listOf(
                 Triple("Refresh lists", Icons.Default.Refresh) { refreshAll() },
-                Triple("Load model", Icons.Default.Upload) { android.widget.Toast.makeText(ctx, "Load model", android.widget.Toast.LENGTH_SHORT).show() },
-                Triple("Download model", Icons.Default.Download) { android.widget.Toast.makeText(ctx, "Download model", android.widget.Toast.LENGTH_SHORT).show() },
-                Triple("Delete model", Icons.Default.Delete) { android.widget.Toast.makeText(ctx, "Delete model", android.widget.Toast.LENGTH_SHORT).show() }
+                Triple("Import model", Icons.Default.Upload) { importModelLauncher.launch(arrayOf("*/*")) },
+                Triple("Download model", Icons.Default.Download) { resetUrlDialog(); showUrlDialog = true },
+                Triple("Delete model", Icons.Default.Delete) {
+                    val selected = activeModel
+                    if (selected != null) pendingDelete = selected
+                    else Toast.makeText(ctx, "Tap an installed weight first to select it", Toast.LENGTH_SHORT).show()
+                }
             )
         )
 
@@ -468,9 +529,12 @@ fun ModelManagerScreen(
                     ModelSourceRow(
                         icon = Icons.Default.Download,
                         tint = colors.accentBlue,
-                        title = "Download via URL",
-                        subtitle = "Pull weights from the open web",
-                        onClick = { showUrlDialog = true }
+                        title = "Download via URL or Hugging Face",
+                        subtitle = "Direct .gguf link, or a repo id like org/model-GGUF",
+                        onClick = {
+                            resetUrlDialog()
+                            showUrlDialog = true
+                        }
                     )
                     Spacer(Modifier.height(8.dp))
                     ModelSourceRow(
@@ -632,7 +696,14 @@ fun ModelManagerScreen(
                         .padding(16.dp)
                 ) {
                     if (activeModel == null) {
-                        Text("No data found", color = colors.textMuted, fontSize = 13.sp)
+                        Text("No model selected", color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            "Tap an installed weight below to inspect it. Downloads and imports land there automatically.",
+                            color = colors.textMuted,
+                            fontSize = 11.5.sp,
+                            lineHeight = 16.sp
+                        )
                     } else {
                         val active = activeModel!!
                         Row(
@@ -651,12 +722,12 @@ fun ModelManagerScreen(
                                     .background(colors.accentGreen.copy(alpha = 0.2f))
                                     .padding(horizontal = 8.dp, vertical = 2.dp)
                             ) {
-                                Text("ACTIVE IN RAM", color = colors.accentGreen, fontSize = 10.5.sp, fontWeight = FontWeight.Bold)
+                                Text("SELECTED", color = colors.accentGreen, fontSize = 10.5.sp, fontWeight = FontWeight.Bold)
                             }
                         }
                         Spacer(Modifier.height(8.dp))
                         Text(
-                            "File-backed GGUF runtime (${active.quant}) · RAM ${active.ramRequired} resident · ${device.cpuCores} threads · Vulkan / ARM NEON acceleration.",
+                            "File-backed GGUF runtime (${active.quant}) · needs about ${active.ramRequired} RAM to load · ${device.cpuCores} threads · Vulkan / ARM NEON acceleration.",
                             color = colors.textSecondary,
                             fontSize = 12.sp,
                             lineHeight = 17.sp
@@ -667,7 +738,7 @@ fun ModelManagerScreen(
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Text("Weight: ${active.size}", color = colors.textMuted, fontSize = 11.5.sp, fontFamily = FontFamily.Monospace)
-                            Text("Speed: ${active.throughput}", color = colors.accentGreen, fontSize = 11.5.sp, fontFamily = FontFamily.Monospace)
+                            Text("ctx ${windowLabel(UserPrefs.contextTokens(ctx))}", color = colors.accentGreen, fontSize = 11.5.sp, fontFamily = FontFamily.Monospace)
                         }
                     }
                 }
@@ -688,7 +759,13 @@ fun ModelManagerScreen(
                     val activeName = ModelDownloader.activeName
                     val importName = importingName
                     if (activeName == null && importName == null) {
-                        Text("No data found", color = colors.textMuted, fontSize = 12.sp)
+                        Text("Idle — nothing downloading", color = colors.textSecondary, fontSize = 12.5.sp)
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            "Catalog pulls and Hugging Face downloads show live progress here.",
+                            color = colors.textMuted,
+                            fontSize = 11.5.sp
+                        )
                     } else if (activeName != null) {
                         Text(activeName, color = colors.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
                         Spacer(Modifier.height(6.dp))
@@ -747,7 +824,14 @@ fun ModelManagerScreen(
             item {
                 Text("Installed Weights (${models.size})", color = colors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(6.dp))
-                if (models.isEmpty()) Text("No data found", color = colors.textMuted, fontSize = 12.sp)
+                if (models.isEmpty()) {
+                    Text(
+                        "No weights installed yet — import a .gguf above, or download one from the catalog below.",
+                        color = colors.textMuted,
+                        fontSize = 12.sp,
+                        lineHeight = 16.sp
+                    )
+                }
             }
 
             items(models) { m ->
@@ -774,7 +858,7 @@ fun ModelManagerScreen(
                             modifier = Modifier.weight(1f)
                         )
                         Text(
-                            if (isActive) "Active" else "Tap to Hot-Load",
+                            if (isActive) "Selected" else "Tap to select",
                             color = if (isActive) colors.accentGreen else colors.textMuted,
                             fontSize = 11.sp,
                             fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal
@@ -1116,51 +1200,160 @@ fun ModelManagerScreen(
             )
         }
 
-        // External URL download dialog
+        // External URL / Hugging Face download dialog. Direct .gguf/.onnx links
+        // start straight away; `org/name` repo ids are resolved through the
+        // public HF API so its GGUF files can be picked and pulled.
         if (showUrlDialog) {
-            var url by remember { mutableStateOf("") }
             AlertDialog(
                 onDismissRequest = { showUrlDialog = false },
+                containerColor = colors.surface,
+                titleContentColor = colors.textPrimary,
+                textContentColor = colors.textSecondary,
                 title = { Text("Download Model") },
                 text = {
-                    Column {
-                        Text("Paste a direct model URL (.gguf → weights, .onnx → voice models):", fontSize = 13.sp)
+                    Column(
+                        modifier = Modifier
+                            .heightIn(max = 480.dp)
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        Text(
+                            "Direct .gguf / .onnx file URL, or a Hugging Face repo id — Karen lists the repo's GGUF files for you.",
+                            fontSize = 13.sp
+                        )
                         Spacer(Modifier.height(8.dp))
                         OutlinedTextField(
-                            value = url,
-                            onValueChange = { url = it },
-                            placeholder = { Text("https://example.com/model.gguf") },
+                            value = urlInput,
+                            onValueChange = {
+                                urlInput = it.trim()
+                                hfFiles = null
+                                hfRepo = null
+                                hfError = null
+                            },
+                            placeholder = { Text("ConwayResearch/Underdog-Saluki-27B-1.0", fontSize = 12.sp) },
                             singleLine = true,
-                            colors = karenFieldColors(colors)
+                            textStyle = androidx.compose.ui.text.TextStyle(
+                                color = colors.textPrimary,
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 12.sp
+                            ),
+                            colors = karenFieldColors(colors),
+                            modifier = Modifier.fillMaxWidth()
                         )
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            "Examples: hf.co/unsloth/Qwen2.5-0.5B-Instruct-GGUF · https://example.com/model.gguf",
+                            color = colors.textMuted,
+                            fontSize = 10.5.sp,
+                            lineHeight = 14.sp
+                        )
+                        if (hfBusy) {
+                            Spacer(Modifier.height(10.dp))
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                CircularProgressIndicator(
+                                    color = colors.accentGreen,
+                                    strokeWidth = 2.dp,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text("Looking up files on huggingface.co…", color = colors.textSecondary, fontSize = 12.sp)
+                            }
+                        }
+                        if (hfError != null) {
+                            Spacer(Modifier.height(10.dp))
+                            Text(hfError!!, color = colors.accentAmber, fontSize = 12.sp)
+                        }
+                        val files = hfFiles
+                        if (files != null) {
+                            Spacer(Modifier.height(12.dp))
+                            Text(
+                                "${hfRepo ?: ""} · ${files.size} GGUF file${if (files.size == 1) "" else "s"}",
+                                color = colors.textMuted,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Spacer(Modifier.height(6.dp))
+                            files.forEach { f ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(bottom = 6.dp)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(colors.surfaceHover.copy(alpha = 0.6f))
+                                        .border(1.dp, colors.border.copy(alpha = 0.6f), RoundedCornerShape(10.dp))
+                                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text(
+                                            f.name,
+                                            color = colors.textPrimary,
+                                            fontSize = 12.5.sp,
+                                            fontFamily = FontFamily.Monospace
+                                        )
+                                        Text(f.sizeLabel, color = colors.textMuted, fontSize = 11.sp)
+                                    }
+                                    Spacer(Modifier.width(8.dp))
+                                    Button(
+                                        onClick = {
+                                            if (ModelDownloader.activeName != null) {
+                                                Toast.makeText(ctx, "One download at a time", Toast.LENGTH_SHORT).show()
+                                            } else if (ModelDownloader.start(ctx, f.displayName, f.name, f.url)) {
+                                                Toast.makeText(ctx, "Downloading ${f.displayName}", Toast.LENGTH_SHORT).show()
+                                                showUrlDialog = false
+                                                resetUrlDialog()
+                                            } else {
+                                                Toast.makeText(ctx, "Could not start download", Toast.LENGTH_SHORT).show()
+                                            }
+                                        },
+                                        colors = ButtonDefaults.buttonColors(containerColor = colors.accentGreen)
+                                    ) { Text("Download", fontSize = 12.sp) }
+                                }
+                            }
+                        }
                     }
                 },
                 confirmButton = {
-                    TextButton(onClick = {
-                        if (url.isNotBlank()) {
-                            val clean = url.trim()
-                            val fileName = clean.substringAfterLast('/').substringBefore('?')
-                            val isOnnx = fileName.lowercase().endsWith(".onnx")
-                            val safeName = fileName.ifBlank { if (isOnnx) "remote.onnx" else "remote.gguf" }
-                            val displayName = safeName.removeSuffix(".gguf").removeSuffix(".onnx").ifBlank { safeName }
-                            if (ModelDownloader.activeName != null) {
-                                android.widget.Toast.makeText(ctx, "One download at a time", android.widget.Toast.LENGTH_SHORT).show()
-                            } else if (isOnnx) {
-                                if (ModelDownloader.startVoiceUrl(ctx, displayName, safeName, clean)) {
-                                    android.widget.Toast.makeText(ctx, "Downloading $displayName (voice model)", android.widget.Toast.LENGTH_SHORT).show()
-                                } else {
-                                    android.widget.Toast.makeText(ctx, "Could not start download", android.widget.Toast.LENGTH_SHORT).show()
+                    if (hfFiles == null) {
+                        TextButton(
+                            onClick = {
+                                val parsed = ModelDownloader.parseModelInput(urlInput)
+                                when (parsed.kind) {
+                                    ModelDownloader.ModelInput.Kind.DIRECT_URL ->
+                                        startDirectDownload(parsed.value)
+                                    ModelDownloader.ModelInput.Kind.HF_REPO -> {
+                                        if (!hfBusy) {
+                                            hfBusy = true
+                                            hfError = null
+                                            managerScope.launch {
+                                                when (val res = ModelDownloader.resolveHuggingFace(parsed.value, parsed.revision)) {
+                                                    is ModelDownloader.HfResolveResult.Ok -> {
+                                                        hfRepo = res.repoId
+                                                        hfFiles = res.files
+                                                    }
+                                                    is ModelDownloader.HfResolveResult.Failed -> {
+                                                        hfError = res.message
+                                                    }
+                                                }
+                                                hfBusy = false
+                                            }
+                                        }
+                                    }
+                                    ModelDownloader.ModelInput.Kind.INVALID ->
+                                        hfError = "Not a link or repo id — enter org/name or a direct file URL"
                                 }
-                            } else if (ModelDownloader.start(ctx, displayName, safeName, clean)) {
-                                android.widget.Toast.makeText(ctx, "Downloading $displayName", android.widget.Toast.LENGTH_SHORT).show()
-                            } else {
-                                android.widget.Toast.makeText(ctx, "Could not start download", android.widget.Toast.LENGTH_SHORT).show()
                             }
-                        }
-                        showUrlDialog = false
-                    }) { Text("Download") }
+                        ) { Text(if (hfBusy) "Checking…" else "Find files") }
+                    } else {
+                        TextButton(onClick = { showUrlDialog = false }) { Text("Close") }
+                    }
                 },
-                dismissButton = { TextButton(onClick = { showUrlDialog = false }) { Text("Cancel") } }
+                dismissButton = {
+                    if (hfFiles != null) {
+                        TextButton(onClick = { resetUrlDialog() }) { Text("Back") }
+                    } else {
+                        TextButton(onClick = { showUrlDialog = false }) { Text("Cancel") }
+                    }
+                }
             )
         }
 

@@ -111,10 +111,11 @@ no promise that adding workers speeds up a single generation.
 ## 6. Networking & security
 
 - Everything rides the existing single port + bearer token. Two token-free pages:
-  `GET /` — the console dashboard (monitor slaves, pick runner/model, test chat)
-  and `GET /worker` (alias `/slave`) — the slave-node working page a device keeps
-  open to work (GPU status, join state, task status). All worker/chat APIs require
-  the token (pages paste it once; stored per address in `localStorage`).
+  `GET /` — the slave-node worker page a device just opens to start working (GPU
+  status, join state, task status; aliases `/worker` and `/slave`), and
+  `GET /dashboard` — the console dashboard (monitor slaves, pick runner/model,
+  test chat). All worker/chat APIs require the token (pages paste it once; stored
+  per address in `localStorage`).
 - **WebGPU needs a secure context.** Over plain `http://192.168.x.x` browsers
   hide `navigator.gpu` (verified; see audit §2.7). Ship `tools/karen-tunnel.ps1`
   (WORKING once tested): forwards `127.0.0.1:11434` → `phone:11434` on the

@@ -1208,7 +1208,7 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     if (storedProjects.isEmpty()) {
-                        Text("No data found", color = colors.textMuted, fontSize = 12.sp)
+                        Text("No projects yet — add one to map a folder to a named workspace.", color = colors.textMuted, fontSize = 12.sp)
                     } else {
                         storedProjects.forEach { (name, dir) ->
                             Row(
@@ -1270,7 +1270,7 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                                 fontWeight = FontWeight.Medium
                             )
                             Text(
-                                "OpenAI-compatible API for your own apps (chat + models) · dashboard at / and slave page at /worker on your Wi-Fi",
+                                "OpenAI-compatible API for your own apps (chat + models) · dashboard at /dashboard, worker page at / on your Wi-Fi",
                                 color = colors.textMuted,
                                 fontSize = 11.5.sp
                             )
@@ -1727,7 +1727,7 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                     Text("Karen · Sovereign on-device AI", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
                     Text(
                         when {
-                            UserPrefs.age(context) == "-" && UserPrefs.type(context) == "-" -> "No data found"
+                            UserPrefs.age(context) == "-" && UserPrefs.type(context) == "-" -> "No profile set yet — add your name and age above"
                             else -> "Profile: ${UserPrefs.type(context)}, age ${UserPrefs.age(context)}"
                         },
                         color = colors.textMuted,

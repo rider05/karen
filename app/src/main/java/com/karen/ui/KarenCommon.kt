@@ -22,6 +22,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.ImeAction
@@ -41,7 +42,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.karen.formatSize
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 // Legacy colors kept for backward compatibility, mapped to active theme
 val KBg get() = KarenThemeState.colors.background
@@ -1220,7 +1228,12 @@ fun CodeBlockView(
 ) {
     val colors = LocalKarenColors.current
     val clipboardManager = LocalClipboardManager.current
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var copied by remember { mutableStateOf(false) }
+    var saved by remember { mutableStateOf(false) }
+    var showPreview by remember { mutableStateOf(false) }
+    val isHtml = language.trim().lowercase() in setOf("html", "htm")
 
     Column(
         modifier = Modifier
@@ -1245,29 +1258,44 @@ fun CodeBlockView(
                 fontFamily = FontFamily.Monospace,
                 fontWeight = FontWeight.SemiBold
             )
-            Row(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(6.dp))
-                    .clickable {
-                        copied = true
-                        clipboardManager.setText(AnnotatedString(code))
-                        onCopy()
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (isHtml) {
+                    // Render the snippet as a live page (JavaScript enabled).
+                    HeaderAction(Icons.Default.Visibility, "Preview HTML", colors.accentBlue) { showPreview = true }
+                    Spacer(Modifier.width(4.dp))
+                }
+                HeaderAction(
+                    icon = if (saved) Icons.Default.CheckCircle else Icons.Default.Download,
+                    desc = if (saved) "Saved to Downloads" else "Download to Downloads",
+                    tint = if (saved) colors.accentGreen else colors.textMuted
+                ) {
+                    val name = snippetFileName(language)
+                    scope.launch {
+                        val ok = withContext(Dispatchers.IO) {
+                            saveTextToDownloads(context, name, snippetMime(language), code)
+                        }
+                        android.widget.Toast.makeText(
+                            context,
+                            if (ok) "Saved to Downloads/$name" else "Could not save the file",
+                            android.widget.Toast.LENGTH_SHORT
+                        ).show()
+                        if (ok) {
+                            saved = true
+                            delay(2000)
+                            saved = false
+                        }
                     }
-                    .padding(horizontal = 6.dp, vertical = 2.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(
-                    imageVector = if (copied) Icons.Default.CheckCircle else Icons.Default.ContentCopy,
-                    contentDescription = "Copy code",
-                    tint = if (copied) colors.accentGreen else colors.textMuted,
-                    modifier = Modifier.size(13.dp)
-                )
+                }
                 Spacer(Modifier.width(4.dp))
-                Text(
-                    text = if (copied) "Copied" else "Copy code",
-                    color = if (copied) colors.accentGreen else colors.textMuted,
-                    fontSize = 11.5.sp
-                )
+                HeaderAction(
+                    icon = if (copied) Icons.Default.CheckCircle else Icons.Default.ContentCopy,
+                    desc = if (copied) "Copied" else "Copy code",
+                    tint = if (copied) colors.accentGreen else colors.textMuted
+                ) {
+                    copied = true
+                    clipboardManager.setText(AnnotatedString(code))
+                    onCopy()
+                }
             }
         }
         // Code content
@@ -1278,6 +1306,194 @@ fun CodeBlockView(
             lineHeight = 18.sp,
             modifier = Modifier.padding(12.dp)
         )
+    }
+    if (showPreview) {
+        HtmlPreviewDialog(html = code, onClose = { showPreview = false })
+    }
+}
+
+/** Compact icon-only action used by [CodeBlockView]'s header. */
+@Composable
+private fun HeaderAction(
+    icon: ImageVector,
+    desc: String,
+    tint: Color,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .size(28.dp)
+            .clip(RoundedCornerShape(6.dp))
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(icon, contentDescription = desc, tint = tint, modifier = Modifier.size(16.dp))
+    }
+}
+
+/**
+ * Full-screen HTML snippet preview. JavaScript stays enabled so generated
+ * pages actually run; system back closes the preview (never the app).
+ */
+@Composable
+private fun HtmlPreviewDialog(html: String, onClose: () -> Unit) {
+    val colors = LocalKarenColors.current
+    Dialog(
+        onDismissRequest = onClose,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(colors.background)
+                .statusBarsPadding()
+                .navigationBarsPadding()
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    Icons.Default.Language,
+                    contentDescription = null,
+                    tint = colors.accentGreen,
+                    modifier = Modifier.size(15.dp)
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "HTML preview",
+                    color = colors.textPrimary,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Spacer(Modifier.width(8.dp))
+                Text("JavaScript on", color = colors.textMuted, fontSize = 11.sp)
+                Spacer(Modifier.weight(1f))
+                IconButton(onClick = onClose, modifier = Modifier.size(32.dp)) {
+                    Icon(
+                        Icons.Default.Close,
+                        contentDescription = "Close preview",
+                        tint = colors.textMuted,
+                        modifier = Modifier.size(17.dp)
+                    )
+                }
+            }
+            AndroidView(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .padding(start = 10.dp, end = 10.dp, bottom = 10.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .border(1.dp, colors.border, RoundedCornerShape(10.dp)),
+                factory = { ctx ->
+                    android.webkit.WebView(ctx).apply {
+                        settings.javaScriptEnabled = true
+                        settings.domStorageEnabled = true
+                        settings.setSupportZoom(true)
+                        settings.builtInZoomControls = true
+                        settings.displayZoomControls = false
+                        setBackgroundColor(android.graphics.Color.WHITE)
+                        webChromeClient = android.webkit.WebChromeClient()
+                        webViewClient = android.webkit.WebViewClient()
+                        loadDataWithBaseURL(null, html, "text/html", "utf-8", null)
+                    }
+                }
+            )
+        }
+    }
+}
+
+/** Downloads name for a saved snippet, e.g. karen-html-20261018-143012.html. */
+private fun snippetFileName(language: String): String {
+    val ext = when (language.trim().lowercase()) {
+        "kotlin", "kt" -> "kt"
+        "python", "py" -> "py"
+        "javascript", "js", "jsx" -> "js"
+        "typescript", "ts", "tsx" -> "ts"
+        "java" -> "java"
+        "json" -> "json"
+        "html", "htm" -> "html"
+        "css" -> "css"
+        "xml" -> "xml"
+        "yaml", "yml" -> "yaml"
+        "sql" -> "sql"
+        "c" -> "c"
+        "cpp", "c++" -> "cpp"
+        "csharp", "c#" -> "cs"
+        "go" -> "go"
+        "rust", "rs" -> "rs"
+        "php" -> "php"
+        "ruby", "rb" -> "rb"
+        "swift" -> "swift"
+        "shell", "sh", "bash" -> "sh"
+        "markdown", "md" -> "md"
+        "mermaid" -> "mmd"
+        "csv" -> "csv"
+        else -> "txt"
+    }
+    val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US)
+        .format(java.util.Date())
+    return "karen-$ext-$stamp.$ext"
+}
+
+/** MIME type for a saved snippet, from its fenced-code language. */
+private fun snippetMime(language: String): String = when (language.trim().lowercase()) {
+    "html", "htm" -> "text/html"
+    "json" -> "application/json"
+    "csv" -> "text/csv"
+    "markdown", "md" -> "text/markdown"
+    "xml" -> "text/xml"
+    "css" -> "text/css"
+    else -> "text/plain"
+}
+
+/**
+ * Writes [content] to the shared Downloads folder — MediaStore on API 29+
+ * (no permission needed), direct public dir below that. True when saved.
+ */
+private fun saveTextToDownloads(
+    context: android.content.Context,
+    fileName: String,
+    mime: String,
+    content: String
+): Boolean {
+    return try {
+        if (android.os.Build.VERSION.SDK_INT >= 29) {
+            val values = android.content.ContentValues().apply {
+                put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+                put(android.provider.MediaStore.MediaColumns.MIME_TYPE, mime)
+                put(
+                    android.provider.MediaStore.MediaColumns.RELATIVE_PATH,
+                    android.os.Environment.DIRECTORY_DOWNLOADS
+                )
+                put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1)
+            }
+            val resolver = context.contentResolver
+            val uri = resolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                ?: return false
+            val ok = resolver.openOutputStream(uri)?.use { out ->
+                out.write(content.toByteArray(Charsets.UTF_8))
+                true
+            } ?: false
+            if (ok) {
+                values.clear()
+                values.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0)
+                resolver.update(uri, values, null, null)
+            } else {
+                resolver.delete(uri, null, null)
+            }
+            ok
+        } else {
+            val dir = android.os.Environment
+                .getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
+            if (!dir.exists() && !dir.mkdirs()) return false
+            java.io.File(dir, fileName).writeText(content)
+            true
+        }
+    } catch (_: Exception) {
+        false
     }
 }
 

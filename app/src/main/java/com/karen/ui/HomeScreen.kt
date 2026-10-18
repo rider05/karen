@@ -12,6 +12,7 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -26,16 +27,29 @@ import com.karen.rememberDeviceTelemetry
 @Composable
 fun HomeScreen(
     onNavigate: (String) -> Unit = {},
-    onOpenSettings: () -> Unit = {}
+    onOpenSettings: () -> Unit = {},
+    onOpenConversation: (String) -> Unit = {}
 ) {
     val colors = LocalKarenColors.current
     val device = rememberDeviceTelemetry()
+    val ctx = androidx.compose.ui.platform.LocalContext.current
     val hourOfDay = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
     val greeting = when {
         hourOfDay < 12 -> "Good morning"
         hourOfDay < 18 -> "Good afternoon"
         else -> "Good evening"
     }
+
+    // Real recent items: last conversations + newest vault documents.
+    val recentChats = remember { ChatHistoryStore.loadConversations(ctx).take(3) }
+    val recentFiles = remember {
+        vaultFiles(ctx).sortedByDescending { it.lastModified() }.take(2)
+    }
+
+    // Live task surface: an in-flight download, else the pinned model.
+    val activeDownload = ModelDownloader.activeName
+    val pinnedModel = UserPrefs.selectedModel(ctx).takeIf { isSelectableModel(ctx, it) }
+    val downloadProgress = ModelDownloader.progress
 
     LazyColumn(
         modifier = Modifier
@@ -76,7 +90,7 @@ fun HomeScreen(
                             }
                         }
                         Spacer(Modifier.width(8.dp))
-                        Text(if (device.networkUp) "Network Up" else "0 KB Egress", color = colors.textMuted, fontSize = 11.sp)
+                        Text(if (device.networkUp) "Network Up" else "Offline · 0 egress", color = colors.textMuted, fontSize = 11.sp)
                     }
                     Spacer(Modifier.weight(1f))
                     IconButton(onClick = onOpenSettings) {
@@ -183,22 +197,30 @@ fun HomeScreen(
 
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "No active task",
+                    when {
+                        activeDownload != null -> "Downloading $activeDownload"
+                        pinnedModel != null -> "Pinned model: $pinnedModel"
+                        else -> "No active task"
+                    },
                     color = colors.textPrimary,
                     fontSize = 15.sp,
                     fontWeight = FontWeight.SemiBold
                 )
                 Text(
-                    "No data found",
+                    when {
+                        activeDownload != null -> ModelDownloader.status.ifBlank { "Starting…" }
+                        pinnedModel != null -> "Every surface answers with this model — change it in the model sheet."
+                        else -> "Start a chat or download a model — live progress shows up here."
+                    },
                     color = colors.textMuted,
                     fontSize = 12.sp,
                     modifier = Modifier.padding(top = 2.dp)
                 )
 
                 Spacer(Modifier.height(10.dp))
-                // Progress bar
+                // Live progress: download when one runs, otherwise RAM pressure.
                 LinearProgressIndicator(
-                    progress = { device.usedRamPercent / 100f },
+                    progress = { if (activeDownload != null) downloadProgress else device.usedRamPercent / 100f },
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(6.dp)
@@ -209,8 +231,13 @@ fun HomeScreen(
 
                 Spacer(Modifier.height(12.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val (label, target) = when {
+                        activeDownload != null -> "Open Model Manager" to "ModelManager"
+                        pinnedModel != null -> "Open Chat" to "Chat"
+                        else -> "Resume in Canvas" to "Workspace"
+                    }
                     Button(
-                        onClick = { onNavigate("Workspace") },
+                        onClick = { onNavigate(target) },
                         colors = ButtonDefaults.buttonColors(
                             containerColor = colors.accentGreen,
                             contentColor = Color.White
@@ -218,7 +245,7 @@ fun HomeScreen(
                         shape = RoundedCornerShape(8.dp),
                         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
                     ) {
-                        Text("Resume in Canvas", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        Text(label, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                     }
                 }
             }
@@ -234,7 +261,30 @@ fun HomeScreen(
             )
             Spacer(Modifier.height(6.dp))
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("No data found", color = colors.textMuted, fontSize = 12.5.sp)
+                if (recentChats.isEmpty() && recentFiles.isEmpty()) {
+                    Text(
+                        "Nothing yet — ask Karen something, or add a document in the Knowledge Vault.",
+                        color = colors.textMuted,
+                        fontSize = 12.5.sp,
+                        lineHeight = 17.sp
+                    )
+                }
+                recentChats.forEach { c ->
+                    RecentDocRow(
+                        title = c.title,
+                        sub = "Chat · ${relTimeAgo(c.updatedAt)}",
+                        icon = Icons.AutoMirrored.Filled.Chat,
+                        onClick = { onOpenConversation(c.id) }
+                    )
+                }
+                recentFiles.forEach { f ->
+                    RecentDocRow(
+                        title = f.name,
+                        sub = "Vault · ${sizeLabel(f.length())}",
+                        icon = Icons.Default.Description,
+                        onClick = { onNavigate("Files") }
+                    )
+                }
             }
         }
 
@@ -333,4 +383,22 @@ private fun TelemetryCol(label: String, value: String) {
         Spacer(Modifier.height(4.dp))
         Text(value, color = colors.textPrimary, fontSize = 13.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.SemiBold)
     }
+}
+
+/** Compact "2m ago" style stamp for the recent lists. */
+private fun relTimeAgo(ts: Long): String {
+    val delta = System.currentTimeMillis() - ts
+    return when {
+        delta < 60_000 -> "just now"
+        delta < 3_600_000 -> "${delta / 60_000}m ago"
+        delta < 86_400_000 -> "${delta / 3_600_000}h ago"
+        else -> "${delta / 86_400_000}d ago"
+    }
+}
+
+private fun sizeLabel(bytes: Long): String = when {
+    bytes >= 1073741824L -> "%.1f GB".format(bytes / 1073741824.0)
+    bytes >= 1048576L -> "%.1f MB".format(bytes / 1048576.0)
+    bytes >= 1024L -> "${bytes / 1024} KB"
+    else -> "$bytes B"
 }

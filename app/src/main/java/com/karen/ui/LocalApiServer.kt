@@ -120,7 +120,8 @@ class WorkerTask(
  * On-device OpenAI-compatible API (Thinai-style local server, no new deps).
  *
  * Plain ServerSocket HTTP/1.1 on localhost:11434 by default:
- *   GET  /                    browser dashboard — chat + on-device model files
+ *   GET  /                    browser worker page — join as a slave node (GPU)
+ *   GET  /dashboard            browser dashboard — chat + on-device model files
  *   GET  /v1/models            installed weights + runnable .gguf files
  *   GET  /v1/files             every model file found on disk (fmt + runtime)
  *   POST /v1/chat/completions  runs the loaded local GGUF (stream:true → SSE);
@@ -218,7 +219,12 @@ object LocalApiServer {
             if (ip == "127.0.0.1" || ip == "::1" || ip == "0:0:0:0:0:0:0:1") return
             val now = System.currentTimeMillis()
             val prev = nodes[ip]
-            val kind = if (path == "/" || path == "/index.html" || userAgent.contains("Mozilla/")) "Dashboard" else "API"
+            val kind = when {
+                path == "/dashboard" -> "Dashboard"
+                path == "/" || path == "/index.html" || path == "/worker" || path == "/slave" -> "Worker"
+                userAgent.contains("Mozilla/") -> "Dashboard"
+                else -> "API"
+            }
             if (headerName.isNotBlank()) nodeNames[ip] = headerName.take(40)
             val name = nodeNames[ip] ?: prev?.name ?: ("Device " + ip.substringAfterLast('.'))
             nodes[ip] = NodeInfo(
@@ -1158,9 +1164,15 @@ object LocalApiServer {
                 headerName = headers["x-karen-node"].orEmpty()
             )
 
-            // Console dashboard + dedicated slave-node page — both are token-free
-            // shells; model/API calls made from them need the token.
+            // Worker page (root) + dashboard — both are token-free shells;
+            // model/API calls made from them need the token. `/` is the page a
+            // device just opens to start working; `/dashboard` controls things.
             if (method == "GET" && (path == "/" || path == "/index.html")) {
+                writeHtml(socket, dashboardPage(ctx, worker = true))
+                socket.close()
+                return
+            }
+            if (method == "GET" && (path == "/dashboard")) {
                 writeHtml(socket, dashboardPage(ctx))
                 socket.close()
                 return
@@ -1487,7 +1499,7 @@ object LocalApiServer {
         nodes[ip] = NodeInfo(
             ip = ip,
             name = nodeNames[ip] ?: prev?.name ?: ("Device " + ip.substringAfterLast('.')),
-            kind = prev?.kind ?: "Dashboard",
+            kind = prev?.kind ?: "Worker",
             firstSeen = prev?.firstSeen ?: now,
             lastSeen = now,
             requests = prev?.requests ?: 0,
@@ -1760,8 +1772,9 @@ object LocalApiServer {
 <div class="card">
   <div class="badge">TOKEN REQUIRED</div>
   <h1>This is the Karen API</h1>
-  <p>Only model/API calls need the bearer token. The dashboard does not:</p>
-  <p>Dashboard → <code>/</code></p>
+  <p>Only model/API calls need the bearer token. The pages do not:</p>
+  <p>Dashboard (control) → <code>/dashboard</code></p>
+  <p>Worker page (join as a slave node) → <code>/</code></p>
   <p>API calls → send <code>Authorization: Bearer &lt;token&gt;</code>.
      Find the token in Karen → Settings → Local Server → Bearer token.</p>
 </div>
@@ -1774,7 +1787,7 @@ object LocalApiServer {
         val ip = lanIp(ctx)
         val port = UserPrefs.serverPort(ctx)
         val mode = if (worker) "worker" else "console"
-        val slaveUrl = "http://" + ip.ifBlank { "127.0.0.1" } + ":" + port + "/worker"
+        val workerUrl = "http://" + ip.ifBlank { "127.0.0.1" } + ":" + port
         val models = UserPrefs.models(ctx).filter { !isCloudProviderName(it) }
         return """
 <!DOCTYPE html>
@@ -1841,7 +1854,7 @@ object LocalApiServer {
            padding: 9px 16px; border-radius: 20px; font-size: 12.5px; opacity: 0;
            transition: opacity .25s; pointer-events: none; white-space: nowrap; }
   .toast.show { opacity: 1; }
-  /* Split pages: "/" is the console dashboard, "/worker" is this device's slave page. */
+  /* Split pages: "/" is the slave-node worker page, "/dashboard" is the console. */
   body.console .workerOnly { display: none !important; }
   body.worker .consoleOnly { display: none !important; }
 </style>
@@ -1894,7 +1907,7 @@ object LocalApiServer {
       <select id="workerModel" style="max-width:330px" onchange="saveWorkerModel()"></select>
     </div>
     <div class="fmeta workerOnly" id="workerStatus">Slave node — save the token above to pair this device.</div>
-    <div class="fmeta consoleOnly" id="slavePageHint">To make a device work as a slave node, open its slave page: <a href="/worker" style="color:#38bdf8">$slaveUrl</a></div>
+    <div class="fmeta consoleOnly" id="slavePageHint">To make a device work as a slave node, open this address there: <a href="/" style="color:#38bdf8">$workerUrl</a></div>
     <div class="fmeta" id="secureHint" style="display:none;color:#f59e0b"></div>
   </div>
 </details>
@@ -2813,7 +2826,7 @@ el('input').addEventListener('keydown', function (e) {
 });
 el('token').value = S.token;
 if (PAGE === 'console') {
-  add('sys', 'Hello from Karen — connected to $ip:$port. ${models.size} installed model(s). Paste the token from Settings → Local Server, then pick a model — .gguf files found on disk can run too (expand the On-device model files panel below). Runner → Auto hands prompts to a laptop/desktop working as a slave node — open the slave page ($slaveUrl) on that device; it joins automatically once the token is saved.');
+  add('sys', 'Hello from Karen — connected to $ip:$port. ${models.size} installed model(s). Paste the token from Settings → Local Server, then pick a model — .gguf files found on disk can run too (expand the On-device model files panel below). Runner → Auto hands prompts to a laptop/desktop working as a slave node — open the worker page ($workerUrl) on that device; it joins automatically once the token is saved.');
 }
 loadModels();
 initGpu();

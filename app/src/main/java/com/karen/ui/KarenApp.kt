@@ -184,7 +184,11 @@ fun KarenApp(startScreen: String = "Home") {
                         when (currentScreen) {
                             "Home" -> HomeScreen(
                                 onNavigate = { currentScreen = it },
-                                onOpenSettings = { currentScreen = "Settings" }
+                                onOpenSettings = { currentScreen = "Settings" },
+                                onOpenConversation = { id ->
+                                    openChatId = id
+                                    currentScreen = "Chat"
+                                }
                             )
                             "Settings" -> SettingsScreen(onBack = { currentScreen = "Home" })
                             "Chat" -> ChatScreen(

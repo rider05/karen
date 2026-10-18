@@ -175,7 +175,7 @@ private suspend fun compileAndTest(dir: File): String = withContext(Dispatchers.
         if (!dir.exists()) return@withContext "Error: project directory not found."
         val entries = listProjectEntries(dir, 200)
         val files = entries.filter { it.isFile }
-        if (files.isEmpty()) return@withContext "No data found — project directory is empty."
+        if (files.isEmpty()) return@withContext "Project directory is empty."
         val sb = StringBuilder()
         sb.appendLine("Files (${files.size}):")
         files.take(60).forEach { f ->
@@ -1922,7 +1922,7 @@ fun WorkspaceScreen(
                 }
                 Spacer(Modifier.height(8.dp))
                 if (projects.isEmpty()) {
-                    Text("No data found — create a project to start", color = colors.textMuted, fontSize = 12.5.sp)
+                    Text("No projects yet — create one to start", color = colors.textMuted, fontSize = 12.5.sp)
                 } else {
                     projects.forEach { p ->
                         val cardStats = p.chat.asReversed()
@@ -2257,7 +2257,7 @@ fun WorkspaceScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             if (project.chat.isEmpty()) {
-                item { Text("No data found — start the conversation below.", color = colors.textMuted, fontSize = 12.5.sp) }
+                item { Text("No messages yet — start the conversation below.", color = colors.textMuted, fontSize = 12.5.sp) }
             }
             items(project.chat.size) { i ->
                 val m = project.chat[i]
@@ -3363,7 +3363,7 @@ private fun PlanCanvasView(project: Project) {
                 modifier = Modifier.padding(top = 2.dp)
             )
             if (project.steps.isEmpty() && project.tasks.isEmpty() && project.agentTasks.isEmpty()) {
-                Text("No data found — send a message and the plan appears here.", color = colors.textMuted, fontSize = 12.sp)
+                Text("No plan yet — send a message and the plan appears here.", color = colors.textMuted, fontSize = 12.sp)
             }
         }
         if (project.agentTasks.isNotEmpty()) {
@@ -3595,7 +3595,7 @@ private fun TerminalCanvasView(project: Project) {
         Spacer(Modifier.height(8.dp))
         LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             if (project.terminalLog.isEmpty()) {
-                item { Text("No data found", color = termMuted, fontSize = 12.sp, fontFamily = FontFamily.Monospace) }
+                item { Text("> no output yet — run a command", color = termMuted, fontSize = 12.sp, fontFamily = FontFamily.Monospace) }
             }
             items(project.terminalLog.size) { i ->
                 Text(project.terminalLog[i], color = termText, fontSize = 11.5.sp, fontFamily = FontFamily.Monospace)
@@ -3792,7 +3792,7 @@ private fun DiffCanvasView(project: Project) {
             Text("Diff · previous vs current", color = colors.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(6.dp))
             if (lines.isEmpty()) {
-                Text("No data found", color = colors.textMuted, fontSize = 12.sp)
+                Text("No differences yet — the diff appears after an edit is applied.", color = colors.textMuted, fontSize = 12.sp)
             }
         }
         items(lines.size) { i ->

@@ -236,7 +236,42 @@ fun allCloudProviders(ctx: Context): List<CloudProvider> =
 class CloudApiException(val status: Int, message: String) : Exception(message)
 
 /** Result of a cloud call: text plus whether the model was cut off by its output cap. */
-data class CloudResult(val text: String, val truncated: Boolean)
+/** Provider-reported token counts for one request; all-zero means not reported. */
+data class CloudUsage(val input: Int = 0, val output: Int = 0, val reasoning: Int = 0) {
+    val any: Boolean get() = input > 0 || output > 0 || reasoning > 0
+}
+
+data class CloudResult(val text: String, val truncated: Boolean, val usage: CloudUsage? = null)
+
+/** OpenAI-style usage: prompt/completion counts plus the reasoning detail. */
+private fun openAiUsage(json: JSONObject?): CloudUsage? {
+    val u = json?.optJSONObject("usage") ?: return null
+    val usage = CloudUsage(
+        u.optInt("prompt_tokens", 0),
+        u.optInt("completion_tokens", 0),
+        u.optJSONObject("completion_tokens_details")?.optInt("reasoning_tokens", 0)
+            ?: u.optInt("reasoning_tokens", 0)
+    )
+    return if (usage.any) usage else null
+}
+
+/** Anthropic usage: input_tokens/output_tokens on the message object. */
+private fun anthropicUsage(json: JSONObject?): CloudUsage? {
+    val u = json?.optJSONObject("usage") ?: return null
+    val usage = CloudUsage(u.optInt("input_tokens", 0), u.optInt("output_tokens", 0), 0)
+    return if (usage.any) usage else null
+}
+
+/** Gemini usage: usageMetadata with the thought-token detail. */
+private fun geminiUsage(json: JSONObject?): CloudUsage? {
+    val u = json?.optJSONObject("usageMetadata") ?: return null
+    val usage = CloudUsage(
+        u.optInt("promptTokenCount", 0),
+        u.optInt("candidatesTokenCount", 0),
+        u.optInt("thoughtsTokenCount", 0)
+    )
+    return if (usage.any) usage else null
+}
 
 /** One page image for vision-capable requests (JPEG base64). */
 data class VisionImage(val base64: String, val mime: String = "image/jpeg")
@@ -329,12 +364,12 @@ suspend fun CloudProvider.completeResult(
             }
             try {
                 val first = post(URL("$apiBase/chat/completions"), headers, body("max_tokens"), timeoutMs)
-                CloudResult(extractOpenAiText(first), isLengthCutoff(first))
+                CloudResult(extractOpenAiText(first), isLengthCutoff(first), openAiUsage(first))
             } catch (e: CloudApiException) {
                 // Newer models (o-series, GPT-5 class) reject max_tokens — retry once.
                 if (e.status == 400 && e.message.orEmpty().contains("max_completion_tokens")) {
                     val retry = post(URL("$apiBase/chat/completions"), headers, body("max_completion_tokens"), timeoutMs)
-                    CloudResult(extractOpenAiText(retry), isLengthCutoff(retry))
+                    CloudResult(extractOpenAiText(retry), isLengthCutoff(retry), openAiUsage(retry))
                 } else throw e
             }
         }
@@ -371,14 +406,14 @@ suspend fun CloudProvider.completeResult(
                 .firstOrNull { it.optString("type") == "text" }
                 ?.optString("text", "")
             val truncated = json.optString("stop_reason", "") == "max_tokens"
-            if (!text.isNullOrBlank()) CloudResult(text, truncated)
+            if (!text.isNullOrBlank()) CloudResult(text, truncated, anthropicUsage(json))
             else {
                 // Thinking-only reply: surface the thinking rather than nothing.
                 val thinking = (0 until blocks.length())
                     .map { blocks.getJSONObject(it) }
                     .firstOrNull { it.optString("type") == "thinking" }
                     ?.optString("thinking", "")
-                if (!thinking.isNullOrBlank()) CloudResult(thinking, truncated)
+                if (!thinking.isNullOrBlank()) CloudResult(thinking, truncated, anthropicUsage(json))
                 else throw CloudApiException(200, "model returned no text")
             }
         }
@@ -403,7 +438,7 @@ suspend fun CloudProvider.completeResult(
             val truncated = json.optJSONArray("candidates")
                 ?.optJSONObject(0)
                 ?.optString("finishReason", "") == "MAX_TOKENS"
-            CloudResult(text, truncated)
+            CloudResult(text, truncated, geminiUsage(json))
         }
     }
 }
@@ -430,6 +465,7 @@ suspend fun CloudProvider.completeStreamingResult(
     val full = StringBuilder()
     val thoughts = StringBuilder()
     var truncated = false
+    var usage: CloudUsage? = null
     fun emit(piece: String) {
         if (piece.isNotEmpty()) {
             full.append(piece)
@@ -468,7 +504,11 @@ suspend fun CloudProvider.completeStreamingResult(
                     val payload = line.removePrefix("data:").trim()
                     if (payload.isBlank() || payload == "[DONE]") return@postStreamLines
                     try {
-                        val choice = JSONObject(payload)
+                        val chunk = JSONObject(payload)
+                        // Usage (when the vendor sends it) usually rides the
+                        // final chunk, which has an empty choices array.
+                        openAiUsage(chunk)?.let { usage = it }
+                        val choice = chunk
                             .optJSONArray("choices")
                             ?.optJSONObject(0) ?: return@postStreamLines
                         val reason = choice.optString("finish_reason", "")
@@ -522,6 +562,12 @@ suspend fun CloudProvider.completeStreamingResult(
                 try {
                     val data = JSONObject(payload)
                     when (data.optString("type")) {
+                        "message_start" -> {
+                            val u = data.optJSONObject("message")?.optJSONObject("usage")
+                            if (u != null) {
+                                usage = CloudUsage(u.optInt("input_tokens", 0), usage?.output ?: 0, 0)
+                            }
+                        }
                         "content_block_delta" -> {
                             val delta = data.optJSONObject("delta")
                             if (delta?.optString("type") == "thinking_delta") {
@@ -532,6 +578,10 @@ suspend fun CloudProvider.completeStreamingResult(
                         }
                         "message_delta" -> {
                             if (data.optJSONObject("delta")?.optString("stop_reason", "") == "max_tokens") truncated = true
+                            val u = data.optJSONObject("usage")
+                            if (u != null) {
+                                usage = CloudUsage(usage?.input ?: 0, u.optInt("output_tokens", 0), 0)
+                            }
                         }
                     }
                 } catch (_: Exception) {
@@ -558,7 +608,10 @@ suspend fun CloudProvider.completeStreamingResult(
                 val payload = line.removePrefix("data:").trim()
                 if (payload.isBlank()) return@postStreamLines
                 try {
-                    val cand = JSONObject(payload)
+                    val chunk = JSONObject(payload)
+                    // usageMetadata often rides a chunk whose candidates are empty.
+                    geminiUsage(chunk)?.let { usage = it }
+                    val cand = chunk
                         .optJSONArray("candidates")
                         ?.optJSONObject(0) ?: return@postStreamLines
                     if (cand.optString("finishReason", "") == "MAX_TOKENS") truncated = true
@@ -580,7 +633,7 @@ suspend fun CloudProvider.completeStreamingResult(
     }
     // Thinking-only replies: surface the thinking rather than nothing.
     if (full.isEmpty() && thoughts.isNotEmpty()) full.append(thoughts)
-    CloudResult(full.toString(), truncated)
+    CloudResult(full.toString(), truncated, usage?.takeIf { it.any })
 }
 
 /** Convenience wrapper for callers that only need the text (realtime voice). */

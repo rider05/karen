@@ -18,6 +18,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.karen.rememberDeviceTelemetry
+import kotlinx.coroutines.launch
 
 @Composable
 fun PerformanceScreen(
@@ -29,20 +30,106 @@ fun PerformanceScreen(
 
     KarenHomeBackHandler(onNavigateToHome = onNavigateToHome)
 
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    val scope = rememberCoroutineScope()
+    var benchmarkRunning by remember { mutableStateOf(false) }
+    var benchmarkResult by remember { mutableStateOf<String?>(null) }
+    // Real samples measured on this device this session (tok/s, newest last).
+    var throughputHistory by remember { mutableStateOf(listOf<Float>()) }
+
+    /** Runs a real short generation on the pinned/first installed GGUF. */
+    fun runBenchmark() {
+        if (benchmarkRunning) return
+        val pinned = UserPrefs.selectedModel(ctx)
+            .takeIf { it.isNotBlank() && !isCloudProviderName(it) && isSelectableModel(ctx, it) }
+        val name = pinned ?: UserPrefs.models(ctx).firstOrNull { !isCloudProviderName(it) }
+        if (name == null) {
+            benchmarkResult = "No local model on device — download one in Model Manager first."
+            return
+        }
+        val file = ModelDownloader.weightFileFor(ctx, name)
+        if (file == null || !ModelDownloader.isRunnableWeight(ctx, name)) {
+            benchmarkResult = "“$name” has no runnable GGUF file on disk."
+            return
+        }
+        benchmarkRunning = true
+        benchmarkResult = "Loading $name…"
+        scope.launch {
+            val measured = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                try {
+                    val window = UserPrefs.contextTokens(ctx)
+                    val threads = Runtime.getRuntime().availableProcessors().let {
+                        (it - 1).coerceIn(2, 8)
+                    }.let { minOf(it, device.cpuCores.coerceAtLeast(2)) }
+                    if (!KarenLlama.ensureLoaded(file, name, window, threads)) return@withContext null
+                    var pieces = 0
+                    var firstPieceMs = 0L
+                    val t0 = System.currentTimeMillis()
+                    val reply = KarenLlama.completeStream(
+                        "You are a benchmark. Answer in one short sentence.",
+                        arrayOf("user"),
+                        arrayOf("Name three colours."),
+                        64
+                    ) { _ ->
+                        pieces++
+                        if (pieces == 1) firstPieceMs = System.currentTimeMillis() - t0
+                    }
+                    val totalMs = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
+                    BenchOut(reply.trim(), pieces, firstPieceMs, totalMs)
+                } catch (_: Exception) {
+                    null
+                }
+            }
+            benchmarkRunning = false
+            if (measured == null) {
+                benchmarkResult = "Benchmark failed — the model could not load or generate."
+                return@launch
+            }
+            if (measured.pieces <= 0) {
+                benchmarkResult = "Model produced no tokens — try a bigger context in Settings."
+                return@launch
+            }
+            val tps = measured.pieces * 1000.0 / measured.totalMs
+            throughputHistory = (throughputHistory + tps.toFloat()).takeLast(12)
+            benchmarkResult = "%s · %.1f tok/s (%.1f s) · TTFT %d ms — “%s”".format(
+                name,
+                tps,
+                measured.totalMs / 1000.0,
+                measured.firstPieceMs,
+                measured.reply.take(48)
+            )
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(colors.background)
     ) {
-        val ctx = androidx.compose.ui.platform.LocalContext.current
         ChatGPTTopAppBar(
             selectedModel = "Performance & TTFT",
             onMenuClick = onOpenDrawer,
             onBackClick = onNavigateToHome,
             moreActions = listOf(
-                Triple("Run benchmark", Icons.Default.Speed) { android.widget.Toast.makeText(ctx, "Run benchmark", android.widget.Toast.LENGTH_SHORT).show() },
-                Triple("Copy metrics", Icons.Default.Share) { android.widget.Toast.makeText(ctx, "Copy metrics", android.widget.Toast.LENGTH_SHORT).show() },
-                Triple("Clear log", Icons.Default.Delete) { android.widget.Toast.makeText(ctx, "Clear log", android.widget.Toast.LENGTH_SHORT).show() }
+                Triple("Run benchmark", Icons.Default.Speed) { runBenchmark() },
+                Triple("Copy metrics", Icons.Default.Share) {
+                    val text = buildString {
+                        append("Karen performance — ${device.deviceModel}\n")
+                        append("Battery: ${device.batteryPercent}% · ${String.format("%.1f", device.batteryTempC)}°C\n")
+                        append("RAM: ${String.format("%.1f / %.0f GB", device.totalRamGb - device.freeRamGb, device.totalRamGb)}\n")
+                        benchmarkResult?.let { append("Benchmark: $it\n") }
+                        if (throughputHistory.isNotEmpty()) {
+                            append("tok/s history: " + throughputHistory.joinToString(", ") { "%.1f".format(it) })
+                        }
+                    }
+                    clipboard.setText(androidx.compose.ui.text.AnnotatedString(text))
+                    android.widget.Toast.makeText(ctx, "Metrics copied", android.widget.Toast.LENGTH_SHORT).show()
+                },
+                Triple("Clear history", Icons.Default.Delete) {
+                    throughputHistory = emptyList()
+                    benchmarkResult = null
+                }
             )
         )
 
@@ -144,18 +231,22 @@ fun PerformanceScreen(
                     ) {
                         Text("On-Device LLM Benchmark", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold)
                         Button(
-                            onClick = {
-                                benchmarkRunning = true
-                                benchmarkResult = "No data found — no local model loaded"
-                                benchmarkRunning = false
-                            },
+                            onClick = { runBenchmark() },
+                            enabled = !benchmarkRunning,
                             colors = ButtonDefaults.buttonColors(containerColor = colors.accentGreen, contentColor = Color.White),
                             shape = RoundedCornerShape(8.dp),
                             contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
                         ) {
-                            Text(if (benchmarkRunning) "Running..." else "Run Benchmark", fontSize = 11.5.sp)
+                            Text(if (benchmarkRunning) "Running…" else "Run Benchmark", fontSize = 11.5.sp)
                         }
                     }
+                    Text(
+                        "Runs a real short generation on the pinned model (else the first installed GGUF) and measures tok/s and TTFT.",
+                        color = colors.textMuted,
+                        fontSize = 10.5.sp,
+                        lineHeight = 14.sp,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
                     if (benchmarkResult != null) {
                         Spacer(Modifier.height(8.dp))
                         Text(benchmarkResult!!, color = colors.accentGreen, fontSize = 11.5.sp, fontFamily = FontFamily.Monospace)
@@ -163,9 +254,12 @@ fun PerformanceScreen(
                     Spacer(Modifier.height(12.dp))
                     Text("Throughput history (tok/s)", color = colors.textMuted, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                     Spacer(Modifier.height(8.dp))
-                    val history = emptyList<Float>()
-                    if (history.isEmpty()) {
-                        Text("No data found", color = colors.textMuted, fontSize = 12.sp)
+                    if (throughputHistory.isEmpty()) {
+                        Text(
+                            "No samples yet — run the benchmark to record this device's real speed.",
+                            color = colors.textMuted,
+                            fontSize = 12.sp
+                        )
                     } else Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -173,7 +267,8 @@ fun PerformanceScreen(
                         horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.Start),
                         verticalAlignment = Alignment.Bottom
                     ) {
-                        history.forEachIndexed { i, v ->
+                        val maxV = (throughputHistory.maxOrNull() ?: 1f).coerceAtLeast(0.1f)
+                        throughputHistory.forEachIndexed { i, v ->
                             Column(
                                 modifier = Modifier.weight(1f),
                                 horizontalAlignment = Alignment.CenterHorizontally
@@ -181,9 +276,9 @@ fun PerformanceScreen(
                                 Box(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .height((v / 20f * 44f).dp)
+                                        .height(((v / maxV) * 44f).coerceAtLeast(3f).dp)
                                         .clip(RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp))
-                                        .background(if (i == history.lastIndex) colors.accentGreen else colors.accentGreen.copy(alpha = 0.35f))
+                                        .background(if (i == throughputHistory.lastIndex) colors.accentGreen else colors.accentGreen.copy(alpha = 0.35f))
                                 )
                                 Text(String.format("%.0f", v), color = colors.textMuted, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
                             }
@@ -222,3 +317,11 @@ private fun GovernorRow(label: String, value: String) {
         Text(value, color = colors.textPrimary, fontSize = 12.5.sp, fontFamily = FontFamily.Monospace)
     }
 }
+
+/** One measured benchmark run (real numbers only). */
+private data class BenchOut(
+    val reply: String,
+    val pieces: Int,
+    val firstPieceMs: Long,
+    val totalMs: Long
+)

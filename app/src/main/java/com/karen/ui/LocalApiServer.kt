@@ -1877,9 +1877,9 @@ object LocalApiServer {
   <button class="ghost" onclick="saveToken()">Save</button>
   <select id="model" class="consoleOnly" style="min-width:180px"><option value="">(pick model)</option></select>
   <button class="ghost consoleOnly" onclick="loadModels()">Refresh</button>
-  <select id="runner" class="consoleOnly" style="min-width:200px" onchange="runnerChanged()" title="Where the prompt runs">
+  <select id="runner" class="consoleOnly" style="min-width:200px" onchange="runnerChanged()" title="Where the prompt runs — the node with the most GPU is listed first">
     <option value="">Runner: Phone (llama.cpp)</option>
-    <option value="auto">Runner: Auto — best slave node</option>
+    <option value="auto">Runner: Auto — fastest GPU online</option>
   </select>
   <select id="wmodel" class="consoleOnly" style="min-width:220px;display:none" onchange="runnerChanged()" title="Model on the selected slave node"></select>
 </div>
@@ -1931,7 +1931,7 @@ object LocalApiServer {
 var PAGE = '$mode';
 var S = { token: localStorage.getItem('karen_token') || '', busy: false, ctrl: null, log: [], node: nodeName(), boost: localStorage.getItem('karen_gpu_boost') === '1', llm: null, llmMod: null, llmModel: '', adapter: null, gpuName: '', gflops: 0,
   w: { on: localStorage.getItem('karen_worker') !== '0' && !!localStorage.getItem('karen_token'), saved: localStorage.getItem('karen_worker') === '1', master: false, id: localStorage.getItem('karen_worker_id') || '', model: localStorage.getItem('karen_worker_model') || '', loaded: '', engine: null, interrupted: false, loop: false },
-  wModels: [], wlist: [] };
+  wModels: [], wlist: [], routed: localStorage.getItem('karen_runner') || '' };
 function el(id) { return document.getElementById(id); }
 function nodeName() {
   var ua = navigator.userAgent, os = 'Device', br = 'Browser';
@@ -2602,6 +2602,27 @@ function runnerName(id) {
   for (var i = 0; i < S.wlist.length; i++) { if (S.wlist[i].id === id) { return S.wlist[i].name; } }
   return id;
 }
+function runnerInfo(id) {
+  for (var i = 0; i < S.wlist.length; i++) { if (S.wlist[i].id === id) { return S.wlist[i]; } }
+  return null;
+}
+function topGpuId(ws) {
+  // The node with the most GPU: highest GFLOPS benchmark among online nodes
+  // (the phone already returns /v1/workers sorted online-first, GFLOPS-desc).
+  var best = null;
+  (ws || []).forEach(function (w) {
+    if (w.state === 'offline') return;
+    if (!best || (w.gflops || 0) > (best.gflops || 0)) { best = w; }
+  });
+  return best ? best.id : '';
+}
+function gpuLabel(w) {
+  var bits = w.name;
+  bits += (w.state === 'offline') ? ' — offline' : (' — ' + w.state);
+  if (w.gpu) { bits += ' · ' + w.gpu; }
+  bits += w.gflops ? (' · ' + Math.round(w.gflops) + ' GFLOPS') : ' · no bench';
+  return bits;
+}
 function syncRunnerUi() {
   var sel = el('runner');
   var box = el('wmodel');
@@ -2629,30 +2650,40 @@ function syncRunnerUi() {
 function runnerChanged() {
   syncRunnerUi();
   var v = el('runner').value;
+  S.routed = v;
+  localStorage.setItem('karen_runner', v);
   if (v === '') { toast('Runner: the phone (llama.cpp)'); }
-  else if (v === 'auto') { toast('Runner: auto — best online slave node'); }
-  else { toast('Runner: ' + runnerName(v)); }
+  else if (v === 'auto') { toast('Runner: auto — the fastest GPU online gets each prompt'); }
+  else {
+    var w = runnerInfo(v);
+    toast(w ? ('Runner: ' + gpuLabel(w)) : ('Runner: ' + runnerName(v)));
+  }
 }
 function renderRunner(ws) {
   var sel = el('runner');
-  var cur = sel.value;
+  var cur = sel.value || S.routed || '';
   sel.innerHTML = '';
   var online = 0;
   (ws || []).forEach(function (w) { if (w.state !== 'offline') online += 1; });
   var o0 = document.createElement('option');
   o0.value = ''; o0.textContent = 'Runner: Phone (llama.cpp)';
   sel.appendChild(o0);
+  var topId = topGpuId(ws);
   var oa = document.createElement('option');
-  oa.value = 'auto'; oa.textContent = 'Runner: Auto — best slave node (' + online + ' online)';
+  oa.value = 'auto'; oa.textContent = 'Runner: Auto — fastest GPU online (' + online + ' online)';
   sel.appendChild(oa);
   (ws || []).forEach(function (w) {
     var o = document.createElement('option');
-    o.value = w.id; o.textContent = 'Runner: ' + w.name + ' (' + w.state + ')';
+    o.value = w.id;
+    o.textContent = 'Runner: ' + gpuLabel(w) + (w.id === topId ? ' ★ fastest' : '');
     sel.appendChild(o);
   });
   var has = false;
   for (var i = 0; i < sel.options.length; i++) { if (sel.options[i].value === cur) { has = true; break; } }
   sel.value = has ? cur : '';
+  // Remember the pick so a reload keeps routing to the same node.
+  S.routed = sel.value;
+  localStorage.setItem('karen_runner', S.routed);
   syncRunnerUi();
 }
 function refreshWorkers() {
@@ -2671,15 +2702,19 @@ function refreshWorkers() {
     S.wlist = ws;
     var online = 0;
     for (var i = 0; i < ws.length; i++) { if (ws[i].state !== 'offline') online += 1; }
-    el('workersSummary').textContent = 'Slave nodes (' + ws.length + ') — ' + online + ' online';
+    var topId = topGpuId(ws);
+    var topW = runnerInfo(topId);
+    el('workersSummary').textContent = 'Slave nodes (' + ws.length + ') — ' + online + ' online' +
+      (topW ? ' · fastest: ' + topW.name + (topW.gflops ? ' (' + Math.round(topW.gflops) + ' GFLOPS)' : '') : '');
     var box = el('workerList');
     box.innerHTML = '';
     if (!ws.length) {
       var d = document.createElement('div');
       d.className = 'fmeta';
-      d.textContent = 'No slave nodes yet. On a laptop/desktop open this dashboard and save the token — it joins automatically as a slave node, then pick it in Runner.';
+      d.textContent = 'No slave nodes yet. On a laptop/desktop open this dashboard and save the token — it joins automatically as a slave node, then select it here (or in Runner). The node with the most GPU is listed first.';
       box.appendChild(d);
     }
+    var routed = (el('runner') ? el('runner').value : '') || S.routed || '';
     ws.forEach(function (w) {
       var row = document.createElement('div');
       row.className = 'frow';
@@ -2695,12 +2730,37 @@ function refreshWorkers() {
       gp.className = 'badge mid';
       gp.textContent = w.gflops ? (Math.round(w.gflops) + ' GFLOPS') : 'no bench';
       row.appendChild(gp);
+      if (w.id === topId) {
+        var fb = document.createElement('span');
+        fb.className = 'badge ok';
+        fb.textContent = 'fastest GPU';
+        row.appendChild(fb);
+      }
+      if (routed === w.id || (routed === 'auto' && w.id === topId)) {
+        var rb = document.createElement('span');
+        rb.className = 'badge mid';
+        rb.textContent = (routed === 'auto') ? 'auto target' : 'routed here';
+        row.appendChild(rb);
+      }
       var md = document.createElement('span');
       md.className = 'fmeta';
       md.textContent = (w.loadedModel ? 'loaded: ' + w.loadedModel : 'default: ' + (w.defaultModel || '—')) +
         ' · ' + w.tasksDone + ' task(s)' +
         (w.lastTps ? (' · last ' + w.lastTps + ' tok/s · ttft ' + ((w.lastTtftMs || 0) / 1000).toFixed(2) + ' s') : '');
       row.appendChild(md);
+      var rt = document.createElement('button');
+      rt.className = 'ghost';
+      rt.textContent = (routed === w.id) ? 'Selected ✓' : 'Select for chat';
+      rt.title = (w.state === 'offline')
+        ? 'node is offline — it takes no prompts right now'
+        : ('route prompts to ' + gpuLabel(w));
+      rt.disabled = (w.state === 'offline') || (routed === w.id);
+      rt.onclick = function () {
+        el('runner').value = w.id;
+        runnerChanged();
+        refreshWorkers();
+      };
+      row.appendChild(rt);
       var rm = document.createElement('button');
       rm.className = 'ghost';
       rm.textContent = 'Disconnect';

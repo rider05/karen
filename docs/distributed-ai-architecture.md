@@ -114,8 +114,10 @@ no promise that adding workers speeds up a single generation.
   `GET /` — the slave-node worker page a device just opens to start working (GPU
   status, join state, task status; aliases `/worker` and `/slave`), and
   `GET /dashboard` — the console dashboard (monitor slaves, pick runner/model,
-  test chat). All worker/chat APIs require the token (pages paste it once; stored
-  per address in `localStorage`).
+  test chat; the slave list and the Runner picker are ordered fastest-GPU-first,
+  every node has a "Select for chat" action, the pick is remembered per browser,
+  and `Auto` routes each prompt to the fastest online GPU). All worker/chat APIs
+  require the token (pages paste it once; stored per address in `localStorage`).
 - **WebGPU needs a secure context.** Over plain `http://192.168.x.x` browsers
   hide `navigator.gpu` — in Chrome, Edge, Brave and Firefox alike (verified;
   see audit §2.7). `tools/karen-tunnel.ps1` forwards `127.0.0.1:11434` →

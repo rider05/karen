@@ -76,21 +76,6 @@ private fun toast(ctx: android.content.Context, msg: String) {
 }
 
 @Composable
-private fun ManagerHeader(
-    title: String,
-    onOpenDrawer: () -> Unit,
-    onNavigateToHome: () -> Unit = {},
-    vararg actions: Triple<String, androidx.compose.ui.graphics.vector.ImageVector, () -> Unit>
-) {
-    ChatGPTTopAppBar(
-        selectedModel = title,
-        onMenuClick = onOpenDrawer,
-        onBackClick = onNavigateToHome,
-        moreActions = actions.toList()
-    )
-}
-
-@Composable
 fun StepRow(index: Int, label: String, done: Boolean) {
     val colors = LocalKarenColors.current
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 3.dp)) {
@@ -266,8 +251,12 @@ fun ModelImportScreen(onOpenDrawer: () -> Unit = {}, onNavigateToHome: () -> Uni
         try { android.os.StatFs(ModelDownloader.modelsDir(ctx).absolutePath).availableBytes } catch (_: Exception) { 0L }
     }
 
-    Column { ManagerHeader("Model Import", onOpenDrawer, onNavigateToHome) }
-    KScreen(title = "Local Model Import", subtitle = "Real file operations · GGUF only for on-device") {
+    KScreen(
+        title = "Local Model Import",
+        subtitle = "Real file operations · GGUF only for on-device",
+        onOpenDrawer = onOpenDrawer,
+        onBackClick = onNavigateToHome
+    ) {
         // -- Summary --
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             KpiCard("Installed", "${installedModels.size}", modifier = Modifier.weight(1f), tone = KTone.Neutral)
@@ -490,8 +479,12 @@ fun ModelExportScreen(onOpenDrawer: () -> Unit = {}, onNavigateToHome: () -> Uni
         }
     }
 
-    Column { ManagerHeader("Model Export", onOpenDrawer, onNavigateToHome) }
-    KScreen(title = "Portable Model Export", subtitle = "Real file operations · GGUF weights only") {
+    KScreen(
+        title = "Portable Model Export",
+        subtitle = "Real file operations · GGUF weights only",
+        onOpenDrawer = onOpenDrawer,
+        onBackClick = onNavigateToHome
+    ) {
         // -- Model selection --
         Section(title = "Select model") {
             if (installedModels.isEmpty()) {
@@ -748,8 +741,12 @@ fun MemoryTransferScreen(onOpenDrawer: () -> Unit = {}, onNavigateToHome: () -> 
         } else emptyList()
     }
 
-    Column { ManagerHeader("Memory Transfer", onOpenDrawer, onNavigateToHome) }
-    KScreen(title = "Memory Export & Import", subtitle = "Real data · encrypted · offline") {
+    KScreen(
+        title = "Memory Export & Import",
+        subtitle = "Real data · encrypted · offline",
+        onOpenDrawer = onOpenDrawer,
+        onBackClick = onNavigateToHome
+    ) {
         // -- Summary --
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             KpiCard("Verified", "${verifiedFacts.size}", modifier = Modifier.weight(1f), tone = KTone.Success)
@@ -1150,8 +1147,12 @@ fun BackupPackageScreen(onOpenDrawer: () -> Unit = {}, onNavigateToHome: () -> U
         }
     }
 
-    Column { ManagerHeader("Backup Package", onOpenDrawer, onNavigateToHome) }
-    KScreen(title = "Portable Karen Backup", subtitle = "Real data · offline · no cloud") {
+    KScreen(
+        title = "Portable Karen Backup",
+        subtitle = "Real data · offline · no cloud",
+        onOpenDrawer = onOpenDrawer,
+        onBackClick = onNavigateToHome
+    ) {
         // -- Summary --
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             KpiCard("Chats", "${conversations.size}", modifier = Modifier.weight(1f), tone = KTone.Neutral)
@@ -1360,8 +1361,12 @@ fun StorageManagerScreen(onOpenDrawer: () -> Unit = {}, onNavigateToHome: () -> 
             .take(5)
     }
 
-    Column { ManagerHeader("Karen Storage", onOpenDrawer, onNavigateToHome) }
-    KScreen(title = "Storage & File Manager", subtitle = "Real device data · re-scans on every visit") {
+    KScreen(
+        title = "Storage & File Manager",
+        subtitle = "Real device data · re-scans on every visit",
+        onOpenDrawer = onOpenDrawer,
+        onBackClick = onNavigateToHome
+    ) {
         // -- Summary cards --
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             KpiCard("Device", fmtBytes(deviceTotal), modifier = Modifier.weight(1f), tone = KTone.Neutral)
@@ -1496,8 +1501,12 @@ fun MigrationScreen(onOpenDrawer: () -> Unit = {}, onNavigateToHome: () -> Unit 
         )
     }
 
-    Column { ManagerHeader("Device Migration", onOpenDrawer, onNavigateToHome) }
-    KScreen(title = "Offline Migration", subtitle = "Real data · no cloud account needed") {
+    KScreen(
+        title = "Offline Migration",
+        subtitle = "Real data · no cloud account needed",
+        onOpenDrawer = onOpenDrawer,
+        onBackClick = onNavigateToHome
+    ) {
         // -- Summary --
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             KpiCard("Chats", "${conversations.size}", modifier = Modifier.weight(1f), tone = KTone.Neutral)

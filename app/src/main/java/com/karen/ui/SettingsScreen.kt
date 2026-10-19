@@ -84,7 +84,10 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .statusBarsPadding()
+                // Scaffold already applies the status-bar inset — keep only a
+                // small margin so the header sits at the same height as the
+                // shared ChatGPTTopAppBar used elsewhere.
+                .padding(top = 6.dp)
                 .padding(horizontal = 8.dp, vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -98,7 +101,7 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
             modifier = Modifier
                 .fillMaxSize()
                 .padding(horizontal = 16.dp),
-            contentPadding = PaddingValues(top = 0.dp, bottom = 80.dp),
+            contentPadding = PaddingValues(top = 12.dp, bottom = 80.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             item {

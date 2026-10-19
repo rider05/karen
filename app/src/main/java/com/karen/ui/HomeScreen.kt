@@ -57,7 +57,7 @@ fun HomeScreen(
             .fillMaxSize()
             .background(colors.background)
             .padding(horizontal = 16.dp),
-        contentPadding = PaddingValues(top = 14.dp, bottom = 80.dp),
+        contentPadding = PaddingValues(top = 8.dp, bottom = 80.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         // Greeting Header

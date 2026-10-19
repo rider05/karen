@@ -1884,7 +1884,6 @@ fun WorkspaceScreen(
             onMenuClick = onOpenDrawer,
             onModelClick = { showModelSheet = true },
             onBackClick = onNavigateToHome,
-            compact = true,
             effort = if (isReasoningModel(if (autoRoute) (lastRouted ?: selectedModel) else selectedModel)) effort else null,
             efforts = listOf("Low", "Medium", "High", "Max", "Extreme", "XHigh"),
             onSelectEffort = { effort = it },
@@ -1988,7 +1987,7 @@ fun WorkspaceScreen(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp)
+                    .padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 8.dp)
             ) {
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                     Text("Projects", color = colors.textPrimary, fontSize = 16.sp, fontWeight = FontWeight.Bold)
@@ -2226,7 +2225,7 @@ fun WorkspaceScreen(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 6.dp)
+                .padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 6.dp)
                 .clip(RoundedCornerShape(12.dp))
                 .background(colors.surface)
                 .border(1.dp, colors.border, RoundedCornerShape(12.dp))

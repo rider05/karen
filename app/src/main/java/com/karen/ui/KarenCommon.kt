@@ -171,9 +171,7 @@ fun ChatGPTTopAppBar(
     eyebrow: String = "Dialogue",
     temporaryChat: Boolean = false,
     onToggleTemporaryChat: () -> Unit = {},
-    showTemporaryChat: Boolean = false,
-    /** Slim header: small fixed top inset instead of the full status inset. */
-    compact: Boolean = false
+    showTemporaryChat: Boolean = false
 ) {
     val colors = LocalKarenColors.current
     var showMoreMenu by remember { mutableStateOf(false) }
@@ -184,9 +182,12 @@ fun ChatGPTTopAppBar(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(colors.background)
-                .then(if (compact) Modifier.padding(top = 6.dp) else Modifier.statusBarsPadding())
+                // The Scaffold already pads content by the status-bar inset;
+                // this adds only a small margin, so the bar sits one inset deep
+                // on every screen instead of stacking a second status inset.
+                .padding(top = 6.dp)
                 .padding(top = 2.dp, bottom = 2.dp)
-                .height(if (compact) 44.dp else 50.dp)
+                .height(48.dp)
                 .padding(start = 4.dp, end = 4.dp),
             contentAlignment = Alignment.Center
         ) {
@@ -3097,32 +3098,46 @@ private fun DrawerNavItem(
     }
 }
 
-// Backward-compatible legacy components for existing callers
+// Legacy screen scaffold used by the manager screens: shared top bar plus one
+// scrolling content column, so those screens match the rest of the app.
 @Composable
-fun KScreen(title: String, subtitle: String = "", content: @Composable ColumnScope.() -> Unit) {
+fun KScreen(
+    title: String,
+    subtitle: String = "",
+    onOpenDrawer: (() -> Unit)? = null,
+    onBackClick: (() -> Unit)? = null,
+    content: @Composable ColumnScope.() -> Unit
+) {
     val colors = LocalKarenColors.current
     Column(
         Modifier
             .fillMaxSize()
             .background(colors.background)
     ) {
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp)
-        ) {
-            Text(title, color = colors.textPrimary, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-            if (subtitle.isNotEmpty()) {
-                Text(subtitle, color = colors.textMuted, fontSize = 12.sp, modifier = Modifier.padding(top = 2.dp))
-            }
-        }
-        HorizontalDivider(color = colors.border, thickness = 0.5.dp)
+        ChatGPTTopAppBar(
+            selectedModel = title,
+            onMenuClick = onOpenDrawer ?: {},
+            onBackClick = onBackClick
+        )
         LazyColumn(
             Modifier
                 .fillMaxSize()
-                .padding(horizontal = 16.dp)
+                .padding(horizontal = 16.dp),
+            contentPadding = PaddingValues(top = 12.dp, bottom = 80.dp)
         ) {
-            item { Column(content = content) }
+            item {
+                Column {
+                    if (subtitle.isNotEmpty()) {
+                        Text(
+                            subtitle,
+                            color = colors.textMuted,
+                            fontSize = 12.sp,
+                            modifier = Modifier.padding(bottom = 10.dp)
+                        )
+                    }
+                    content()
+                }
+            }
         }
     }
 }

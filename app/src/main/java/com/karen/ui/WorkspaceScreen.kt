@@ -1331,6 +1331,9 @@ fun WorkspaceScreen(
 ) {
     val colors = LocalKarenColors.current
     var activeTab by remember { mutableStateOf("Code") }
+    // Focus mode for the artifact panel: the canvas takes the chat's height so
+    // every tab (code review, terminal, diff) is usable at full size.
+    var canvasExpanded by remember { mutableStateOf(false) }
     val tabs = listOf("Code", "Plan", "Terminal", "Diff")
 
     val ctx = androidx.compose.ui.platform.LocalContext.current
@@ -1983,11 +1986,11 @@ fun WorkspaceScreen(
         }
 
         if (selected == null) {
-            // Project list
+            // Project list — a scrolling list so every project stays reachable.
             Column(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 8.dp)
+                    .fillMaxSize()
+                    .padding(start = 16.dp, end = 16.dp, top = 12.dp)
             ) {
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                     Text("Projects", color = colors.textPrimary, fontSize = 16.sp, fontWeight = FontWeight.Bold)
@@ -1997,94 +2000,121 @@ fun WorkspaceScreen(
                 if (projects.isEmpty()) {
                     Text("No projects yet — create one to start", color = colors.textMuted, fontSize = 12.5.sp)
                 } else {
-                    projects.forEach { p ->
-                        val cardStats = p.chat.asReversed()
-                            .firstOrNull { it.role == "assistant" && it.tookMs > 0 }
-                            ?.let { turnStats(it.tookMs, it.tokEst) }
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 4.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(colors.surface)
-                                .border(1.dp, colors.border, RoundedCornerShape(12.dp))
-                                .clickable {
-                                    selected = p
-                                    activeTab = "Code"
-                                }
-                                .padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(Icons.Default.Folder, contentDescription = null, tint = colors.accentAmber, modifier = Modifier.size(20.dp))
-                            Spacer(Modifier.width(10.dp))
-                            Column(Modifier.weight(1f)) {
-                                Text(p.name, color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold)
-                                Text(p.dir, color = colors.textMuted, fontSize = 10.5.sp, fontFamily = FontFamily.Monospace, maxLines = 1)
-                            }
-                            if (cardStats != null) {
-                                Text(cardStats, color = colors.textMuted, fontSize = 10.5.sp, fontFamily = FontFamily.Monospace)
-                            }
-                            Box {
-                                IconButton(
-                                    onClick = { cardMenuDir = p.dir },
-                                    modifier = Modifier.size(32.dp)
-                                ) {
-                                    Icon(Icons.Default.MoreVert, contentDescription = "Project options", tint = colors.textMuted, modifier = Modifier.size(17.dp))
-                                }
-                                KDropdownMenu(
-                                    expanded = cardMenuDir == p.dir,
-                                    onDismissRequest = { cardMenuDir = null }
-                                ) {
-                                    DropdownMenuItem(
-                                        text = { Text("Rename", color = colors.textPrimary, fontSize = 13.sp) },
-                                        leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null, tint = colors.textSecondary, modifier = Modifier.size(16.dp)) },
-                                        onClick = {
-                                            cardMenuDir = null
-                                            renameInput = p.name
-                                            renamingDir = p.dir
-                                        }
+                    LazyColumn(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        contentPadding = PaddingValues(bottom = 16.dp)
+                    ) {
+                        items(projects.size) { pIndex ->
+                            val p = projects[pIndex]
+                            val cardStats = p.chat.asReversed()
+                                .firstOrNull { it.role == "assistant" && it.tookMs > 0 }
+                                ?.let { turnStats(it.tookMs, it.tokEst) }
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(colors.surface)
+                                    .border(1.dp, colors.border, RoundedCornerShape(12.dp))
+                                    .clickable {
+                                        selected = p
+                                        activeTab = "Code"
+                                    }
+                                    .padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Default.Folder, contentDescription = null, tint = colors.accentAmber, modifier = Modifier.size(20.dp))
+                                Spacer(Modifier.width(10.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        p.name,
+                                        color = colors.textPrimary,
+                                        fontSize = 13.5.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 2,
+                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                                     )
-                                    DropdownMenuItem(
-                                        text = { Text("Duplicate", color = colors.textPrimary, fontSize = 13.sp) },
-                                        leadingIcon = { Icon(Icons.Default.ContentCopy, contentDescription = null, tint = colors.textSecondary, modifier = Modifier.size(16.dp)) },
-                                        onClick = {
-                                            cardMenuDir = null
-                                            scope.launch {
-                                                val src = withContext(Dispatchers.IO) { File(p.dir) }
-                                                val base = "${p.name} copy"
-                                                var target = base
-                                                var n = 2
-                                                while (projects.any { it.name == target }) {
-                                                    target = "$base $n"
-                                                    n++
-                                                }
-                                                val dst = File(src.parentFile, target)
-                                                val ok = withContext(Dispatchers.IO) {
-                                                    try {
-                                                        src.copyRecursively(dst, overwrite = false)
-                                                        File(dst, ".karen").deleteRecursively()
-                                                        true
-                                                    } catch (_: Exception) { false }
-                                                }
-                                                if (ok) {
-                                                    projects.add(Project(target, dst.absolutePath))
-                                                    UserPrefs.saveProjects(ctx, projects.map { it.name to it.dir })
-                                                    android.widget.Toast.makeText(ctx, "Duplicated as $target", android.widget.Toast.LENGTH_SHORT).show()
-                                                } else {
-                                                    android.widget.Toast.makeText(ctx, "Duplicate failed", android.widget.Toast.LENGTH_SHORT).show()
+                                    Text(
+                                        p.dir,
+                                        color = colors.textMuted,
+                                        fontSize = 10.5.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        maxLines = 1,
+                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                    )
+                                    if (cardStats != null) {
+                                        Text(
+                                            cardStats,
+                                            color = colors.textMuted,
+                                            fontSize = 10.5.sp,
+                                            fontFamily = FontFamily.Monospace,
+                                            maxLines = 1,
+                                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
+                                Box {
+                                    IconButton(
+                                        onClick = { cardMenuDir = p.dir },
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
+                                        Icon(Icons.Default.MoreVert, contentDescription = "Project options", tint = colors.textMuted, modifier = Modifier.size(17.dp))
+                                    }
+                                    KDropdownMenu(
+                                        expanded = cardMenuDir == p.dir,
+                                        onDismissRequest = { cardMenuDir = null }
+                                    ) {
+                                        DropdownMenuItem(
+                                            text = { Text("Rename", color = colors.textPrimary, fontSize = 13.sp) },
+                                            leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null, tint = colors.textSecondary, modifier = Modifier.size(16.dp)) },
+                                            onClick = {
+                                                cardMenuDir = null
+                                                renameInput = p.name
+                                                renamingDir = p.dir
+                                            }
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("Duplicate", color = colors.textPrimary, fontSize = 13.sp) },
+                                            leadingIcon = { Icon(Icons.Default.ContentCopy, contentDescription = null, tint = colors.textSecondary, modifier = Modifier.size(16.dp)) },
+                                            onClick = {
+                                                cardMenuDir = null
+                                                scope.launch {
+                                                    val src = withContext(Dispatchers.IO) { File(p.dir) }
+                                                    val base = "${p.name} copy"
+                                                    var target = base
+                                                    var n = 2
+                                                    while (projects.any { it.name == target }) {
+                                                        target = "$base $n"
+                                                        n++
+                                                    }
+                                                    val dst = File(src.parentFile, target)
+                                                    val ok = withContext(Dispatchers.IO) {
+                                                        try {
+                                                            src.copyRecursively(dst, overwrite = false)
+                                                            File(dst, ".karen").deleteRecursively()
+                                                            true
+                                                        } catch (_: Exception) { false }
+                                                    }
+                                                    if (ok) {
+                                                        projects.add(Project(target, dst.absolutePath))
+                                                        UserPrefs.saveProjects(ctx, projects.map { it.name to it.dir })
+                                                        android.widget.Toast.makeText(ctx, "Duplicated as $target", android.widget.Toast.LENGTH_SHORT).show()
+                                                    } else {
+                                                        android.widget.Toast.makeText(ctx, "Duplicate failed", android.widget.Toast.LENGTH_SHORT).show()
+                                                    }
                                                 }
                                             }
-                                        }
-                                    )
-                                    KMenuDivider()
-                                    DropdownMenuItem(
-                                        text = { Text("Delete", color = colors.accentRed, fontSize = 13.sp) },
-                                        leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null, tint = colors.accentRed, modifier = Modifier.size(16.dp)) },
-                                        onClick = {
-                                            cardMenuDir = null
-                                            deletingDir = p.dir
-                                        }
-                                    )
+                                        )
+                                        KMenuDivider()
+                                        DropdownMenuItem(
+                                            text = { Text("Delete", color = colors.accentRed, fontSize = 13.sp) },
+                                            leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null, tint = colors.accentRed, modifier = Modifier.size(16.dp)) },
+                                            onClick = {
+                                                cardMenuDir = null
+                                                deletingDir = p.dir
+                                            }
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -2229,14 +2259,16 @@ fun WorkspaceScreen(
                 .clip(RoundedCornerShape(12.dp))
                 .background(colors.surface)
                 .border(1.dp, colors.border, RoundedCornerShape(12.dp))
-                .padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically
+                .padding(12.dp)
         ) {
-            IconButton(onClick = { selected = null }) {
+            IconButton(
+                onClick = { selected = null },
+                modifier = Modifier.align(Alignment.Top)
+            ) {
                 Icon(Icons.Default.ArrowBack, contentDescription = "Projects", tint = colors.textPrimary)
             }
             Column(Modifier.weight(1f)) {
-                Text(project.name, color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                Text(project.name, color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                 Text(project.dir, color = colors.textMuted, fontSize = 10.5.sp, fontFamily = FontFamily.Monospace, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                 Spacer(Modifier.height(4.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -2246,9 +2278,9 @@ fun WorkspaceScreen(
                         fontSize = 11.sp,
                         fontFamily = FontFamily.Monospace,
                         fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false)
+                        maxLines = 2,
+                        lineHeight = 14.sp,
+                        modifier = Modifier.weight(1f)
                     )
                     TextButton(
                         onClick = { showSessions = true },
@@ -2319,11 +2351,12 @@ fun WorkspaceScreen(
             )
         }
 
-        // Chat thread (ChatScreen-style, per project)
+        // Chat thread (ChatScreen-style, per project). In focus mode the
+        // artifact panel takes this space instead.
         LazyColumn(
             state = chatThreadState,
             modifier = Modifier
-                .weight(1f)
+                .then(if (canvasExpanded) Modifier.height(0.dp) else Modifier.weight(1f))
                 .fillMaxWidth()
                 .padding(horizontal = 14.dp),
             contentPadding = PaddingValues(top = 6.dp, bottom = 8.dp),
@@ -2464,15 +2497,31 @@ fun WorkspaceScreen(
                     )
                 }
             }
+            // Focus mode: give the canvas the whole thread area (and back).
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(50.dp))
+                    .clickable { canvasExpanded = !canvasExpanded }
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    if (canvasExpanded) Icons.Default.UnfoldLess else Icons.Default.UnfoldMore,
+                    contentDescription = if (canvasExpanded) "Restore chat" else "Expand canvas",
+                    tint = if (canvasExpanded) colors.accentGreen else colors.textMuted,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
         }
 
-        // Artifact panel (flexible height, capped: the composer below must
-        // always stay visible, even with the keyboard open on short screens)
+        // Artifact panel: shares the thread area 50/50, with a floor so the
+        // tab toolbars and controls stay on screen. The expand toggle gives it
+        // the full height; the composer below always stays visible.
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .weight(0.5f, fill = false)
-                .heightIn(max = 300.dp)
+                .weight(1.5f)
+                .heightIn(min = 180.dp)
                 .padding(horizontal = 16.dp)
                 .clip(RoundedCornerShape(12.dp))
                 .background(colors.surface)
@@ -2687,6 +2736,7 @@ fun WorkspaceScreen(
     }
 }
 
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun CodeCanvasView(project: Project) {
     val colors = LocalKarenColors.current
@@ -2807,6 +2857,7 @@ private fun CodeCanvasView(project: Project) {
                 fontSize = 11.sp,
                 fontFamily = FontFamily.Monospace,
                 maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f)
             )
             if (dirty) {
@@ -2920,6 +2971,7 @@ private fun CodeCanvasView(project: Project) {
                                 fontFamily = FontFamily.Monospace,
                                 fontWeight = if (isSel) FontWeight.SemiBold else FontWeight.Normal,
                                 maxLines = 1,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                                 modifier = Modifier.weight(1f)
                             )
                         }
@@ -2930,7 +2982,7 @@ private fun CodeCanvasView(project: Project) {
             // Editor
             Column(modifier = Modifier.weight(1.5f).fillMaxHeight()) {
                 if (currentFile == null) {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
                         Text("Select a file to read & edit", color = colors.textMuted, fontSize = 12.sp)
                     }
                 } else if (binaryNote != null) {
@@ -2994,7 +3046,12 @@ private fun CodeCanvasView(project: Project) {
                     )
                 }
                 Spacer(Modifier.height(6.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                // Wraps instead of clipping: on a narrow editor column the
+                // Compile & Test action drops to a second line.
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
                     OutlinedButton(
                         onClick = { previewMode = !previewMode },
                         enabled = currentFile != null && binaryNote == null,
@@ -3680,11 +3737,19 @@ private fun TerminalCanvasView(project: Project) {
             Spacer(Modifier.width(6.dp))
             Box(Modifier.size(8.dp).clip(CircleShape).background(Color(0xFF10A37F)))
             Spacer(Modifier.width(12.dp))
-            Text("local-sandbox: ~/${project.name}", color = termMuted, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+            Text(
+                "local-sandbox: ~/${project.name}",
+                color = termMuted,
+                fontSize = 11.sp,
+                fontFamily = FontFamily.Monospace,
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
         }
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(6.dp))
         HorizontalDivider(color = if (colors.isDark) Color(0xFF262626) else Color(0xFFE0E0E0), thickness = 0.5.dp)
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(6.dp))
         LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             if (project.terminalLog.isEmpty()) {
                 item { Text("> no output yet — run a command", color = termMuted, fontSize = 12.sp, fontFamily = FontFamily.Monospace) }
@@ -3739,6 +3804,7 @@ private fun TerminalCanvasView(project: Project) {
                 fontSize = 10.5.sp,
                 fontFamily = FontFamily.Monospace,
                 maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f)
             )
             TextButton(

@@ -12,7 +12,10 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -42,10 +45,12 @@ fun HomeScreen(
     }
 
     // Real recent items: last conversations + newest vault documents.
-    val recentChats = remember { ChatHistoryStore.loadConversations(ctx).take(3) }
+    // Three show at a glance; "See More" reveals up to ten.
+    val recentChats = remember { ChatHistoryStore.loadConversations(ctx).take(10) }
     val recentFiles = remember {
-        vaultFiles(ctx).sortedByDescending { it.lastModified() }.take(2)
+        vaultFiles(ctx).sortedByDescending { it.lastModified() }.take(10)
     }
+    var showAllRecents by remember { mutableStateOf(false) }
 
     // Live task surface: an in-flight download, else the pinned model.
     val activeDownload = ModelDownloader.activeName
@@ -310,17 +315,60 @@ fun HomeScreen(
             }
         }
 
-        // Recent Knowledge & Vault
+        // Recent Knowledge & Vault — newest chats and vault docs in one list:
+        // three at a glance, up to ten with See More.
         item {
-            Text(
-                "Recent Knowledge & Vault",
-                color = colors.textMuted,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.SemiBold
-            )
+            val recentItems = buildList {
+                recentChats.forEach { c ->
+                    add(
+                        HomeRecentItem(
+                            ts = c.updatedAt,
+                            title = c.title,
+                            sub = "Chat · ${relTimeAgo(c.updatedAt)}",
+                            icon = Icons.AutoMirrored.Filled.Chat,
+                            onOpen = { onOpenConversation(c.id) }
+                        )
+                    )
+                }
+                recentFiles.forEach { f ->
+                    add(
+                        HomeRecentItem(
+                            ts = f.lastModified(),
+                            title = f.name,
+                            sub = "Vault · ${sizeLabel(f.length())}",
+                            icon = Icons.Default.Description,
+                            onOpen = { onNavigate("Files") }
+                        )
+                    )
+                }
+            }.sortedByDescending { it.ts }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "Recent Knowledge & Vault",
+                    color = colors.textMuted,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f)
+                )
+                if (recentItems.size > 3) {
+                    Text(
+                        if (showAllRecents) "Show Less" else "See More",
+                        color = colors.accentGreen,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { showAllRecents = !showAllRecents }
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
+                }
+            }
             Spacer(Modifier.height(6.dp))
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (recentChats.isEmpty() && recentFiles.isEmpty()) {
+                if (recentItems.isEmpty()) {
                     Text(
                         "Nothing yet — ask Karen something, or add a document in the Knowledge Vault.",
                         color = colors.textMuted,
@@ -328,20 +376,12 @@ fun HomeScreen(
                         lineHeight = 17.sp
                     )
                 }
-                recentChats.forEach { c ->
+                recentItems.take(if (showAllRecents) 10 else 3).forEach { r ->
                     RecentDocRow(
-                        title = c.title,
-                        sub = "Chat · ${relTimeAgo(c.updatedAt)}",
-                        icon = Icons.AutoMirrored.Filled.Chat,
-                        onClick = { onOpenConversation(c.id) }
-                    )
-                }
-                recentFiles.forEach { f ->
-                    RecentDocRow(
-                        title = f.name,
-                        sub = "Vault · ${sizeLabel(f.length())}",
-                        icon = Icons.Default.Description,
-                        onClick = { onNavigate("Files") }
+                        title = r.title,
+                        sub = r.sub,
+                        icon = r.icon,
+                        onClick = r.onOpen
                     )
                 }
             }
@@ -405,6 +445,15 @@ private fun PromptShortcutCard(
         Text(subtitle, color = colors.textMuted, fontSize = 11.5.sp)
     }
 }
+
+/** One row in the merged Recent Knowledge & Vault feed. */
+private data class HomeRecentItem(
+    val ts: Long,
+    val title: String,
+    val sub: String,
+    val icon: ImageVector,
+    val onOpen: () -> Unit
+)
 
 @Composable
 private fun RecentDocRow(

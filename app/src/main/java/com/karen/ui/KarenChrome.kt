@@ -347,10 +347,9 @@ fun KOverflowMenu(
     onDismiss: () -> Unit
 ) {
     val colors = LocalKarenColors.current
-    DropdownMenu(
+    KDropdownMenu(
         expanded = true,
-        onDismissRequest = onDismiss,
-        modifier = Modifier.background(colors.cardBackground)
+        onDismissRequest = onDismiss
     ) {
         actions.forEach { (label, icon, onClick) ->
             DropdownMenuItem(

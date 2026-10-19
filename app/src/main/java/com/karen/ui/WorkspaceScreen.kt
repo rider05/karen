@@ -2032,10 +2032,9 @@ fun WorkspaceScreen(
                                 ) {
                                     Icon(Icons.Default.MoreVert, contentDescription = "Project options", tint = colors.textMuted, modifier = Modifier.size(17.dp))
                                 }
-                                DropdownMenu(
+                                KDropdownMenu(
                                     expanded = cardMenuDir == p.dir,
-                                    onDismissRequest = { cardMenuDir = null },
-                                    modifier = Modifier.background(colors.surface)
+                                    onDismissRequest = { cardMenuDir = null }
                                 ) {
                                     DropdownMenuItem(
                                         text = { Text("Rename", color = colors.textPrimary, fontSize = 13.sp) },
@@ -2078,6 +2077,7 @@ fun WorkspaceScreen(
                                             }
                                         }
                                     )
+                                    KMenuDivider()
                                     DropdownMenuItem(
                                         text = { Text("Delete", color = colors.accentRed, fontSize = 13.sp) },
                                         leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null, tint = colors.accentRed, modifier = Modifier.size(16.dp)) },

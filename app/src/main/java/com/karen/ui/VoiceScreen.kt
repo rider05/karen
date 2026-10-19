@@ -426,10 +426,9 @@ fun VoiceScreen(
                     modifier = Modifier.size(16.dp)
                 )
             }
-            DropdownMenu(
+            KDropdownMenu(
                 expanded = personaMenu,
-                onDismissRequest = { personaMenu = false },
-                modifier = Modifier.background(colors.surface)
+                onDismissRequest = { personaMenu = false }
             ) {
                 UserPrefs.voicePersonas.forEach { v ->
                     DropdownMenuItem(

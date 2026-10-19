@@ -541,7 +541,7 @@ private fun WorkerPanel(
                     enabled = online,
                     modifier = Modifier.fillMaxWidth()
                 )
-                DropdownMenu(expanded = assignMenu, onDismissRequest = { assignMenu = false }) {
+                KDropdownMenu(expanded = assignMenu, onDismissRequest = { assignMenu = false }) {
                     DropdownMenuItem(
                         text = {
                             Column {
@@ -571,6 +571,7 @@ private fun WorkerPanel(
                             onClick = {}
                         )
                     }
+                    if (assignInfo.models.isNotEmpty()) KMenuDivider()
                     assignInfo.models.forEach { m ->
                         DropdownMenuItem(
                             text = { Text(m, color = colors.textPrimary, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) },

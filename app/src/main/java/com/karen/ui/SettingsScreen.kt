@@ -353,12 +353,13 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                                     modifier = Modifier.size(16.dp)
                                 )
                             }
-                            DropdownMenu(
+                            KDropdownMenu(
                                 expanded = expanded,
-                                onDismissRequest = { if (which == 0) localMenu = false else apiMenu = false },
-                                modifier = Modifier.background(colors.surface)
+                                onDismissRequest = { if (which == 0) localMenu = false else apiMenu = false }
                             ) {
-                                (if (which == 0) localOptions else apiOptions).forEach { option ->
+                                (if (which == 0) localOptions else apiOptions).forEachIndexed { idx, option ->
+                                    // Divider between "None (auto)" and the concrete list.
+                                    if (idx == 1) KMenuDivider()
                                     DropdownMenuItem(
                                         text = {
                                             Text(

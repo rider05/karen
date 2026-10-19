@@ -39,6 +39,8 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.sp
@@ -294,13 +296,9 @@ fun ChatGPTTopAppBar(
                             modifier = Modifier.size(13.dp)
                         )
                     }
-                    DropdownMenu(
+                    KDropdownMenu(
                         expanded = effortMenu,
-                        onDismissRequest = { effortMenu = false },
-                        modifier = Modifier
-                            .background(colors.cardBackground, RoundedCornerShape(12.dp))
-                            .border(1.dp, colors.border, RoundedCornerShape(12.dp))
-                            .clip(RoundedCornerShape(12.dp))
+                        onDismissRequest = { effortMenu = false }
                     ) {
                         efforts.forEachIndexed { idx, e ->
                             val tint = effortColor(e, colors)
@@ -325,15 +323,7 @@ fun ChatGPTTopAppBar(
                                     .padding(horizontal = 6.dp, vertical = 2.dp)
                                     .clip(RoundedCornerShape(8.dp))
                             )
-                            if (idx != efforts.lastIndex) {
-                                HorizontalDivider(
-                                    modifier = Modifier
-                                        .fillMaxWidth(0.75f)
-                                        .align(Alignment.CenterHorizontally),
-                                    thickness = 1.dp,
-                                    color = colors.border.copy(alpha = 0.55f)
-                                )
-                            }
+                            if (idx != efforts.lastIndex) KMenuDivider()
                         }
                     }
                 }
@@ -375,13 +365,10 @@ fun ChatGPTTopAppBar(
                             modifier = Modifier.size(22.dp)
                         )
                     }
-                    DropdownMenu(
+                    KDropdownMenu(
                         expanded = showMoreMenu && moreActions.isNotEmpty(),
                         onDismissRequest = { showMoreMenu = false },
-                        modifier = Modifier
-                            .width(260.dp)
-                            .background(colors.surface)
-                            .border(1.dp, colors.border, RoundedCornerShape(18.dp))
+                        width = 260.dp
                     ) {
                         moreActions.forEachIndexed { idx, action ->
                             DropdownMenuItem(
@@ -401,15 +388,7 @@ fun ChatGPTTopAppBar(
                                     action.third.invoke()
                                 }
                             )
-                            if (idx != moreActions.lastIndex) {
-                                HorizontalDivider(
-                                    modifier = Modifier
-                                        .fillMaxWidth(0.75f)
-                                        .align(Alignment.CenterHorizontally),
-                                    thickness = 0.75.dp,
-                                    color = colors.border.copy(alpha = 0.35f)
-                                )
-                            }
+                            if (idx != moreActions.lastIndex) KMenuDivider()
                         }
                     }
                 }
@@ -3214,7 +3193,7 @@ fun WorkerRouteChip(
             Spacer(Modifier.width(2.dp))
             Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = tint, modifier = Modifier.size(14.dp))
         }
-        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+        KDropdownMenu(expanded = open, onDismissRequest = { open = false }) {
             DropdownMenuItem(
                 text = {
                     Column {
@@ -3235,6 +3214,7 @@ fun WorkerRouteChip(
                 trailingIcon = { if (current == "auto") Icon(Icons.Default.Check, contentDescription = null, tint = colors.accentGreen, modifier = Modifier.size(16.dp)) },
                 onClick = { open = false; onSelect("auto") }
             )
+            if (picks.isNotEmpty()) KMenuDivider()
             picks.forEach { w ->
                 val usable = w.online && w.state != "paused"
                 val sub = buildString {
@@ -3336,7 +3316,7 @@ fun WorkerModelChip(
             Spacer(Modifier.width(2.dp))
             Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = tint, modifier = Modifier.size(14.dp))
         }
-        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+        KDropdownMenu(expanded = open, onDismissRequest = { open = false }) {
             DropdownMenuItem(
                 text = {
                     Column {
@@ -3357,6 +3337,7 @@ fun WorkerModelChip(
                     UserPrefs.setNodeModel(context, route, "")
                 }
             )
+            if (pick.models.isNotEmpty()) KMenuDivider()
             pick.models.forEach { m ->
                 DropdownMenuItem(
                     text = { Text(m, color = colors.textPrimary, fontSize = 13.sp, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) },
@@ -3372,6 +3353,45 @@ fun WorkerModelChip(
     }
 }
 
+
+/**
+ * Dropdown menu with the app's menu styling. Material3 1.2 draws menus with
+ * `shapes.extraSmall` (4 dp) and applies call-site modifiers to the inner
+ * column, so rounding has to come from the theme slot itself — overriding it
+ * here rounds the real menu surface without touching any other component.
+ */
+@Composable
+fun KDropdownMenu(
+    expanded: Boolean,
+    onDismissRequest: () -> Unit,
+    modifier: Modifier = Modifier,
+    width: Dp? = null,
+    offset: DpOffset = DpOffset(0.dp, 0.dp),
+    content: @Composable ColumnScope.() -> Unit
+) {
+    MaterialTheme(shapes = MaterialTheme.shapes.copy(extraSmall = RoundedCornerShape(12.dp))) {
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = onDismissRequest,
+            modifier = if (width != null) modifier.width(width) else modifier,
+            offset = offset,
+            content = content
+        )
+    }
+}
+
+/** Inset hairline between menu sections — same tone as the app's dividers. */
+@Composable
+fun ColumnScope.KMenuDivider() {
+    val colors = LocalKarenColors.current
+    HorizontalDivider(
+        modifier = Modifier
+            .fillMaxWidth(0.9f)
+            .align(Alignment.CenterHorizontally),
+        thickness = 1.dp,
+        color = colors.border.copy(alpha = 0.55f)
+    )
+}
 
 @Composable
 fun KV(label: String, value: String, hl: Boolean = false) {

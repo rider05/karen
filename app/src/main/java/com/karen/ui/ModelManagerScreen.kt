@@ -1673,15 +1673,13 @@ fun ModelManagerScreen(
                                     )
                                     Icon(Icons.Default.ArrowDropDown, contentDescription = "Choose model", tint = colors.textMuted, modifier = Modifier.size(18.dp))
                                 }
-                                DropdownMenu(
+                                KDropdownMenu(
                                     expanded = modelMenu,
-                                    onDismissRequest = { modelMenu = false },
-                                    modifier = Modifier
-                                        .background(colors.cardBackground, RoundedCornerShape(12.dp))
-                                        .border(1.dp, colors.border, RoundedCornerShape(12.dp))
-                                        .clip(RoundedCornerShape(12.dp))
+                                    onDismissRequest = { modelMenu = false }
                                 ) {
-                                    modelChoices.forEach { choice ->
+                                    modelChoices.forEachIndexed { idx, choice ->
+                                        // Separate the live list from the "custom id" action.
+                                        if (idx > 0 && choice == CUSTOM_MODEL) KMenuDivider()
                                         // Tier flag on every row: true only on live-priced
                                         // free; everything else bills the key.
                                         val tier = liveFree[choice] == true

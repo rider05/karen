@@ -1411,7 +1411,19 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                         }
                     }
                     // Diagnostics: proves the server answers and shows whether
-                    // another device's request ever arrived.
+                    // another device's request ever arrived. The counters move
+                    // on every HTTP hit (each worker poll included), so they
+                    // are sampled on a timer — this card keeps a fixed height
+                    // and the cards below it never re-layout per request.
+                    var diagCount by remember { mutableStateOf(0) }
+                    var diagLast by remember { mutableStateOf("") }
+                    androidx.compose.runtime.LaunchedEffect(Unit) {
+                        while (true) {
+                            diagCount = LocalApiServer.requestCount
+                            diagLast = LocalApiServer.lastRequest
+                            kotlinx.coroutines.delay(2000)
+                        }
+                    }
                     var selfTestText by remember { mutableStateOf("") }
                     var selfTesting by remember { mutableStateOf(false) }
                     val diagScope = rememberCoroutineScope()
@@ -1423,20 +1435,23 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                         Column(Modifier.weight(1f)) {
                             Text("Diagnostics", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
                             Text(
-                                if (LocalApiServer.requestCount == 0) "No requests received yet"
-                                else "${LocalApiServer.requestCount} request(s) received",
+                                if (diagCount == 0) "No requests received yet"
+                                else "$diagCount request(s) received",
                                 color = colors.textMuted,
                                 fontSize = 11.5.sp,
-                                fontFamily = FontFamily.Monospace
+                                fontFamily = FontFamily.Monospace,
+                                maxLines = 1,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                             )
-                            if (LocalApiServer.lastRequest.isNotBlank()) {
-                                Text(
-                                    "Last: ${LocalApiServer.lastRequest}",
-                                    color = colors.textMuted,
-                                    fontSize = 11.sp,
-                                    fontFamily = FontFamily.Monospace
-                                )
-                            }
+                            Text(
+                                if (diagLast.isBlank()) "Last: —" else "Last: $diagLast",
+                                color = colors.textMuted,
+                                fontSize = 11.sp,
+                                fontFamily = FontFamily.Monospace,
+                                minLines = 2,
+                                maxLines = 2,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                            )
                             if (selfTestText.isNotBlank()) {
                                 Text(
                                     selfTestText,

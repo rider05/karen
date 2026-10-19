@@ -411,4 +411,16 @@ object UserPrefs {
     fun setWorkerTarget(ctx: Context, value: String) {
         prefs(ctx).edit().putString(KEY_WORKER_TARGET, value.trim().take(40)).apply()
     }
+
+    // Per-turn model for a node-routed turn ("Run on: <node>" + model chip):
+    // "" = the node's assignment, otherwise a Karen model file the node
+    // reported it can run. Stored per worker id, so switching nodes keeps each
+    // node's own pick.
+    fun nodeModel(ctx: Context, workerId: String): String =
+        if (workerId.isBlank()) "" else prefs(ctx).getString("node_model_$workerId", "") ?: ""
+
+    fun setNodeModel(ctx: Context, workerId: String, model: String) {
+        if (workerId.isBlank()) return
+        prefs(ctx).edit().putString("node_model_$workerId", model.trim().take(90)).apply()
+    }
 }

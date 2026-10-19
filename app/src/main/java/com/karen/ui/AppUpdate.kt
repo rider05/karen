@@ -164,7 +164,9 @@ object AppUpdate {
                 .ifBlank { commit?.optJSONObject("author")?.optString("date", "").orEmpty() }
                 .take(10)
             val releaseNotes = commit?.optString("message", "").orEmpty()
-                .take(500)
+                // Keep the whole message: a 500-char cap silently chopped
+                // multi-line commit messages mid-sentence in the update box.
+                .take(4000)
             if (sha.isBlank()) {
                 Check.Failed("could not read latest commit")
             } else if (storedSha(ctx).isNotBlank() && sha == storedSha(ctx)) {

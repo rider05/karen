@@ -3268,6 +3268,111 @@ fun WorkerRouteChip(
 }
 
 
+/**
+ * Per-turn model for the "Run on" chip: only shown when a specific node is
+ * picked. "" (the default) means the node's assignment — the model the worker
+ * page or Network Nodes assigned. Picking one here applies to this route until
+ * changed; "auto" always keeps the node's assignment (the fastest node at send
+ * time may be a different device, and its model list with it).
+ */
+@Composable
+fun WorkerModelChip(
+    route: String,
+    modifier: Modifier = Modifier
+) {
+    val colors = LocalKarenColors.current
+    val context = LocalContext.current
+    if (route.isBlank() || route == "auto") return
+    var open by remember { mutableStateOf(false) }
+    var tick by remember { mutableStateOf(0L) }
+    var chosen by remember(route) { mutableStateOf(UserPrefs.nodeModel(context, route)) }
+    LaunchedEffect(route) {
+        while (true) {
+            delay(5000)
+            tick++
+        }
+    }
+    val picks = remember(tick, route) { LocalApiServer.workerPicks() }
+    val pick = picks.firstOrNull { it.id == route } ?: return
+    // A stored pick the node no longer reports is dropped, not sent to fail:
+    // the node's assignment takes over. (An empty list means "not reported
+    // yet" — a fresh join — so the pick is kept.)
+    val usable = chosen.isNotBlank() && pick.models.any { it.equals(chosen, ignoreCase = true) }
+    if (chosen.isNotBlank() && !usable && pick.models.isNotEmpty()) {
+        LaunchedEffect(chosen) {
+            chosen = ""
+            UserPrefs.setNodeModel(context, route, "")
+        }
+    }
+    val assigned = pick.assigned.ifBlank { pick.model }
+    val label = when {
+        usable -> chosen
+        assigned.isNotBlank() -> "$assigned (node)"
+        else -> "node's own pick"
+    }
+    val tint = if (usable) colors.accentBlue else colors.textMuted
+
+    Box(modifier = modifier) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .clip(RoundedCornerShape(999.dp))
+                .background(colors.surface)
+                .border(1.dp, if (usable) tint.copy(alpha = 0.55f) else colors.border, RoundedCornerShape(999.dp))
+                .clickable { open = true }
+                .padding(horizontal = 10.dp, vertical = 5.dp)
+        ) {
+            Icon(Icons.Default.Memory, contentDescription = "Model on node", tint = tint, modifier = Modifier.size(12.dp))
+            Spacer(Modifier.width(6.dp))
+            Text(
+                "Model: $label",
+                color = tint,
+                fontSize = 10.5.sp,
+                fontFamily = FontFamily.Monospace,
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                modifier = Modifier.widthIn(max = 210.dp)
+            )
+            Spacer(Modifier.width(2.dp))
+            Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = tint, modifier = Modifier.size(14.dp))
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            DropdownMenuItem(
+                text = {
+                    Column {
+                        Text("Node's assignment", color = colors.textPrimary, fontSize = 13.sp)
+                        Text(
+                            assigned.ifBlank { "the node's own pick" },
+                            color = colors.textMuted,
+                            fontSize = 11.sp,
+                            maxLines = 1,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                        )
+                    }
+                },
+                trailingIcon = { if (!usable) Icon(Icons.Default.Check, contentDescription = null, tint = colors.accentGreen, modifier = Modifier.size(16.dp)) },
+                onClick = {
+                    open = false
+                    chosen = ""
+                    UserPrefs.setNodeModel(context, route, "")
+                }
+            )
+            pick.models.forEach { m ->
+                DropdownMenuItem(
+                    text = { Text(m, color = colors.textPrimary, fontSize = 13.sp, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) },
+                    trailingIcon = { if (usable && chosen.equals(m, ignoreCase = true)) Icon(Icons.Default.Check, contentDescription = null, tint = colors.accentGreen, modifier = Modifier.size(16.dp)) },
+                    onClick = {
+                        open = false
+                        chosen = m
+                        UserPrefs.setNodeModel(context, route, m)
+                    }
+                )
+            }
+        }
+    }
+}
+
+
 @Composable
 fun KV(label: String, value: String, hl: Boolean = false) {
     val colors = LocalKarenColors.current

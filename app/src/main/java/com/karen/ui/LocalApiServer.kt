@@ -88,7 +88,9 @@ class WorkerInfo(
     val gflops: Double,
     val backend: String,
     val engine: String,
-    val defaultModel: String,
+    /** Model for turns that don't name one — set by the worker page's pick or
+     *  the phone's assignment (see [LocalApiServer.assignWorkerModel]). */
+    @Volatile var defaultModel: String,
     val models: List<String>,
     val joinedAt: Long,
     @Volatile var lastSeenAt: Long,
@@ -117,7 +119,14 @@ class WorkerInfo(
     @Volatile var telemetryAt: Long = 0L,
     /** Master-side pause: it keeps polling (stays listed/online) but takes no
      *  new prompts — "auto" skips it and explicit routes are refused. */
-    @Volatile var paused: Boolean = false
+    @Volatile var paused: Boolean = false,
+    /** When the phone last assigned [defaultModel] (ms, 0 = never). The worker
+     *  page applies the value and shows "phone assigned: …" — see workerPoll. */
+    @Volatile var assignedAt: Long = 0L,
+    /** True when the current [defaultModel] came from the phone's assignment
+     *  (Network Nodes / POST /v1/workers/model), false when the worker page's
+     *  own pick wrote it — so the page only ever labels the phone's value. */
+    @Volatile var assignedByPhone: Boolean = false
 ) {
     fun online(now: Long): Boolean = now - lastSeenAt < ONLINE_WINDOW_MS
 
@@ -178,6 +187,7 @@ class WorkerTask(
  *   GET  /v1/worker/poll       worker SSE long-poll (X-Karen-Worker header)
  *   POST /v1/workers/remove    master-side disconnect (worker then gets 410)
  *   POST /v1/workers/pause     master-side pause/resume ({id, paused})
+ *   POST /v1/workers/model     master-side model assignment ({id, model}; "" = the node's own pick)
  *   POST /v1/embeddings        501 — no embedding runtime ships on-device
  *   GET  /api/tags             Ollama-shaped model list
  *
@@ -270,11 +280,38 @@ object LocalApiServer {
         return n
     }
 
+    /** What the phone can assign to one joined node (Network Nodes "Assign model"). */
+    data class WorkerAssign(val id: String, val assigned: String, val models: List<String>)
+
+    /** The assignment + reported model list for one worker id, or null if gone. */
+    fun workerAssignInfo(id: String): WorkerAssign? =
+        workers[id]?.let { WorkerAssign(it.id, it.defaultModel, it.models) }
+
+    /**
+     * Master-side model assignment (Network Nodes, or POST /v1/workers/model).
+     * Every node turn without its own model then runs [model]; "" hands the
+     * node back to its own pick. The worker page applies this on its next
+     * keepalive and labels it "phone assigned" — it stays until either side
+     * changes it.
+     */
+    fun assignWorkerModel(id: String, model: String): Boolean {
+        val worker = workers[id] ?: return false
+        worker.defaultModel = model.trim().take(90)
+        worker.assignedAt = System.currentTimeMillis()
+        worker.assignedByPhone = true
+        touchNodeWorker(worker.ip, worker.state, worker.loadedModel.ifBlank { worker.defaultModel }, worker.id)
+        return true
+    }
+
     /** One GPU node offered to the app's "run on node" routing (chat/workspace). */
     data class WorkerPick(
         val id: String,
         val name: String,
         val model: String,
+        /** The phone's assignment for this node ("" = the node's own pick). */
+        val assigned: String = "",
+        /** Karen model files the node reported it can run (for per-turn picks). */
+        val models: List<String> = emptyList(),
         val gflops: Double,
         val state: String,
         val online: Boolean
@@ -302,10 +339,15 @@ object LocalApiServer {
             )
             .map {
                 val online = now - it.lastSeen < WorkerInfo.ONLINE_WINDOW_MS
+                // Assignment + model list live on the worker record (not the node
+                // list); reads are fresh even when nodeSnapshot lags a beat.
+                val w = workers[it.workerId]
                 WorkerPick(
                     id = it.workerId,
                     name = it.name,
                     model = it.workerModel,
+                    assigned = w?.defaultModel ?: "",
+                    models = w?.models ?: emptyList(),
                     gflops = it.gflops,
                     state = if (online) it.workerState.ifBlank { "idle" } else "offline",
                     online = online
@@ -317,9 +359,10 @@ object LocalApiServer {
      * App-side task submission (chat/workspace "run on node"): assign one task
      * to a GPU node and consume its event stream (status → delta → done).
      * Blocking — call from Dispatchers.IO. `sel` is "auto" or a worker id from
-     * [workerPicks]; onStatus/onDelta fire on the calling thread. Returns
-     * noWorker=true when nothing could take it, so the caller can fall back to
-     * running on this phone.
+     * [workerPicks]; `model` is the per-turn pick ("" = the node's assignment).
+     * onStatus/onDelta fire on the calling thread. Returns noWorker=true when
+     * nothing could take it, so the caller can fall back to running on this
+     * phone.
      */
     fun runOnWorker(
         sel: String,
@@ -327,6 +370,7 @@ object LocalApiServer {
         pairs: List<Pair<String, String>>,
         temperature: Double = 0.7,
         maxTokens: Int = 1024,
+        model: String = "",
         onStatus: ((String) -> Unit)? = null,
         onDelta: ((String) -> Unit)? = null,
         cancelled: () -> Boolean = { false }
@@ -348,10 +392,19 @@ object LocalApiServer {
         pairs.forEach { (role, content) ->
             messages.put(JSONObject().put("role", role).put("content", content))
         }
+        // A per-turn pick the node no longer lists is named, never silently
+        // swapped: the chip offers the node's reported models, and this catches
+        // a stale pick between that report and the send.
+        if (model.isNotBlank() && worker.models.isNotEmpty() &&
+            worker.models.none { it.equals(model.trim(), ignoreCase = true) } &&
+            !worker.loadedModel.equals(model.trim(), ignoreCase = true)
+        ) {
+            return WorkerRun(false, false, "", "node \"${worker.name}\" does not offer model \"${model.trim()}\" — pick another model for it")
+        }
         val task = WorkerTask(
             id = "t_" + UUID.randomUUID().toString().replace("-", "").take(6),
             workerId = worker.id,
-            model = worker.defaultModel,
+            model = if (model.isNotBlank()) model.trim().take(90) else worker.defaultModel,
             messages = messages,
             temperature = temperature,
             maxTokens = maxTokens.coerceIn(1, 4096),
@@ -732,7 +785,14 @@ object LocalApiServer {
             gflops = body.optDouble("gflops", prev?.gflops ?: 0.0),
             backend = body.optString("backend", prev?.backend ?: "webllm").take(24),
             engine = body.optString("engine", prev?.engine ?: "").take(48),
-            defaultModel = body.optString("defaultModel", prev?.defaultModel ?: "").trim().take(90),
+            // Only a deliberate pick on the worker page (it sets the key when the
+            // user changes the select) rewrites the assignment — an idle rejoin
+            // must not clobber a model the phone assigned meanwhile.
+            defaultModel = if (body.has("defaultModel")) {
+                body.optString("defaultModel", "").trim().take(90)
+            } else {
+                prev?.defaultModel ?: ""
+            },
             models = models.take(400),
             joinedAt = prev?.joinedAt ?: now,
             lastSeenAt = now,
@@ -755,7 +815,11 @@ object LocalApiServer {
             jsScore = prev?.jsScore ?: 0.0,
             maxBufferMB = prev?.maxBufferMB ?: 0,
             telemetryAt = prev?.telemetryAt ?: 0L,
-            paused = prev?.paused ?: false
+            paused = prev?.paused ?: false,
+            assignedAt = prev?.assignedAt ?: 0L,
+            // A body that names the model is the worker page writing its own
+            // pick (the phone's assignment is no longer the source).
+            assignedByPhone = if (body.has("defaultModel")) false else (prev?.assignedByPhone ?: false)
         )
         val tel = body.optJSONObject("telemetry")
         applyWorkerTelemetry(worker, tel)
@@ -770,6 +834,11 @@ object LocalApiServer {
                 .put("workerId", id)
                 .put("pollSeconds", (WorkerInfo.POLL_HOLD_MS / 1000).toInt())
                 .put("taskTimeoutSeconds", (WorkerInfo.TASK_STALL_MS / 1000).toInt())
+                // The current assignment rides back so the page can show it the
+                // moment it joins (before the first poll keepalive arrives).
+                .put("defaultModel", worker.defaultModel)
+                .put("assignedAt", worker.assignedAt)
+                .put("assignedByPhone", worker.assignedByPhone)
         )
     }
 
@@ -820,6 +889,22 @@ object LocalApiServer {
             out.flush()
             val queue = workerQueueFor(workerId)
             val deadline = System.currentTimeMillis() + WorkerInfo.POLL_HOLD_MS
+            // The keepalive doubles as the assignment channel: each one carries
+            // the node's current model + when the phone last set it, so the
+            // worker page applies it and labels "phone assigned" (same bytes on
+            // the wire as the old bare ": ping" comment — one 30 s cadence).
+            val writeAssigned = {
+                val w = workers[workerId] ?: worker
+                out.write(
+                    (
+                        "event: assigned\ndata: " +
+                            JSONObject().put("model", w.defaultModel).put("at", w.assignedAt).put("byPhone", w.assignedByPhone) +
+                            "\n\n"
+                        ).toByteArray(Charsets.UTF_8)
+                )
+                out.flush()
+            }
+            writeAssigned()
             while (System.currentTimeMillis() < deadline) {
                 // 30 s: keepalive cadence only — tasks still hand over the
                 // instant they are queued (poll returns early).
@@ -857,8 +942,7 @@ object LocalApiServer {
                 // this touch a 5-minute hold would look offline in Network
                 // Nodes / the chat chip after 90 s.
                 touchNodeWorker(worker.ip, if (worker.paused) "paused" else "idle", worker.loadedModel.ifBlank { worker.defaultModel }, worker.id)
-                out.write(": ping\n\n".toByteArray(Charsets.UTF_8))
-                out.flush()
+                writeAssigned()
             }
             out.write("event: idle\ndata: {}\n\n".toByteArray(Charsets.UTF_8))
             out.flush()
@@ -1759,6 +1843,18 @@ object LocalApiServer {
                         writeJson(socket, 200, JSONObject().put("ok", ok))
                     }
                 }
+                method == "POST" && path == "/v1/workers/model" -> {
+                    // Master-side assignment: every node turn without its own
+                    // model runs this until either side changes it.
+                    if (body == null) {
+                        writeJson(socket, 400, JSONObject().put("error", errorObj("JSON body required")))
+                    } else {
+                        val id = body.optString("id", body.optString("workerId", ""))
+                        val model = body.optString("model", "")
+                        val ok = assignWorkerModel(id, model)
+                        writeJson(socket, 200, JSONObject().put("ok", ok))
+                    }
+                }
                 method == "GET" && path == "/api/tags" -> {
                     val models = JSONArray()
                     UserPrefs.models(ctx).filter { !isCloudProviderName(it) }.forEach { name ->
@@ -2207,30 +2303,52 @@ object LocalApiServer {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Karen — Token required</title>
+<title>Karen — Token Required</title>
 <style>
+  :root {
+    --bg-base: #0a0c12;
+    --bg-surface: #121520;
+    --border-subtle: #1e2638;
+    --accent-green: #10A37F;
+    --accent-blue: #38bdf8;
+    --text-primary: #f1f5f9;
+    --text-secondary: #94a3b8;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-         background: #0c0e12; color: #e2e2e8; min-height: 100vh; display: flex;
-         align-items: center; justify-content: center; margin: 0; }
-  .card { background: #1a1c20; border: 1px solid #283042; border-radius: 16px;
-          padding: 32px; max-width: 460px; width: 88%; }
-  h1 { font-size: 19px; margin: 0 0 6px; }
-  p { color: #94a3b8; font-size: 13.5px; line-height: 1.55; margin: 8px 0; }
+         background: var(--bg-base); color: var(--text-primary); min-height: 100vh; display: flex;
+         align-items: center; justify-content: center; margin: 0; padding: 20px; }
+  .card { background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: 16px;
+          padding: 32px; max-width: 480px; width: 100%; box-shadow: 0 10px 30px rgba(0,0,0,0.4); }
+  h1 { font-size: 20px; font-weight: 700; margin: 0 0 10px; color: #fff; }
+  p { color: var(--text-secondary); font-size: 13.5px; line-height: 1.6; margin: 10px 0; }
   code { font-family: 'JetBrains Mono', monospace; background: #0c0e12;
-         border: 1px solid #283042; border-radius: 6px; padding: 1px 6px; font-size: 12.5px; }
-  .badge { display: inline-block; background: rgba(245,158,11,0.14); color: #f59e0b;
-           border-radius: 20px; padding: 3px 12px; font-size: 11.5px; font-weight: 600; margin-bottom: 14px; }
+         border: 1px solid #283042; border-radius: 6px; padding: 2px 7px; font-size: 12.5px; color: #38bdf8; }
+  .badge { display: inline-block; background: rgba(245,158,11,0.12); color: #f59e0b;
+           border: 1px solid rgba(245,158,11,0.3); border-radius: 20px; padding: 4px 14px;
+           font-size: 11px; font-weight: 700; letter-spacing: 0.5px; margin-bottom: 16px; }
+  .actions { display: flex; gap: 10px; margin-top: 20px; flex-wrap: wrap; }
+  .btn { display: inline-block; text-decoration: none; padding: 9px 18px; border-radius: 9px;
+         font-size: 13px; font-weight: 600; transition: all .15s ease; }
+  .btn-primary { background: var(--accent-green); color: #fff; border: 1px solid var(--accent-green); }
+  .btn-primary:hover { background: #0d8a6a; }
+  .btn-secondary { background: rgba(255,255,255,0.04); color: var(--text-secondary); border: 1px solid var(--border-subtle); }
+  .btn-secondary:hover { background: rgba(255,255,255,0.08); color: #fff; }
 </style>
 </head>
 <body>
 <div class="card">
   <div class="badge">TOKEN REQUIRED</div>
-  <h1>This is the Karen API</h1>
-  <p>Only model/API calls need the bearer token. The pages do not:</p>
-  <p>Dashboard (control) → <code>/dashboard</code></p>
-  <p>Worker page (join as a slave node) → <code>/</code></p>
-  <p>API calls → send <code>Authorization: Bearer &lt;token&gt;</code>.
-     Find the token in Karen → Settings → Local Server → Bearer token.</p>
+  <h1>Karen Local Server</h1>
+  <p>Model and inference API routes require bearer authentication. Web interface pages do not:</p>
+  <div class="actions">
+    <a href="/dashboard" class="btn btn-primary">Open Dashboard ↗</a>
+    <a href="/" class="btn btn-secondary">Open Slave Node ↗</a>
+  </div>
+  <p style="margin-top:20px;font-size:12.5px;color:#64748b">
+    For API calls, pass header <code>Authorization: Bearer &lt;token&gt;</code>.<br>
+    Find your token in Karen App → Settings → Local Server.
+  </p>
 </div>
 </body>
 </html>
@@ -2251,64 +2369,638 @@ object LocalApiServer {
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>${if (worker) "Karen — Slave node" else "Karen — Dashboard"}</title>
 <style>
+  :root {
+    --bg-base: #0a0c12;
+    --bg-surface: #121520;
+    --bg-surface-elevated: #161b28;
+    --bg-input: #191f2e;
+    --border-subtle: #1e2638;
+    --border-strong: #2a354c;
+    --accent-green: #10A37F;
+    --accent-green-hover: #0d8a6a;
+    --accent-blue: #38bdf8;
+    --text-primary: #f1f5f9;
+    --text-secondary: #94a3b8;
+    --text-muted: #64748b;
+  }
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-         background: #0c0e12; color: #e2e2e8; height: 100vh; display: flex; flex-direction: column; }
-  header { display: flex; align-items: center; gap: 12px; padding: 13px 18px;
-           background: #14171f; border-bottom: 1px solid #283042; }
-  .logo { width: 36px; height: 36px; background: #10A37F; border-radius: 9px;
-          display: flex; align-items: center; justify-content: center;
-          font-weight: 700; color: #fff; font-size: 17px; flex: none; }
-  header h1 { font-size: 15px; font-weight: 600; }
-  header .sub { font-size: 11.5px; color: #64748b; }
-  .status { margin-left: auto; display: flex; align-items: center; gap: 7px;
-            font-size: 12px; color: #10A37F; white-space: nowrap; }
-  .dot { width: 8px; height: 8px; border-radius: 50%; background: #10A37F; }
-  .dot.off { background: #f59e0b; }
-  .bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
-         padding: 10px 18px; background: #111317; border-bottom: 1px solid #1e252e; }
-  input, select, button, textarea { font: inherit; border-radius: 8px; border: 1px solid #283042;
-         background: #1a1c20; color: #e2e2e8; padding: 8px 10px; outline: none; }
-  input:focus, select:focus, textarea:focus { border-color: #38bdf8; }
-  button { background: #10A37F; border-color: #10A37F; color: #fff; font-weight: 600;
-           cursor: pointer; padding: 8px 16px; }
-  button.ghost { background: transparent; border-color: #283042; color: #94a3b8; font-weight: 500; }
-  button:disabled { opacity: .45; cursor: default; }
-  main { flex: 1; overflow-y: auto; padding: 18px; display: flex; flex-direction: column; gap: 12px; }
-  .msg { max-width: 82%; padding: 10px 14px; border-radius: 14px; font-size: 14px;
-         line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
-  .msg.user { align-self: flex-end; background: #10A37F; color: #fff; border-bottom-right-radius: 4px; }
-  .msg.assistant { align-self: flex-start; background: #1b2029; border: 1px solid #283042;
-                   border-bottom-left-radius: 4px; }
-  .msg.sys { align-self: center; background: transparent; border: 1px dashed #283042;
-             color: #94a3b8; font-size: 12.5px; text-align: center; max-width: 92%; }
-  .hint { font-size: 11.5px; color: #64748b; padding: 0 18px 10px; background: #14171f; }
-  footer { display: flex; gap: 8px; padding: 10px 18px 14px; background: #14171f;
-           border-top: 1px solid #283042; }
-  footer textarea { flex: 1; resize: none; height: 54px; border-radius: 12px;
-                    background: #0f1116; padding: 15px 14px; }
-  details.files { background: #111317; border-bottom: 1px solid #1e252e; }
-  details.files summary { cursor: pointer; padding: 9px 18px; font-size: 12px; color: #94a3b8; list-style: none; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    background: var(--bg-base);
+    color: var(--text-primary);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #263044; border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: #354360; }
+
+  /* App Header */
+  header {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 12px 24px;
+    background: var(--bg-surface);
+    border-bottom: 1px solid var(--border-subtle);
+    flex: none;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+  }
+  .logo {
+    width: 38px;
+    height: 38px;
+    background: linear-gradient(135deg, #10A37F 0%, #0d8a6a 100%);
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 800;
+    color: #fff;
+    font-size: 18px;
+    flex: none;
+    box-shadow: 0 2px 8px rgba(16, 163, 127, 0.35);
+  }
+  .header-info { display: flex; flex-direction: column; gap: 2px; }
+  header h1 { font-size: 15px; font-weight: 700; color: #f8fafc; letter-spacing: -0.2px; }
+  header .sub { font-size: 11.5px; color: var(--text-muted); }
+  .header-actions {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .nav-switch-btn {
+    text-decoration: none;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--accent-blue);
+    background: rgba(56, 189, 248, 0.08);
+    border: 1px solid rgba(56, 189, 248, 0.25);
+    padding: 5px 14px;
+    border-radius: 20px;
+    transition: all .2s ease;
+    white-space: nowrap;
+  }
+  .nav-switch-btn:hover {
+    background: rgba(56, 189, 248, 0.16);
+    border-color: var(--accent-blue);
+    color: #e0f2fe;
+    transform: translateY(-1px);
+  }
+  .status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--accent-green);
+    white-space: nowrap;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--border-subtle);
+    padding: 5px 12px;
+    border-radius: 20px;
+  }
+  .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--accent-green);
+    box-shadow: 0 0 8px rgba(16, 163, 127, 0.8);
+    flex: none;
+    transition: all .3s ease;
+  }
+  .dot.off {
+    background: #f59e0b;
+    box-shadow: 0 0 8px rgba(245, 158, 11, 0.6);
+  }
+
+  /* Form Elements */
+  input, select, textarea {
+    font-family: inherit;
+    font-size: 13px;
+    border-radius: 9px;
+    border: 1px solid var(--border-strong);
+    background: var(--bg-input);
+    color: var(--text-primary);
+    padding: 8px 12px;
+    outline: none;
+    transition: border-color .15s, box-shadow .15s;
+  }
+  input:focus, select:focus, textarea:focus {
+    border-color: var(--accent-blue);
+    box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.15);
+  }
+  button {
+    font-family: inherit;
+    font-size: 13px;
+    background: var(--accent-green);
+    border: 1px solid var(--accent-green);
+    color: #ffffff;
+    font-weight: 600;
+    cursor: pointer;
+    padding: 8px 16px;
+    border-radius: 9px;
+    box-shadow: 0 2px 6px rgba(16, 163, 127, 0.2);
+    transition: all .15s ease;
+  }
+  button:hover:not(:disabled) {
+    background: var(--accent-green-hover);
+    border-color: var(--accent-green-hover);
+  }
+  button.ghost {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--border-strong);
+    color: var(--text-secondary);
+    font-weight: 500;
+    box-shadow: none;
+  }
+  button.ghost:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.08);
+    border-color: #3b4964;
+    color: #f8fafc;
+  }
+  button:disabled {
+    opacity: .4;
+    cursor: default;
+    pointer-events: none;
+  }
+  input[type=checkbox] {
+    width: 17px;
+    height: 17px;
+    accent-color: var(--accent-green);
+    cursor: pointer;
+    border-radius: 4px;
+  }
+
+  /* Shared Accordion / Details */
+  details.files {
+    background: var(--bg-surface);
+    border-bottom: 1px solid var(--border-subtle);
+    flex: none;
+  }
+  details.files summary {
+    cursor: pointer;
+    padding: 11px 24px;
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    list-style: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    user-select: none;
+    transition: background .15s, color .15s;
+  }
   details.files summary::-webkit-details-marker { display: none; }
-  details.files summary:hover { color: #e2e2e8; }
-  .filelist { max-height: 240px; overflow-y: auto; padding: 0 18px 12px; display: flex; flex-direction: column; gap: 6px; }
-  .frow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 10px; border: 1px solid #283042; border-radius: 10px; background: #14171f; }
-  .fname { flex: 1; min-width: 140px; font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #e2e2e8; word-break: break-all; }
-  .fmeta { font-size: 10.5px; color: #64748b; font-family: 'JetBrains Mono', monospace; white-space: nowrap; }
-  .badge { font-size: 10px; font-weight: 600; border-radius: 10px; padding: 2px 8px; white-space: nowrap; }
-  .badge.ok { background: rgba(16,163,127,0.15); color: #10A37F; }
-  .badge.mid { background: rgba(56,189,248,0.12); color: #38bdf8; }
-  .badge.off { background: rgba(148,163,184,0.12); color: #94a3b8; }
-  .frow button { padding: 5px 10px; font-size: 11px; border-radius: 7px; }
-  .probe { font-size: 11px; color: #94a3b8; font-family: 'JetBrains Mono', monospace; padding: 2px 6px 4px; word-break: break-word; }
-  input[type=checkbox] { width: 15px; height: 15px; padding: 0; accent-color: #10A37F; }
-  .meta { color: #64748b; font-size: 10.5px; font-family: 'JetBrains Mono', monospace; margin: -4px 0 6px 6px; }
-  .toast { position: fixed; bottom: 96px; left: 50%; transform: translateX(-50%);
-           background: #1b2029; border: 1px solid #38bdf8; color: #cce5ff;
-           padding: 9px 16px; border-radius: 20px; font-size: 12.5px; opacity: 0;
-           transition: opacity .25s; pointer-events: none; white-space: nowrap; }
-  .toast.show { opacity: 1; }
-  /* Split pages: "/" is the slave-node worker page, "/dashboard" is the console. */
+  details.files summary:hover {
+    color: var(--text-primary);
+    background: rgba(255, 255, 255, 0.02);
+  }
+  details.files summary::after {
+    content: '';
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-right: 2px solid #64748b;
+    border-bottom: 2px solid #64748b;
+    transform: rotate(45deg);
+    transition: transform .2s ease;
+    margin-left: 12px;
+    flex: none;
+  }
+  details.files[open] summary::after {
+    transform: rotate(-135deg);
+  }
+  .filelist {
+    max-height: 280px;
+    overflow-y: auto;
+    padding: 6px 24px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .frow {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    padding: 10px 14px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 10px;
+    background: var(--bg-surface-elevated);
+    transition: border-color .15s, background .15s;
+  }
+  .frow:hover {
+    border-color: var(--border-strong);
+    background: #192030;
+  }
+  .fname {
+    flex: 1;
+    min-width: 140px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    color: #f1f5f9;
+    word-break: break-all;
+  }
+  .fmeta {
+    font-size: 11.5px;
+    color: var(--text-secondary);
+    font-family: 'JetBrains Mono', monospace;
+    white-space: nowrap;
+  }
+  .badge {
+    font-size: 10.5px;
+    font-weight: 600;
+    border-radius: 6px;
+    padding: 3px 8px;
+    white-space: nowrap;
+    letter-spacing: 0.2px;
+  }
+  .badge.ok {
+    background: rgba(16, 163, 127, 0.15);
+    color: var(--accent-green);
+    border: 1px solid rgba(16, 163, 127, 0.3);
+  }
+  .badge.mid {
+    background: rgba(56, 189, 248, 0.12);
+    color: var(--accent-blue);
+    border: 1px solid rgba(56, 189, 248, 0.25);
+  }
+  .badge.off {
+    background: rgba(148, 163, 184, 0.12);
+    color: var(--text-secondary);
+    border: 1px solid rgba(148, 163, 184, 0.2);
+  }
+  .frow button {
+    padding: 5px 12px;
+    font-size: 11.5px;
+    border-radius: 7px;
+  }
+  .probe {
+    font-size: 11.5px;
+    color: var(--text-secondary);
+    font-family: 'JetBrains Mono', monospace;
+    padding: 5px 12px;
+    background: rgba(0, 0, 0, 0.3);
+    border-radius: 6px;
+    border-left: 3px solid var(--accent-blue);
+    word-break: break-word;
+  }
+  .meta {
+    color: var(--text-muted);
+    font-size: 11px;
+    font-family: 'JetBrains Mono', monospace;
+    margin: -4px 0 6px 6px;
+  }
+  .toast {
+    position: fixed;
+    bottom: 96px;
+    left: 50%;
+    transform: translateX(-50%) translateY(10px);
+    background: rgba(18, 22, 32, 0.95);
+    backdrop-filter: blur(12px);
+    border: 1px solid rgba(56, 189, 248, 0.4);
+    color: #e0f2fe;
+    padding: 10px 22px;
+    border-radius: 24px;
+    font-size: 13px;
+    font-weight: 500;
+    opacity: 0;
+    transition: opacity .25s ease, transform .25s ease;
+    pointer-events: none;
+    white-space: nowrap;
+    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+    z-index: 9999;
+  }
+  .toast.show {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+
+  /* Console View Layout */
+  body.console {
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  body.console .bar {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+    padding: 10px 24px;
+    background: #0e1118;
+    border-bottom: 1px solid var(--border-subtle);
+    flex: none;
+  }
+  body.console main {
+    flex: 1;
+    overflow-y: auto;
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    background: var(--bg-base);
+  }
+  .msg {
+    max-width: 80%;
+    padding: 12px 18px;
+    border-radius: 16px;
+    font-size: 14px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-word;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  }
+  .msg.user {
+    align-self: flex-end;
+    background: var(--accent-green);
+    color: #ffffff;
+    border-bottom-right-radius: 4px;
+    box-shadow: 0 4px 12px rgba(16, 163, 127, 0.25);
+  }
+  .msg.assistant {
+    align-self: flex-start;
+    background: var(--bg-surface-elevated);
+    border: 1px solid var(--border-subtle);
+    border-bottom-left-radius: 4px;
+    color: #e2e8f0;
+  }
+  .msg.sys {
+    align-self: center;
+    background: rgba(22, 27, 40, 0.8);
+    border: 1px dashed var(--border-strong);
+    color: var(--text-secondary);
+    font-size: 12px;
+    text-align: center;
+    max-width: 90%;
+    padding: 8px 18px;
+    border-radius: 20px;
+    box-shadow: none;
+    line-height: 1.5;
+  }
+  .hint {
+    font-size: 11.5px;
+    color: var(--text-muted);
+    padding: 0 24px 10px;
+    background: var(--bg-surface);
+    flex: none;
+  }
+  footer {
+    display: flex;
+    gap: 10px;
+    padding: 12px 24px 16px;
+    background: var(--bg-surface);
+    border-top: 1px solid var(--border-subtle);
+    align-items: flex-end;
+    flex: none;
+  }
+  footer textarea {
+    flex: 1;
+    resize: none;
+    height: 52px;
+    border-radius: 12px;
+    background: #0f121a;
+    border: 1px solid var(--border-strong);
+    padding: 14px 16px;
+    font-size: 14px;
+    line-height: 1.45;
+  }
+  footer textarea:focus {
+    border-color: var(--accent-blue);
+    background: #131722;
+  }
+  footer button {
+    height: 52px;
+    padding: 0 22px;
+    font-size: 13.5px;
+    border-radius: 12px;
+  }
+  footer button#stop:not(:disabled) {
+    background: rgba(239, 68, 68, 0.15);
+    border-color: rgba(239, 68, 68, 0.4);
+    color: #f87171;
+  }
+  footer button#stop:not(:disabled):hover {
+    background: rgba(239, 68, 68, 0.25);
+    border-color: #ef4444;
+    color: #fca5a5;
+  }
+
+  /* Worker View Layout */
+  body.worker {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    overflow-y: auto;
+    background: #090b10;
+  }
+  body.worker header {
+    width: 100%;
+  }
+  body.worker .bar,
+  body.worker details.files,
+  body.worker .worker-guide-card {
+    width: calc(100% - 32px);
+    max-width: 900px;
+    margin: 14px auto 0;
+  }
+  body.worker .bar {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    border-radius: 14px;
+    padding: 16px 20px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .bar-tag {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    color: var(--accent-blue);
+    background: rgba(56, 189, 248, 0.1);
+    border: 1px solid rgba(56, 189, 248, 0.25);
+    padding: 4px 10px;
+    border-radius: 6px;
+    white-space: nowrap;
+  }
+  body.worker details.files {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    border-radius: 14px;
+    overflow: hidden;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+  }
+  body.worker details.files summary {
+    padding: 14px 20px;
+    font-size: 13.5px;
+    font-weight: 700;
+    color: var(--accent-blue);
+    background: #141824;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  body.worker .filelist {
+    max-height: none;
+    padding: 18px 20px;
+    gap: 14px;
+  }
+
+  /* Worker Node Hero Section */
+  .worker-hero-section {
+    background: linear-gradient(180deg, #161b27 0%, #121622 100%);
+    border: 1px solid var(--border-strong);
+    border-radius: 12px;
+    padding: 16px 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+  }
+  .worker-status-banner {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .worker-status-label {
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.6px;
+    color: var(--text-muted);
+  }
+  #workerStatus {
+    background: rgba(16, 163, 127, 0.1);
+    border: 1px solid rgba(16, 163, 127, 0.35);
+    color: var(--accent-green);
+    padding: 12px 16px;
+    border-radius: 10px;
+    font-weight: 600;
+    font-size: 13.5px;
+    line-height: 1.5;
+    white-space: normal;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  #workerStatus::before {
+    content: '';
+    display: inline-block;
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: var(--accent-green);
+    box-shadow: 0 0 10px rgba(16, 163, 127, 0.9);
+    flex: none;
+  }
+  .worker-toggle-box {
+    background: var(--bg-surface-elevated);
+    border: 1px solid var(--border-strong);
+    border-radius: 10px;
+    padding: 12px 16px;
+  }
+  .worker-model-box {
+    background: var(--bg-surface-elevated);
+    border: 1px solid var(--border-strong);
+    border-radius: 10px;
+    padding: 12px 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  #modelNote {
+    background: rgba(56, 189, 248, 0.08);
+    border: 1px solid rgba(56, 189, 248, 0.25);
+    color: #8ed5ff;
+    padding: 10px 14px;
+    border-radius: 8px;
+    font-size: 12px;
+    line-height: 1.5;
+  }
+  #gpuAdapter {
+    background: var(--bg-surface-elevated);
+    border: 1px solid var(--border-subtle);
+    border-radius: 10px;
+    padding: 12px 16px;
+    color: #f1f5f9;
+    font-size: 12px;
+    font-weight: 500;
+    white-space: normal;
+  }
+  #gpuNote {
+    background: rgba(245, 158, 11, 0.08);
+    border: 1px solid rgba(245, 158, 11, 0.25);
+    padding: 12px 16px;
+    border-radius: 10px;
+    font-size: 12px;
+    line-height: 1.55;
+    white-space: normal;
+  }
+  #secureHint {
+    background: rgba(245, 158, 11, 0.08);
+    border: 1px solid rgba(245, 158, 11, 0.3);
+    padding: 14px 18px;
+    border-radius: 10px;
+    font-size: 12px;
+    line-height: 1.6;
+    white-space: normal;
+    margin-top: 6px;
+  }
+
+  /* Guide Cards for Slave Node Page */
+  .worker-guide-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    border-radius: 14px;
+    padding: 20px 24px;
+    margin-bottom: 36px !important;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+  }
+  .guide-header {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text-secondary);
+    letter-spacing: 0.5px;
+    margin-bottom: 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .guide-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 14px;
+  }
+  .guide-col {
+    background: var(--bg-surface-elevated);
+    border: 1px solid var(--border-subtle);
+    border-radius: 10px;
+    padding: 14px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .guide-col-num {
+    font-size: 11px;
+    font-weight: 800;
+    color: var(--accent-green);
+    background: rgba(16, 163, 127, 0.12);
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .guide-col-title { font-size: 13px; font-weight: 700; color: #f1f5f9; }
+  .guide-col-desc { font-size: 12px; color: var(--text-secondary); line-height: 1.5; }
+
+  /* Page Mode Toggles */
   body.console .workerOnly { display: none !important; }
   body.worker .consoleOnly { display: none !important; }
 </style>
@@ -2316,14 +3008,18 @@ object LocalApiServer {
 <body class="$mode">
 <header>
   <div class="logo">K</div>
-  <div>
+  <div class="header-info">
     <h1>${if (worker) "Karen Slave Node" else "Karen Dashboard"}</h1>
-    <div class="sub">${if (worker) "slave node working page — prompts from the phone run on this device's GPU" else "the model runs on the phone — or on another device working as a slave node"}</div>
+    <div class="sub">${if (worker) "Distributed GPU worker — prompts from the phone execute on this device's GPU" else "On-device model console — or run prompts on a slave node GPU"}</div>
   </div>
-  <div class="status"><span class="dot" id="dot"></span><span id="statusText">connecting…</span></div>
+  <div class="header-actions">
+    ${if (worker) """<a href="/dashboard" class="nav-switch-btn">Console Dashboard ↗</a>""" else """<a href="/" class="nav-switch-btn">Slave Node Page ↗</a>"""}
+    <div class="status"><span class="dot" id="dot"></span><span id="statusText">connecting…</span></div>
+  </div>
 </header>
 <div class="bar">
-  <input id="token" type="password" placeholder="Bearer token — Karen → Settings → Local Server" style="flex:1;min-width:230px">
+  <span class="bar-tag workerOnly">NODE ACCESS TOKEN</span>
+  <input id="token" type="password" placeholder="Bearer token — Karen App → Settings → Local Server" style="flex:1;min-width:240px">
   <button class="ghost" onclick="saveToken()">Save</button>
   <select id="model" class="consoleOnly" style="min-width:180px"><option value="">(pick model)</option></select>
   <button class="ghost consoleOnly" onclick="loadModels()">Refresh</button>
@@ -2337,11 +3033,33 @@ object LocalApiServer {
   <summary id="filesSummary">On-device model files — loading…</summary>
   <div class="filelist" id="fileList"></div>
 </details>
-<details class="files" id="gpuPanel">
+<details class="files" id="gpuPanel"${if (worker) " open" else ""}>
   <summary id="gpuSummary">GPU offload — checking this device…</summary>
   <div class="filelist">
+    <div class="worker-hero-section workerOnly">
+      <div class="worker-status-banner">
+        <div class="worker-status-label">SLAVE NODE STATUS</div>
+        <div class="fmeta" id="workerStatus">Slave node — save the token above to pair this device.</div>
+      </div>
+      <div class="frow worker-toggle-box" style="margin-top:2px">
+        <label class="fmeta" style="display:flex;align-items:center;gap:10px;flex:1;min-width:260px;cursor:pointer">
+          <input type="checkbox" id="gpuWorker" onclick="toggleWorker(this.checked)">
+          <span>Work as a <b>slave node</b> — this device runs prompts sent by the phone (keep this tab open; joins automatically once paired)</span>
+        </label>
+      </div>
+      <div class="frow worker-model-box">
+        <label class="fmeta" for="workerModel" style="min-width:140px;color:#94a3b8">Model this node runs</label>
+        <select id="workerModel" style="max-width:420px;flex:1" onchange="saveWorkerModel()"></select>
+      </div>
+      <div class="fmeta" id="modelNote" style="display:none;white-space:normal;color:#8ed5ff"></div>
+    </div>
     <div class="fmeta" id="gpuAdapter"></div>
     <div class="fmeta" id="gpuNote" style="display:none;color:#8ed5ff"></div>
+    <div class="frow">
+      <span class="fmeta" style="min-width:150px;color:#94a3b8">GPU adapters offered</span>
+      <span class="fmeta" id="adapterList" style="flex:1;white-space:normal;color:#e2e2e8">probing…</span>
+      <button class="ghost" onclick="reprobeAdapters()">Probe again</button>
+    </div>
     <div class="frow">
       <button class="ghost" id="benchBtn" onclick="runBench()">Run GPU benchmark</button>
       <span class="fmeta" id="benchResult"></span>
@@ -2354,14 +3072,6 @@ object LocalApiServer {
       <select id="boostModel" style="max-width:330px" onchange="saveBoostModel()"></select>
     </div>
     <div class="fmeta consoleOnly" id="boostStatus">Chat runs on the phone (llama.cpp) over the LAN.</div>
-    <div class="frow workerOnly" style="border-top:1px solid #283042;padding-top:10px;margin-top:6px">
-      <label class="fmeta" style="display:flex;align-items:center;gap:8px;flex:1;min-width:260px">
-        <input type="checkbox" id="gpuWorker" onclick="toggleWorker(this.checked)">
-        <span>Work as a <b>slave node</b> — this device runs prompts sent by the phone (keep this tab open; it joins automatically once the token is saved)</span>
-      </label>
-      <select id="workerModel" style="max-width:330px" onchange="saveWorkerModel()"></select>
-    </div>
-    <div class="fmeta workerOnly" id="workerStatus">Slave node — save the token above to pair this device.</div>
     <div class="fmeta consoleOnly" id="slavePageHint">To make a device work as a slave node, open this address there: <a href="/" style="color:#38bdf8">$workerUrl</a></div>
     <div class="fmeta" id="secureHint" style="display:none;color:#f59e0b"></div>
   </div>
@@ -2370,6 +3080,26 @@ object LocalApiServer {
   <summary id="workersSummary">Slave nodes — loading…</summary>
   <div class="filelist" id="workerList"></div>
 </details>
+<div class="worker-guide-card workerOnly">
+  <div class="guide-header">DISTRIBUTED AI ARCHITECTURE</div>
+  <div class="guide-grid">
+    <div class="guide-col">
+      <div class="guide-col-num">1</div>
+      <div class="guide-col-title">Master Phone</div>
+      <div class="guide-col-desc">Karen coordinates distributed tasks, routes prompts across available nodes, and manages conversational context.</div>
+    </div>
+    <div class="guide-col">
+      <div class="guide-col-num">2</div>
+      <div class="guide-col-title">Client WebGPU</div>
+      <div class="guide-col-desc">This browser runs inference on this device's GPU using WebLLM with zero binary downloads or command-line setup.</div>
+    </div>
+    <div class="guide-col">
+      <div class="guide-col-num">3</div>
+      <div class="guide-col-title">100% Private LAN</div>
+      <div class="guide-col-desc">All prompt traffic and weights operate entirely on your local Wi-Fi. Zero data ever touches any third-party cloud.</div>
+    </div>
+  </div>
+</div>
 <main id="chat" class="consoleOnly"></main>
 <div class="hint consoleOnly">Enter sends · Shift+Enter makes a new line · Stop cancels generation</div>
 <footer class="consoleOnly">
@@ -2381,7 +3111,7 @@ object LocalApiServer {
 <script>
 var PAGE = '$mode';
 var S = { token: localStorage.getItem('karen_token') || '', busy: false, ctrl: null, log: [], node: nodeName(), boost: localStorage.getItem('karen_gpu_boost') === '1', llm: null, llmMod: null, llmModel: '', adapter: null, device: null, benchAdapter: null, gpuName: '', gflops: 0,
-  w: { on: localStorage.getItem('karen_worker') !== '0' && !!localStorage.getItem('karen_token'), saved: localStorage.getItem('karen_worker') === '1', master: false, id: localStorage.getItem('karen_worker_id') || '', model: localStorage.getItem('karen_worker_model') || '', loaded: '', engine: null, interrupted: false, loop: false },
+  w: { on: localStorage.getItem('karen_worker') !== '0' && !!localStorage.getItem('karen_token'), saved: localStorage.getItem('karen_worker') === '1', master: false, id: localStorage.getItem('karen_worker_id') || '', model: localStorage.getItem('karen_worker_model') || '', loaded: '', engine: null, interrupted: false, loop: false, assignedAt: Number(localStorage.getItem('karen_assign_at') || 0), edit: false },
   wModels: [], wlist: [], wmap: {}, routed: localStorage.getItem('karen_runner') || '',
   tel: {}, pressure: '', jsScore: 0, maxBufferMB: 0 };
 function el(id) { return document.getElementById(id); }
@@ -2421,6 +3151,10 @@ function saveToken() { S.token = el('token').value.trim();
     if (PAGE === 'worker' && S.token && !S.w.on && !S.w.master && S.adapter && localStorage.getItem('karen_worker') !== '0') {
       toast('Paired — this device now works as a slave node');
       workerJoin(true);
+    } else if (PAGE === 'worker' && S.token && !S.w.master && !S.w.on) {
+      // Pairing with slave mode off: still fill "Model this node runs" so the
+      // pick is usable before (and after) joining.
+      ensureWorkerModels();
     }
   }); }
 function loadModels() {
@@ -2692,23 +3426,73 @@ function adapterName(ad) {
   var info = (ad && ad.info) || {};
   return [info.vendor, info.architecture, info.device, info.description].filter(Boolean).join(' · ') || 'WebGPU adapter';
 }
-async function pickAdapter() {
-  // Ask for the discrete GPU explicitly — Chrome/Edge honour powerPreference
-  // on dual-GPU machines (Intel/AMD iGPU + NVIDIA/AMD dGPU), so an RTX gets
-  // picked when it is available. Also ask for the plain default so the page
-  // can tell the user when the two differ (WebLLM chat follows the default).
-  var hp = null, def = null;
-  try { hp = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' }); } catch (e) {}
-  try { def = await navigator.gpu.requestAdapter(); } catch (e) {}
-  return { ad: hp || def, hp: hp, def: def };
+// Which GPUs can this page actually use? Chrome on Windows ignores
+// powerPreference (crbug 369219127 — it prints that warning in DevTools), so
+// every request usually returns the one GPU the browser already runs on. All
+// three preferences are still probed: on systems where the preference works
+// the list has more than one entry, everywhere else the single honest answer
+// is shown together with the way to move the browser onto the other GPU.
+async function probeAdapters() {
+  var out = { hp: null, lp: null, def: null, distinct: [], prefs: {}, pick: null };
+  try { out.hp = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' }); } catch (e) {}
+  try { out.lp = await navigator.gpu.requestAdapter({ powerPreference: 'low-power' }); } catch (e) {}
+  try { out.def = await navigator.gpu.requestAdapter(); } catch (e) {}
+  var seen = {};
+  ['hp', 'lp', 'def'].forEach(function (k) {
+    var a = out[k]; if (!a) { return; }
+    var nm = adapterName(a);
+    if (!seen[nm]) { seen[nm] = []; out.distinct.push(nm); }
+    seen[nm].push(k === 'hp' ? 'high-performance' : (k === 'lp' ? 'low-power' : 'default'));
+  });
+  out.prefs = seen;
+  out.pick = out.hp || out.lp || out.def;
+  return out;
 }
-function gpuAdapterNote(hpName, defName) {
-  // Two different adapters: this browser's default is not the fast one, so
-  // chat (WebLLM requests without a preference) may run on the slow GPU.
-  if (!hpName || !defName || hpName === defName) { return ''; }
-  return 'Heads-up: this browser\'s default GPU is “' + defName + '”, and that is what WebLLM chat would use. ' +
-    'To put chat on the fast GPU too: Windows Settings → System → Display → Graphics → add your browser → High performance ' +
-    '(NVIDIA Control Panel: Manage 3D settings → Program Settings → add the browser → High-performance NVIDIA processor), then reload this page.';
+function renderAdapterInfo(pick) {
+  var list = el('adapterList');
+  if (list) {
+    var parts = (pick.distinct || []).map(function (nm) {
+      return '“' + nm + '” (' + (pick.prefs[nm] || []).join(' · ') + ')';
+    });
+    list.textContent = parts.length ? parts.join('  —  ') : 'none';
+  }
+  var gn = el('gpuNote');
+  if (!gn) { return; }
+  if ((pick.distinct || []).length <= 1) {
+    // One adapter: the browser is locked to one GPU. On Windows the page cannot
+    // switch — Chrome follows its own GPU — so name the real fix.
+    gn.style.color = '#f59e0b';
+    gn.textContent = 'Only one GPU is visible to this page. Chrome on Windows ignores the GPU a page asks for ' +
+      '(crbug 369219127) and follows its own GPU — that is why a second card (e.g. a discrete NVIDIA/AMD GPU) can be missing here. ' +
+      'To move the browser onto it: Windows Settings → System → Display → Graphics → add your browser → High performance ' +
+      '(NVIDIA Control Panel: Manage 3D settings → Program Settings → your browser → High-performance NVIDIA processor), ' +
+      'or chrome://flags/#force-high-performance-gpu — then relaunch and press “Probe again”. ' +
+      'Slave-node inference asks for the high-performance GPU, so it follows the browser too.';
+  } else {
+    gn.style.color = '#8ed5ff';
+    gn.textContent = 'Inference (slave-node tasks and GPU-boost chat) asks this browser for the high-performance GPU — ' +
+      'that is “' + adapterName(pick.hp || pick.pick) + '”. The benchmark uses the same one.';
+  }
+  gn.style.display = 'block';
+}
+async function reprobeAdapters() {
+  var list = el('adapterList');
+  if (list) { list.textContent = 'probing…'; }
+  if (!navigator.gpu) { if (list) { list.textContent = 'WebGPU is not exposed on this page'; } return; }
+  try {
+    var pick = await probeAdapters();
+    if (!pick.pick) { if (list) { list.textContent = 'requestAdapter() found nothing'; } return; }
+    S.adapter = pick.pick;
+    S.device = null; S.benchAdapter = null;  // next bench starts from the fresh probe
+    S.gpuName = adapterName(pick.pick);
+    el('gpuSummary').textContent = 'GPU offload — this device: ' + S.gpuName;
+    el('gpuAdapter').textContent = 'Adapter: ' + S.gpuName + ' — benchmark it below, or switch chat onto this GPU.';
+    renderAdapterInfo(pick);
+    reportNode();
+    toast('GPU adapters re-probed');
+  } catch (e) {
+    if (list) { list.textContent = 'probe failed: ' + gpuErrText(e); }
+  }
 }
 async function initGpu() {
   var box = el('gpuBoost');
@@ -2756,11 +3540,12 @@ async function initGpu() {
     return;
   }
   try {
-    var pick = await pickAdapter();
-    var ad = pick.ad;
+    var pick = await probeAdapters();
+    var ad = pick.pick;
     if (!ad) {
       el('gpuSummary').textContent = 'GPU offload — WebGPU is present, but this machine offered no GPU adapter';
       el('gpuAdapter').textContent = 'requestAdapter() found nothing — often software rendering or a blocklisted GPU (the phone keeps answering meanwhile).';
+      if (el('adapterList')) { el('adapterList').textContent = 'none — requestAdapter() found nothing'; }
       if (hint) {
         hint.style.display = 'block';
         hint.textContent = 'Check chrome://gpu → "Graphics Feature Status": look for "Hardware accelerated: No" or "WebGPU: Disabled". Updating the GPU driver usually fixes this.';
@@ -2777,12 +3562,7 @@ async function initGpu() {
     S.gpuName = adapterName(ad);
     el('gpuSummary').textContent = 'GPU offload — this device: ' + S.gpuName;
     el('gpuAdapter').textContent = 'Adapter: ' + S.gpuName + ' — benchmark it below, or switch chat onto this GPU.';
-    var adNote = gpuAdapterNote(pick.hp ? adapterName(pick.hp) : '', pick.def ? adapterName(pick.def) : '');
-    var gn = el('gpuNote');
-    if (gn) {
-      if (adNote) { gn.style.display = 'block'; gn.textContent = adNote; }
-      else { gn.style.display = 'none'; }
-    }
+    renderAdapterInfo(pick);
     toggleBoostText();
     if (!secure) { showBypassUndo(origin); }
     await reportNode();
@@ -2797,6 +3577,11 @@ async function initGpu() {
       workerJoin(true);
     } else if (!S.token) {
       el('workerStatus').textContent = 'Slave node — save the token above once; this device then starts working automatically.';
+    } else {
+      // Paired but slave mode is off: still load the model list so the
+      // "Model this node runs" pick is usable before joining.
+      workerStatus('Slave node — off. Switch the box above on to start working.');
+      ensureWorkerModels().catch(function () {});
     }
   } catch (e) {
     el('gpuSummary').textContent = 'GPU offload — adapter check failed: ' + (e && e.message ? e.message : e);
@@ -2833,12 +3618,15 @@ async function benchDevice() {
     try { ad = await navigator.gpu.requestAdapter(prefs[i]); } catch (e) { lastErr = e; }
     if (!ad) { continue; }
     try {
-      S.device = await ad.requestDevice();
+      var dev = await ad.requestDevice();
+      S.device = dev;
       S.benchAdapter = ad;
       // If the GPU is ever lost (driver reset, tab throttled), drop the cache
       // so the next run acquires a brand-new adapter instead of a dead device.
-      S.device.lost.then(function () { S.device = null; S.benchAdapter = null; });
-      return S.device;
+      // The identity check keeps a later probe's fresh device from being
+      // cleared by an old device's lost-event.
+      dev.lost.then(function () { if (S.device === dev) { S.device = null; S.benchAdapter = null; } });
+      return dev;
     } catch (e) { lastErr = e; }
   }
   throw lastErr || new Error('no adapter');
@@ -2935,10 +3723,63 @@ function populateWorkerModels(list) {
   if (!sel.value && sel.options.length) { sel.selectedIndex = 0; }
   S.w.model = sel.value || '';
 }
+function setModelNote(text) {
+  var n = el('modelNote');
+  if (!n) { return; }
+  if (text) { n.textContent = text; n.style.display = 'block'; }
+  else { n.textContent = ''; n.style.display = 'none'; }
+}
+// The phone can assign this node's model from Network Nodes (POST
+// /v1/workers/model). The assignment rides every poll keepalive as
+// {model, at, byPhone}; apply the newest one, put it in the select and label
+// where it came from. `at` (a phone timestamp) is persisted, so a rejoin never
+// re-applies an old value and never clobbers a pick made here afterwards.
+function applyAssigned(m, at, byPhone, live) {
+  if (!at || at < (S.w.assignedAt || 0)) { return; }
+  if (at === (S.w.assignedAt || 0)) {
+    // Already applied (same assignment). Re-label only when the value really
+    // came from the phone and the select still shows it — a pick made on this
+    // page writes the same slot without touching `at`, so it must never wear
+    // the phone's label.
+    var cur = el('workerModel');
+    if (byPhone && m && cur && cur.value === m) { setModelNote('Assigned on the phone: ' + m); }
+    return;
+  }
+  S.w.assignedAt = at;
+  try { localStorage.setItem('karen_assign_at', String(at)); } catch (e) {}
+  if (!m) {
+    // Cleared on the phone: this node's own pick takes over again.
+    setModelNote('');
+    if (live) { toast('Phone cleared the model assignment'); }
+    return;
+  }
+  var sel = el('workerModel');
+  if (sel) {
+    var found = false;
+    for (var i = 0; i < sel.options.length; i++) { if (sel.options[i].value === m) { found = true; break; } }
+    if (!found) {
+      var o = document.createElement('option');
+      o.value = m; o.textContent = m + ' · assigned by the phone';
+      sel.appendChild(o);
+    }
+    sel.value = m;
+  }
+  S.w.model = m;
+  S.w.edit = false;
+  try { localStorage.setItem('karen_worker_model', m); } catch (e) {}
+  if (byPhone) { setModelNote('Assigned on the phone: ' + m); } else { setModelNote(''); }
+  if (live && byPhone) { toast('Phone assigned model: ' + m); }
+}
 function saveWorkerModel() {
-  S.w.model = el('workerModel').value;
-  localStorage.setItem('karen_worker_model', S.w.model);
-  toast('Slave node model: ' + S.w.model);
+  var sel = el('workerModel');
+  if (!sel) { return; }
+  var opt = sel.selectedIndex >= 0 ? sel.options[sel.selectedIndex] : null;
+  if (opt && opt.disabled) { toast('No browser build for this one — pick another'); return; }
+  S.w.model = sel.value;
+  S.w.edit = true;  // this page writes the assignment on the next register
+  try { localStorage.setItem('karen_worker_model', S.w.model); } catch (e) {}
+  setModelNote('');
+  toast('Node model: ' + (S.w.model || '—') + (S.w.on ? '' : ' — applies when this node joins'));
   if (S.w.on) { workerRegister(); }
 }
 // The slave-node model list comes from Karen's own model universe — weights
@@ -2966,6 +3807,24 @@ function karenTaskBuild(model) {
   var v = model || '';
   if (v && S.wmap && S.wmap[v]) { return S.wmap[v]; }
   return v;
+}
+// The web-llm module only supplies the prebuilt (browser) build list — the
+// local pick maps Karen model files to those builds. It loads once from the CDN.
+async function ensureLlmMod() {
+  if (!S.llmMod) {
+    S.llmMod = await import('https://esm.run/@mlc-ai/web-llm@0.2.86');
+  }
+  return S.llmMod;
+}
+// Fill "Model this node runs" even before the node joins, so the pick is
+// visible and usable the moment the token is saved.
+async function ensureWorkerModels() {
+  try {
+    await ensureLlmMod();
+    await populateWorkerModelsFromKaren();
+  } catch (e) {
+    workerStatus('model list needs internet once (engine index): ' + (e && e.message ? e.message : e));
+  }
 }
 async function populateWorkerModelsFromKaren() {
   var sel = el('workerModel');
@@ -3123,9 +3982,7 @@ async function workerJoin(isAuto) {
   el('gpuWorker').checked = true;
   workerStatus('starting…');
   try {
-    if (!S.llmMod) {
-      S.llmMod = await import('https://esm.run/@mlc-ai/web-llm@0.2.86');
-    }
+    await ensureLlmMod();
     await populateWorkerModelsFromKaren();
   } catch (e) {
     workerStatus('engine unavailable — needs internet once: ' + (e && e.message ? e.message : e));
@@ -3146,18 +4003,23 @@ async function workerJoin(isAuto) {
 }
 async function workerRegister() {
   try { await Promise.race([collectTelemetryDeep(), workerSleep(1500)]); } catch (e) {}
-  var j = await post('/v1/worker/register', {
+  var body = {
     workerId: S.w.id,
     name: S.node,
     gpu: S.gpuName || '',
     gflops: S.gflops || 0,
     backend: 'webllm',
     engine: 'web-llm@0.2.86',
-    defaultModel: (el('workerModel') && el('workerModel').value) || S.w.model || '',
     models: S.wModels,
     loadedModel: S.w.loaded || '',
     telemetry: collectTelemetry()
-  });
+  };
+  // Only a deliberate pick on this page rewrites the assignment: an idle
+  // rejoin must not overwrite a model the phone assigned in Network Nodes.
+  if (S.w.edit) {
+    body.defaultModel = (el('workerModel') && el('workerModel').value) || S.w.model || '';
+  }
+  var j = await post('/v1/worker/register', body);
   if (j && j.master) {
     S.w.master = true;
     S.w.on = false;
@@ -3171,6 +4033,8 @@ async function workerRegister() {
     S.w.id = j.workerId;
     localStorage.setItem('karen_worker_id', S.w.id);
     workerStatus('registered — polling for tasks');
+    // Show an assignment the phone made while this page was away.
+    applyAssigned(j.defaultModel || '', j.assignedAt || 0, !!j.assignedByPhone, false);
     refreshWorkers();
     return true;
   }
@@ -3236,11 +4100,18 @@ async function workerLoop() {
           var i;
           while ((i = buf.indexOf('\n\n')) >= 0) {
             var block = buf.slice(0, i); buf = buf.slice(i + 2);
-            if (block.indexOf('event: task') !== 0) continue;
-            var dl = null;
+            var evt = '', dl = null;
             var lines = block.split('\n');
-            for (var k = 0; k < lines.length; k++) { if (lines[k].indexOf('data: ') === 0) { dl = lines[k].slice(6); break; } }
-            if (!dl) continue;
+            for (var k = 0; k < lines.length; k++) {
+              if (lines[k].indexOf('event: ') === 0) { evt = lines[k].slice(7).trim(); }
+              else if (lines[k].indexOf('data: ') === 0) { dl = lines[k].slice(6); }
+            }
+            if (evt === 'assigned') {
+              // Model assignment from the phone (Network Nodes).
+              try { var as = JSON.parse(dl || '{}'); applyAssigned(as.model || '', as.at || 0, !!as.byPhone, true); } catch (e) {}
+              continue;
+            }
+            if (evt !== 'task' || !dl) { continue; }
             try { var task = JSON.parse(dl); await workerRunTask(task); }
             catch (e) { workerStatus('bad task: ' + (e && e.message ? e.message : e)); }
           }

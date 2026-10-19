@@ -23,6 +23,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -454,11 +456,15 @@ private fun WorkerPanel(
     onDisconnect: () -> Unit
 ) {
     val colors = LocalKarenColors.current
+    val context = LocalContext.current
     val online = now - node.lastSeen < WorkerInfo.ONLINE_WINDOW_MS
     val state = node.workerState.lowercase(Locale.US)
     val paused = online && state == "paused"
     val hasGpu = node.gpu.isNotBlank() || node.webgpu || node.gflops > 0.0
     val busy = online && state in listOf("assigned", "loading", "running")
+    // Master-side model assignment for this node (null when the record is gone).
+    val assignInfo = LocalApiServer.workerAssignInfo(node.workerId)
+    var assignMenu by remember { mutableStateOf(false) }
 
     val tone = when {
         !online -> KTone.Muted
@@ -514,6 +520,75 @@ private fun WorkerPanel(
             relTime(now - node.lastSeen),
             valueColor = if (online) colors.accentGreen else colors.textMuted
         )
+
+        // Model assignment (master side): the whole point is that it is visible
+        // here and nameable from here — the worker page labels it "assigned on
+        // the phone" and every turn without its own model runs it.
+        if (assignInfo != null) {
+            Spacer(Modifier.height(10.dp))
+            KHairline()
+            Spacer(Modifier.height(10.dp))
+            KTelemetryRow(
+                "Assigned",
+                assignInfo.assigned.ifBlank { "node's own pick" },
+                valueColor = if (assignInfo.assigned.isNotBlank()) colors.accentGreen else colors.textMuted
+            )
+            Spacer(Modifier.height(8.dp))
+            Box {
+                KSecondaryButton(
+                    label = "Assign model…",
+                    onClick = { assignMenu = true },
+                    enabled = online,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                DropdownMenu(expanded = assignMenu, onDismissRequest = { assignMenu = false }) {
+                    DropdownMenuItem(
+                        text = {
+                            Column {
+                                Text("Node's own pick", color = colors.textPrimary, fontSize = 13.sp)
+                                Text(
+                                    "the worker page decides",
+                                    color = colors.textMuted,
+                                    fontSize = 11.sp
+                                )
+                            }
+                        },
+                        trailingIcon = {
+                            if (assignInfo.assigned.isBlank()) {
+                                Icon(Icons.Default.Check, contentDescription = null, tint = colors.accentGreen, modifier = Modifier.size(16.dp))
+                            }
+                        },
+                        onClick = {
+                            assignMenu = false
+                            val ok = LocalApiServer.assignWorkerModel(node.workerId, "")
+                            Toast.makeText(context, if (ok) "Assignment cleared — the node's own pick runs" else "Node already gone", Toast.LENGTH_SHORT).show()
+                        }
+                    )
+                    if (assignInfo.models.isEmpty()) {
+                        DropdownMenuItem(
+                            text = { Text("No models reported yet — the node lists them after it joins", color = colors.textMuted, fontSize = 12.sp) },
+                            enabled = false,
+                            onClick = {}
+                        )
+                    }
+                    assignInfo.models.forEach { m ->
+                        DropdownMenuItem(
+                            text = { Text(m, color = colors.textPrimary, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                            trailingIcon = {
+                                if (assignInfo.assigned.equals(m, ignoreCase = true)) {
+                                    Icon(Icons.Default.Check, contentDescription = null, tint = colors.accentGreen, modifier = Modifier.size(16.dp))
+                                }
+                            },
+                            onClick = {
+                                assignMenu = false
+                                val ok = LocalApiServer.assignWorkerModel(node.workerId, m)
+                                Toast.makeText(context, if (ok) "Assigned — new turns to this node run $m" else "Node already gone", Toast.LENGTH_SHORT).show()
+                            }
+                        )
+                    }
+                }
+            }
+        }
 
         Spacer(Modifier.height(10.dp))
         KHairline()

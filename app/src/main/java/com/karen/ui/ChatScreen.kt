@@ -1068,7 +1068,8 @@ fun ChatScreen(
         system: String,
         pairs: List<Pair<String, String>>,
         pairLimit: Int,
-        maxTok: Int
+        maxTok: Int,
+        modelOverride: String
     ): Boolean {
         setStreamingText(aid, "Assigning to $label…")
         val buf = StringBuilder()
@@ -1079,6 +1080,7 @@ fun ChatScreen(
                 pairs = pairs,
                 temperature = 0.7,
                 maxTokens = maxTok,
+                model = modelOverride,
                 onStatus = { s ->
                     if (buf.isEmpty()) coroutineScope.launch { setStreamingText(aid, s) }
                 },
@@ -1123,6 +1125,7 @@ fun ChatScreen(
                     pairs = (pairs + docPair).takeLast(pairLimit),
                     temperature = 0.7,
                     maxTokens = maxTok,
+                    model = modelOverride,
                     cancelled = { cancelGeneration }
                 )
             }
@@ -1256,7 +1259,11 @@ fun ChatScreen(
                     system = nodeSystem,
                     pairs = instructedPairs,
                     pairLimit = pairLimit,
-                    maxTok = maxTokensFor(effort)
+                    maxTok = maxTokensFor(effort),
+                    // Per-turn pick from the model chip ("" = node's assignment).
+                    // Auto always keeps the node's assignment: the fastest node
+                    // at send time may be another device with other models.
+                    modelOverride = if (nodeRoute == "auto") "" else UserPrefs.nodeModel(context, nodeRoute)
                 )
                 if (handled) return@launch
                 // The node vanished between the chip and the send: run here.
@@ -2425,6 +2432,11 @@ fun ChatScreen(
                     workerRoute = it
                     UserPrefs.setWorkerTarget(context, it)
                 },
+                modifier = Modifier.padding(start = 22.dp, bottom = 6.dp)
+            )
+            // Per-turn model for the picked node (hidden for this phone / auto).
+            WorkerModelChip(
+                route = workerRoute,
                 modifier = Modifier.padding(start = 22.dp, bottom = 6.dp)
             )
             ChatGPTFloatingComposer(

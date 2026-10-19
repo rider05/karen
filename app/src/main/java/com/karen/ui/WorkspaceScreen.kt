@@ -555,7 +555,9 @@ private suspend fun callWorkspaceModel(
                 system = system,
                 pairs = history,
                 temperature = 0.7,
-                maxTokens = maxTokensFor(effort)
+                maxTokens = maxTokensFor(effort),
+                // Same per-turn pick the composer's model chip shows.
+                model = if (nodeSel == "auto") "" else UserPrefs.nodeModel(ctx, nodeSel)
             )
         }
         if (res.ok && res.text.isNotBlank()) return res.text
@@ -1735,7 +1737,9 @@ fun WorkspaceScreen(
                         system = "",
                         pairs = nodePairs,
                         temperature = 0.7,
-                        maxTokens = maxTokensFor(effort)
+                        maxTokens = maxTokensFor(effort),
+                        // Per-turn pick from the model chip ("" = node's assignment).
+                        model = if (nodeRoute == "auto") "" else UserPrefs.nodeModel(ctx, nodeRoute)
                     )
                 }
                 if (nodeRes.ok && nodeRes.text.isNotBlank()) {
@@ -2497,6 +2501,11 @@ fun WorkspaceScreen(
                     workerRoute = it
                     UserPrefs.setWorkerTarget(ctx, it)
                 },
+                modifier = Modifier.padding(start = 14.dp)
+            )
+            // Per-turn model for the picked node (hidden for this phone / auto).
+            WorkerModelChip(
+                route = workerRoute,
                 modifier = Modifier.padding(start = 14.dp)
             )
             Row(

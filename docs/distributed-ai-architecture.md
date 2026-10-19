@@ -57,9 +57,10 @@ WebRTC signaling.
    re-registration fails, polling stops instead of looping.
 3. **Assignment** — a queued task is written as `event: task` and the poll
    returns; worker state becomes `assigned`.
-4. **Load** — worker ensures the requested model is loaded (`WebLLM reload`),
-   posting `progress` events (phase `loading`) that the server relays to the
-   console. First use of a model downloads it to the browser cache.
+4. **Load** — the worker resolves the Karen model name to its browser (MLC)
+   build (see §5) and ensures it is loaded (`WebLLM reload`), posting `progress`
+   events (phase `loading`) that the server relays to the console. First use of
+   a model downloads it to the browser cache.
 5. **Run/stream** — generation deltas are batched (~40 ms) and posted to
    `/v1/worker/stream`; the server relays each as an OpenAI-shaped SSE chunk.
    Each response carries `{"cancel": bool}`; a `true` makes the worker interrupt
@@ -83,7 +84,8 @@ running → completed | failed | cancelled`.
 | Endpoint | Direction | Payload (essentials) |
 |---|---|---|
 | `GET /v1/workers` | console/master | `{object:"list", data:[{id,name,ip,gpu,gflops,state,loadedModel,defaultModel,models[],lastSeenAt,tasksDone,lastTps,lastTtftMs, cpuCores,cpuArch,memGB,pressure,quotaGB,usageGB,netType,downlinkMbps,netRttMs,jsScore,maxBufferMB,telemetryAt,paused}]}`; the console's 10 s refresh carries its own readings as `?tel=<url-encoded json>` so the dashboard device's node entry stays fresh with zero extra requests |
-| `POST /v1/worker/register` | worker → master | `{workerId?, name, gpu, gflops, backend:"webllm", engine:"web-llm@0.2.86", defaultModel, models[], loadedModel, telemetry{c,a,m,p,sq,su,nt,nd,nr,js,ab}}` → `{ok, workerId, pollSeconds, taskTimeoutSeconds}`; **master device → `{ok, master:true}`** (no id; see §2.1) |
+| `GET /v1/karen/models` | worker page → master | `{object:"list", data:[{name, file, size, quant, ram, paramsB, reasoning, embedding, installed, source:"catalog"\|"file"}]}` — Karen's model universe for the node dropdown: weights installed on the phone first, then the downloadable catalog (details in §5) |
+| `POST /v1/worker/register` | worker → master | `{workerId?, name, gpu, gflops, backend:"webllm", engine:"web-llm@0.2.86", defaultModel, models[], loadedModel, telemetry{c,a,m,p,sq,su,nt,nd,nr,js,ab}}` → `{ok, workerId, pollSeconds, taskTimeoutSeconds}`; **master device → `{ok, master:true}`** (no id; see §2.1). `defaultModel`/`models[]` are Karen model names the node can actually run — see §5 |
 | `GET /v1/worker/poll` | worker → master | header `X-Karen-Worker: <id>`, query `?tel=<url-encoded telemetry json>` (fresh readings every cycle); SSE: `event: task` + `data: {id, model, messages[], temperature, max_tokens}`; `: ping` keepalives; `event: idle` end-of-hold |
 | `POST /v1/worker/progress` | worker → master | `{workerId, taskId, phase:"loading"\|"running", progress?, text?, loadedModel?}` → `{ok, cancel}` |
 | `POST /v1/worker/stream` | worker → master | `{workerId, taskId, delta}` → `{ok, cancel}` |
@@ -112,9 +114,22 @@ promise that adding workers speeds up a single generation.
 
 ## 5. Model strategy (honest boundaries)
 
-- Workers run **MLC models via WebLLM** (Qwen2.5 family is the default filter —
-  0.5B/1.5B/3B/7B…). Phone GGUF files **cannot** be loaded by a browser; weights
-  are fetched by the worker from upstream once and cached in the browser.
+- The worker's model dropdown is **Karen's own model universe**, not web-llm's
+  built-in catalog. `GET /v1/karen/models` merges the weights installed on the
+  phone (file-verified through the scanner, plus names registered in Model
+  Manager) with the downloadable catalog (bundled + remote catalog URL); the
+  page renders them as "… · installed" / "… · catalog", installed first.
+- Each Karen entry is matched to the **MLC build that will actually run** in the
+  browser (name-prefix match against the WebLLM package's prebuilt list,
+  `q4f16_1` preferred, smallest VRAM as the tie-break). Entries with no browser
+  build stay visible but disabled ("no browser build") — no silent substitution.
+- Tasks are named with the Karen model (e.g. `Qwen2.5-1.5B-Instruct-Q4_K_M.gguf`)
+  and the worker resolves that to the MLC id when loading the engine; the
+  registry therefore reports Karen-style model names as supported/loaded.
+  Phone GGUF files **cannot** be loaded by a browser; weights are fetched by the
+  worker from upstream once and cached in the browser.
+- If the phone list is unreachable (rare — same origin as the page), the page
+  falls back to the raw browser builds and says so in the status line.
 - Master may request a model per task; the worker loads/reloads it (progress is
   streamed). The registry reports supported vs loaded models.
 - **No phone→worker weight transfer** in this slice (PLANNED, Phase 3).
@@ -241,6 +256,40 @@ responding (documented); phone RAM is untouched by worker tasks.
    phone stayed at 0 slaves / 0 devices while its requests counter increased.
    The mock QA and this real-server pass together cover the guard end to end;
    the Wi-Fi laptop-worker path remains the open checklist below.
+   **Karen-model-list + poll-header round (same day, emulator build, real
+   browser with WebGPU arriving as a non-loopback peer via the emulator NAT)**:
+   the worker dropdown now lists Karen's model universe (`/v1/karen/models` —
+   installed weights first, then the downloadable catalog), 8 entries rendered
+   with installed/catalog tags and "no browser build" disabled where web-llm
+   has no matching build; join registered `defaultModel`/`models[]` as Karen
+   file names (5 runnable). App chat routed to the node: pickup landed on the
+   held poll immediately, the Karen name resolved to
+   `Qwen2.5-0.5B-Instruct-q4f16_1-MLC` (277 MB fetched into the browser cache,
+   "Finish loading on WebGPU"), and the streamed reply rendered in the app with
+   the node footer. First attempt hit a CDN tunnel error and the app surfaced
+   `Failed to fetch (node route: node Windows ⌘ Chrome)` — no silent fallback.
+   Idle afterward: same worker id, `lastSeenAt` +60 s over 75 s of idling (30 s
+   heartbeats inside the 5-minute poll hold), zero re-registers. Found + fixed
+   during the round: the worker page never sent `X-Karen-Worker` on the poll,
+   so every poll 404'd into the re-register path — the loudest source of idle
+   node chatter; HTML pages now send `Cache-Control: no-store` (a browser kept
+   serving a pre-update worker page after the app was updated).
+   **Gotcha found on real hardware (reported): "Run GPU benchmark" failed with
+   `requestDevice … adapter is "consumed"`.** Root cause: a `GPUAdapter` can
+   create exactly ONE device, ever, and the benchmark reused the page's cached
+   adapter on every click (and that same adapter is what WebLLM chat also gets
+   handed on some Chrome builds). Fix in the page: the benchmark now creates its
+   device once and reuses it (`S.device`, dropped automatically if the GPU is
+   lost), requests a *fresh* adapter when it has none (high-performance first,
+   then default), and if every adapter the tab is offered is already consumed it
+   says so plainly and tells the user to reload rather than showing the Dawn
+   error. Same plain-language mapping now covers the GPU-boost and worker-task
+   error paths. Verified live (same emulator/NAT browser): benchmark twice in a
+   row — second run reuses the device, no error (61.9 → 57.4 GFLOPS, adapter
+   named in the result line); benchmark again *after* the node's WebLLM engine
+   had already loaded a model on the GPU — 108.8 GFLOPS, still clean; `gflops`
+   reached the phone (`/v1/workers`). Node then served a task end to end
+   (pickup → WebGPU model load → 37 streamed tokens → stats footer).
 3. **On-device acceptance checklist** (manual, first run on user's hardware):
    join from a laptop; run a prompt from the phone console; watch tokens; Stop;
    close the tab mid-task and confirm the task fails cleanly; rejoin.
@@ -252,7 +301,7 @@ responding (documented); phone RAM is untouched by worker tasks.
 
 - Mobile master + laptop worker, same Wi-Fi: **this slice** (manual checklist pending).
 - Worker reports capabilities: **this slice** (`/v1/workers`).
-- Qwen model loads through the selected runtime: WebLLM Qwen2.5 list **this slice**.
+- Qwen model loads through the selected runtime: WebLLM builds from Karen's model list **this slice**.
 - Prompt → streamed output: **this slice** (SSE relay, same shape as phone path).
 - Transfer/cache documented: §5 (no device transfer; browser cache, documented).
 - Metrics real: §8. Disconnects/cancel/errors: §7.

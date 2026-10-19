@@ -218,6 +218,7 @@ fun MemoryScreen(
         onConfirm = {
             StyleMemory.clear(context)
             MemoryFacts.clear(context)
+            PromptMemory.clear(context)
             statsTick++
             refreshFacts()
             showReset = false
@@ -801,7 +802,7 @@ private fun ResetMemoryDialog(
         title = { Text("Reset memory?", color = colors.textPrimary, fontWeight = FontWeight.Bold) },
         text = {
             Text(
-                "Deletes saved facts and learned style signals from this device. This can't be undone.",
+                "Deletes saved facts, learned style signals, and remembered prompts from this device. This can't be undone.",
                 color = colors.textSecondary,
                 fontSize = 13.sp
             )

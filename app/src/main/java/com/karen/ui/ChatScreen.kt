@@ -31,7 +31,9 @@ import com.karen.rememberVoiceStt
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.async
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -241,6 +243,9 @@ fun ChatScreen(
             TextRange(text.length)
         )
     }
+    // Bumped once prompt memory has been seeded from local history, so the
+    // composer's inline completions pick the seeded entries up.
+    var promptMemoryRevision by remember { mutableStateOf(0) }
     var showModelSheet by remember { mutableStateOf(false) }
     var showAttachmentSheet by remember { mutableStateOf(false) }
     var isGenerating by remember { mutableStateOf(false) }
@@ -443,6 +448,7 @@ fun ChatScreen(
     fun enqueueCurrent() {
         val userText = input.text.trim()
         if (userText.isBlank() && attachments.isEmpty()) return
+        if (userText.isNotBlank() && !temporaryChat) PromptMemory.record(context, userText)
         val sentAttachments = attachments
         input = TextFieldValue("")
         attachments = emptyList()
@@ -1643,6 +1649,13 @@ fun ChatScreen(
         conversationId = System.currentTimeMillis().toString()
     }
 
+    // Prompt memory: seed from local chat history once per mount so the
+    // composer's completions work before the first new prompt is sent.
+    LaunchedEffect(Unit) {
+        withContext(Dispatchers.IO) { PromptMemory.seedFromHistory(context) }
+        promptMemoryRevision++
+    }
+
     // Live elapsed/token readout above the composer while a reply streams in.
     LaunchedEffect(isGenerating) {
         if (!isGenerating) return@LaunchedEffect
@@ -2041,16 +2054,21 @@ fun ChatScreen(
         )
 
         // Floating Bottom Composer Dock
-        // ChatGPT-style prompt suggestion chips: shown on a fresh chat,
-        // hidden as soon as the user sends their first prompt.
-        if (messages.size <= 1) {
+        // ChatGPT-style starter chips: only on a fresh chat and only while the
+        // composer is empty — typing hides them so the memory completions
+        // above the composer can take over.
+        AnimatedVisibility(
+            visible = messages.size <= 1 && input.text.isBlank(),
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier.align(Alignment.BottomCenter)
+        ) {
             val suggestions = listOf("Inspect my timetable", "Summarize a document", "Set a reminder", "Open Workspace")
             @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
             androidx.compose.foundation.layout.FlowRow(
                 horizontalArrangement = Arrangement.Center,
                 verticalArrangement = Arrangement.spacedBy(10.dp),
                 modifier = Modifier
-                    .align(Alignment.BottomCenter)
                     .navigationBarsPadding()
                     .padding(bottom = 104.dp, start = 20.dp, end = 20.dp)
             ) {
@@ -2062,7 +2080,9 @@ fun ChatScreen(
                             .clip(RoundedCornerShape(20.dp))
                             .background(colors.surface)
                             .border(1.dp, colors.border.copy(alpha = 0.6f), RoundedCornerShape(20.dp))
-                            .clickable { setInputEnd(suggestion) }
+                            // Trailing space: picking a chip never welds the
+                            // next word onto it.
+                            .clickable { setInputEnd("$suggestion ") }
                             .padding(horizontal = 14.dp, vertical = 9.dp)
                     ) {
                         Icon(
@@ -2438,12 +2458,69 @@ fun ChatScreen(
                 route = workerRoute,
                 modifier = Modifier.padding(start = 22.dp, bottom = 6.dp)
             )
+            // Memory completions: once typing starts, earlier prompts
+            // remembered on this device sit above the composer instead of the
+            // starter chips. Prefix matches only; picking one fills the field
+            // and parks the cursor after a trailing space.
+            val memoryQuery = input.text.trim()
+            val memoryMatches = remember(memoryQuery, promptMemoryRevision) {
+                if (memoryQuery.length < 2 || mentionMatch != null || slashToken != null) {
+                    emptyList<String>()
+                } else {
+                    PromptMemory.suggestions(context, memoryQuery)
+                }
+            }
+            if (memoryMatches.isNotEmpty()) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 22.dp, end = 14.dp, bottom = 6.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(colors.surface)
+                        .border(1.dp, colors.border, RoundedCornerShape(14.dp))
+                        .padding(vertical = 4.dp)
+                ) {
+                    Text(
+                        text = "MEMORY · tap to complete",
+                        color = colors.textMuted,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                    )
+                    memoryMatches.forEach { suggestion ->
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { setInputEnd("$suggestion ") }
+                                .padding(horizontal = 12.dp, vertical = 7.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.History,
+                                contentDescription = null,
+                                tint = colors.accentBlue,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text = suggestion,
+                                color = colors.textPrimary,
+                                fontSize = 13.sp,
+                                maxLines = 1,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                }
+            }
             ChatGPTFloatingComposer(
                 value = input,
                 onValueChange = { input = it },
                 onSend = {
                 val rawText = input.text.trim()
                 if (rawText.isNotBlank() || attachments.isNotEmpty()) {
+                    if (rawText.isNotBlank() && !temporaryChat) PromptMemory.record(context, rawText)
                     input = TextFieldValue("")
                     val sentAttachments = attachments
                     attachments = emptyList()

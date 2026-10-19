@@ -20,11 +20,11 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Assistant
 import androidx.compose.material.icons.filled.ExpandMore
-import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
@@ -194,17 +194,16 @@ fun KConsoleHeader(
 }
 
 /**
- * Navigation dock — Home / Chat / Workspace / Files, with Voice promoted to a
- * floating mic action above the rail so it never competes with destinations.
+ * Navigation dock — Home / Chat / Workspace / Files. The active destination
+ * sits in a rounded selection box (Instagram-style); every tab reserves the
+ * same box footprint so the row doesn't jog when the selection moves.
  */
 @Composable
 fun KNavigationDock(
     currentScreen: String,
     onSelectScreen: (String) -> Unit,
     modifier: Modifier = Modifier,
-    onOpenVoice: () -> Unit = {},
-    workspaceBadge: Int = 0,
-    showVoiceAction: Boolean = true
+    workspaceBadge: Int = 0
 ) {
     val colors = LocalKarenColors.current
     val type = LocalKarenType.current
@@ -218,86 +217,70 @@ fun KNavigationDock(
         )
     }
 
-    Box(modifier.fillMaxWidth()) {
-        if (showVoiceAction) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(end = 16.dp)
-                    .size(48.dp)
-                    .clip(CircleShape)
-                    .background(
-                        Brush.radialGradient(
-                            listOf(
-                                colors.accentGreen.copy(alpha = 0.28f),
-                                colors.accentGreen.copy(alpha = 0.04f)
-                            )
-                        )
-                    ),
-                contentAlignment = Alignment.Center
-            ) {
-                Box(
-                    Modifier
-                        .size(40.dp)
-                        .clip(CircleShape)
-                        .background(colors.accentGreen)
-                        .clickable { onOpenVoice() },
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        Icons.Default.GraphicEq,
-                        contentDescription = "Voice mode",
-                        tint = Color.White,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-            }
-        }
-
-        Column(
+    Column(
+        modifier
+            .fillMaxWidth()
+            .background(colors.background)
+            .padding(top = 2.dp, bottom = 2.dp)
+    ) {
+        Box(
             Modifier
                 .fillMaxWidth()
-                .background(colors.background)
-                .padding(top = 2.dp, bottom = 2.dp)
-        ) {
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .height(1.dp)
-                    .background(
-                        Brush.horizontalGradient(
-                            listOf(
-                                Color.Transparent,
-                                colors.border,
-                                Color.Transparent
-                            )
+                .height(1.dp)
+                .background(
+                    Brush.horizontalGradient(
+                        listOf(
+                            Color.Transparent,
+                            colors.border,
+                            Color.Transparent
                         )
                     )
-            )
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .navigationBarsPadding()
-                    .height(58.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                destinations.forEach { destination ->
-                    val selected = currentScreen == destination.route
-                    val tint = if (selected) colors.accentGreen else colors.textMuted
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
+                )
+        )
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .height(64.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            destinations.forEach { destination ->
+                val selected = currentScreen == destination.route
+                val tint = if (selected) colors.accentGreen else colors.textMuted
+                val boxShape = RoundedCornerShape(12.dp)
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable { onSelectScreen(destination.route) }
+                        .padding(horizontal = 8.dp)
+                ) {
+                    // Instagram-style selection: the active tab's icon sits in
+                    // a rounded box. Every tab keeps the same footprint so the
+                    // row doesn't jog when the selection moves.
+                    Box(
                         modifier = Modifier
-                            .clip(CircleShape)
-                            .clickable { onSelectScreen(destination.route) }
-                            .padding(horizontal = 14.dp, vertical = 4.dp)
+                            .clip(boxShape)
+                            .background(
+                                if (selected) colors.accentGreen.copy(alpha = 0.16f)
+                                else Color.Transparent
+                            )
+                            .border(
+                                1.dp,
+                                if (selected) colors.accentGreen.copy(alpha = 0.38f)
+                                else Color.Transparent,
+                                boxShape
+                            )
+                            .padding(horizontal = 13.dp, vertical = 6.dp),
+                        contentAlignment = Alignment.Center
                     ) {
                         Box(contentAlignment = Alignment.TopEnd) {
                             Icon(
                                 destination.icon,
                                 contentDescription = destination.label,
                                 tint = tint,
-                                modifier = Modifier.size(19.dp)
+                                modifier = Modifier.size(20.dp)
                             )
                             if (destination.route == "Workspace" && workspaceBadge > 0) {
                                 Box(
@@ -318,14 +301,15 @@ fun KNavigationDock(
                                 }
                             }
                         }
-                        Spacer(Modifier.height(2.dp))
-                        Text(
-                            destination.label,
-                            color = tint,
-                            fontSize = 10.sp,
-                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
-                        )
                     }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        destination.label,
+                        color = tint,
+                        fontSize = 10.sp,
+                        lineHeight = 13.sp,
+                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
+                    )
                 }
             }
         }

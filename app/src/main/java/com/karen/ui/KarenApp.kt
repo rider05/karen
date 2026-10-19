@@ -188,8 +188,7 @@ fun KarenApp(startScreen: String = "Home") {
                         if (currentScreen != "Chat") {
                             KNavigationDock(
                                 currentScreen = currentScreen,
-                                onSelectScreen = { currentScreen = it },
-                                onOpenVoice = { currentScreen = "Voice" }
+                                onSelectScreen = { currentScreen = it }
                             )
                         }
                     },

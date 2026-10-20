@@ -2812,6 +2812,9 @@ fun ChatGPTDrawerContent(
                     }
                     AnimatedVisibility(visible = !toolsCollapsed) {
                         Column {
+                            DrawerNavItem("Intelligent Flowchart", Icons.Default.AccountTree, currentScreen == "Flowchart") {
+                                onNavigate("Flowchart"); onCloseDrawer()
+                            }
                             DrawerNavItem("Knowledge Vault & Files", Icons.Default.SnippetFolder, currentScreen == "Files") {
                                 onNavigate("Files"); onCloseDrawer()
                             }

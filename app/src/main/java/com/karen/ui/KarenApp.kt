@@ -103,6 +103,7 @@ fun KarenApp(startScreen: String = "Home") {
                 "Nodes" -> "Network Nodes"
                 "Performance", "Hardware" -> "Performance"
                 "StudyBook" -> "Study Book"
+                "Flowchart" -> "Intelligent Flow"
                 "Voice" -> "Voice Chat"
                 "Settings" -> "Settings"
                 else -> currentScreen
@@ -136,6 +137,7 @@ fun KarenApp(startScreen: String = "Home") {
             "Performance" -> "Performance"
             "Hardware" -> "Performance"
             "StudyBook" -> "Study"
+            "Flowchart" -> "Flow"
             "Settings" -> "Settings"
             else -> "Dashboard"
         }
@@ -250,6 +252,10 @@ fun KarenApp(startScreen: String = "Home") {
                                 onNavigateToHome = { currentScreen = "Home" }
                             )
                             "StudyBook" -> StudyBookScreen(
+                                onOpenDrawer = { coroutineScope.launch { drawerState.open() } },
+                                onNavigateToHome = { currentScreen = "Home" }
+                            )
+                            "Flowchart" -> FlowchartScreen(
                                 onOpenDrawer = { coroutineScope.launch { drawerState.open() } },
                                 onNavigateToHome = { currentScreen = "Home" }
                             )

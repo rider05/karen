@@ -1,7 +1,11 @@
 package com.karen.ui
 
 import android.content.Context
+import android.media.AudioAttributes
+import android.media.AudioFormat
+import android.media.AudioTrack
 import android.media.MediaPlayer
+import android.os.SystemClock
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import androidx.compose.runtime.getValue
@@ -14,11 +18,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Speech output for Karen.
@@ -44,16 +50,23 @@ object TtsManager {
     private var streamPending = 0
     private var streamClosed = true
     private var streamSpokenLen = 0
-    private var streamLatest = ""
+    @Volatile private var streamLatest = ""
     private var streamPersona = "Juniper"
     private var streamCtx: Context? = null
     private var streamDone: (() -> Unit)? = null
+    @Volatile private var pumpScheduled = false
+    private val pumpRunnable = Runnable {
+        pumpScheduled = false
+        pumpStream()
+    }
 
-    // Cloud voice state (Fish Audio via OpenRouter).
+    // Cloud voice state (Fish Audio direct, or via OpenRouter).
     private var streamCloud = false
     private var cloudSentences: Channel<String>? = null
     private var cloudJob: Job? = null
     private var cloudPlayer: MediaPlayer? = null
+    @Volatile private var cloudPcmStream: CloudTts.PcmStream? = null
+    @Volatile private var cloudTrack: AudioTrack? = null
     private var cloudGen = 0
     private var cloudWarned = false
     private val cloudScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -309,11 +322,19 @@ object TtsManager {
         streamClosed = false
         streamDone = onDone
         streamCloud = CloudTts.available(ctx)
-        speaking = true
+        // Don't claim to be speaking until audio really starts: the UI can
+        // show "Thinking…" during model + first-token latency instead of a
+        // misleading "Speaking" state over dead air.
+        speaking = false
+        speakingText = null
         if (streamCloud) {
             val sentences = Channel<String>(Channel.UNLIMITED)
             cloudSentences = sentences
-            startCloudPipeline(ctx.applicationContext, sentences)
+            if (CloudTts.canStreamPcm(ctx)) {
+                startPcmPipeline(ctx.applicationContext, sentences)
+            } else {
+                startCloudPipeline(ctx.applicationContext, sentences)
+            }
         } else {
             ensure(ctx) {
                 pumpStream()
@@ -355,6 +376,7 @@ object TtsManager {
                     break
                 }
                 speakingText = clip.text
+                speaking = true
                 try {
                     playFile(clip.file, gen)
                     played = true
@@ -388,10 +410,249 @@ object TtsManager {
         }
     }
 
+    private sealed interface PcmEvent {
+        data class Start(val sampleRate: Int, val channels: Int) : PcmEvent
+        data class Text(val sentence: String) : PcmEvent
+        data class Data(val bytes: ByteArray) : PcmEvent
+    }
+
+    /**
+     * Low-latency Live-mode path: each sentence is requested as raw PCM and
+     * written to one AudioTrack as the service generates it. A small channel
+     * between the network producer and the writer lets the next sentence start
+     * downloading while the current one is still being heard.
+     *
+     * If nothing reached the speaker (bad key, PCM rejected, no audio device),
+     * the reply is handed to the existing MP3 pipeline, which can still use
+     * OpenRouter and finally the system voice.
+     */
+    private fun startPcmPipeline(ctx: Context, sentences: Channel<String>) {
+        val gen = ++cloudGen
+        val voice = UserPrefs.fishVoiceId(ctx)
+        cloudJob = cloudScope.launch {
+            val events = Channel<PcmEvent>(64)
+            val anyAudio = AtomicBoolean(false)
+            val producer = launch(Dispatchers.IO) {
+                try {
+                    for (sentence in sentences) {
+                        if (gen != cloudGen) break
+                        var stream: CloudTts.PcmStream? = null
+                        try {
+                            stream = CloudTts.openPcmStream(ctx, sentence, voice)
+                            cloudPcmStream = stream
+                            events.send(PcmEvent.Start(stream.sampleRate, stream.channels))
+                            events.send(PcmEvent.Text(sentence))
+                            val buffer = ByteArray(8192)
+                            while (gen == cloudGen) {
+                                val n = stream.input.read(buffer)
+                                if (n < 0) break
+                                if (n > 0) events.send(PcmEvent.Data(buffer.copyOf(n)))
+                            }
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (_: Exception) {
+                            // Nothing heard yet: let the MP3/OpenRouter pipeline
+                            // try this sentence instead of failing silently.
+                            if (!anyAudio.get()) break
+                            // Mid-reply hiccup: skip this sentence and keep the
+                            // rest of the reply flowing.
+                        } finally {
+                            stream?.close()
+                            if (cloudPcmStream === stream) cloudPcmStream = null
+                        }
+                    }
+                } finally {
+                    events.close()
+                }
+            }
+
+            var track: AudioTrack? = null
+            var sampleRate = 0
+            var channels = 1
+            var skipCurrent = false
+            var written = 0L
+            var played = false
+            try {
+                withContext(Dispatchers.IO) {
+                    for (event in events) {
+                        if (gen != cloudGen) break
+                        when (event) {
+                            is PcmEvent.Start -> {
+                                if (track == null) {
+                                    sampleRate = event.sampleRate
+                                    channels = event.channels
+                                    track = createPcmTrack(sampleRate, channels)
+                                    cloudTrack = track
+                                    try {
+                                        track?.play()
+                                    } catch (_: Exception) {
+                                        try {
+                                            track?.release()
+                                        } catch (_: Exception) {
+                                        }
+                                        if (cloudTrack === track) cloudTrack = null
+                                        track = null
+                                    }
+                                    skipCurrent = track == null
+                                } else if (event.sampleRate != sampleRate ||
+                                    event.channels != channels
+                                ) {
+                                    // A rare mid-reply route switch (direct Fish
+                                    // to OpenRouter, say) changes the format.
+                                    // Rebuild instead of writing at the wrong
+                                    // rate or going silent for the rest.
+                                    try {
+                                        track?.stop()
+                                    } catch (_: Exception) {
+                                    }
+                                    try {
+                                        track?.release()
+                                    } catch (_: Exception) {
+                                    }
+                                    if (cloudTrack === track) cloudTrack = null
+                                    sampleRate = event.sampleRate
+                                    channels = event.channels
+                                    track = createPcmTrack(sampleRate, channels)
+                                    cloudTrack = track
+                                    try {
+                                        track?.play()
+                                    } catch (_: Exception) {
+                                        try {
+                                            track?.release()
+                                        } catch (_: Exception) {
+                                        }
+                                        if (cloudTrack === track) cloudTrack = null
+                                        track = null
+                                    }
+                                    written = 0
+                                    skipCurrent = track == null
+                                } else {
+                                    skipCurrent = false
+                                }
+                            }
+                            is PcmEvent.Text -> onMain {
+                                if (gen == cloudGen) speakingText = event.sentence
+                            }
+                            is PcmEvent.Data -> {
+                                val player = track ?: continue
+                                if (skipCurrent) continue
+                                var offset = 0
+                                while (offset < event.bytes.size) {
+                                    val n = try {
+                                        player.write(event.bytes, offset, event.bytes.size - offset)
+                                    } catch (_: Exception) {
+                                        -1
+                                    }
+                                    if (n <= 0) break
+                                    offset += n
+                                    written += n
+                                    anyAudio.set(true)
+                                }
+                                if (!played && written > 0) {
+                                    played = true
+                                    onMain { if (gen == cloudGen) speaking = true }
+                                }
+                            }
+                        }
+                    }
+                    // Let the hardware buffer finish before releasing the track.
+                    if (gen == cloudGen && written > 0 && track != null) {
+                        val frames = (written / (2L * channels.coerceAtLeast(1))).toInt()
+                        val durationMs = frames * 1000L / sampleRate.coerceAtLeast(1)
+                        val deadline = SystemClock.elapsedRealtime() + durationMs + 2500
+                        while (gen == cloudGen &&
+                            (track?.playbackHeadPosition ?: 0) < frames &&
+                            SystemClock.elapsedRealtime() < deadline
+                        ) {
+                            delay(40)
+                        }
+                    }
+                }
+            } finally {
+                producer.cancel()
+                try {
+                    track?.stop()
+                } catch (_: Exception) {
+                }
+                try {
+                    track?.release()
+                } catch (_: Exception) {
+                }
+                if (cloudTrack === track) cloudTrack = null
+            }
+
+            if (gen != cloudGen) return@launch
+            if (!played) {
+                // Nothing was audible. Hand the known reply to the MP3
+                // pipeline; it can still fall back to OpenRouter and then the
+                // system voice. Future sentences continue through `retry`.
+                val retry = Channel<String>(Channel.UNLIMITED)
+                cloudSentences = retry
+                val known = streamLatest
+                streamSpokenLen = known.length
+                val spoken = CloudTts.cleanForSpeech(known).ifBlank { known }
+                if (spoken.isNotBlank()) retry.trySend(spoken)
+                if (streamClosed) retry.close()
+                startCloudPipeline(ctx, retry)
+                return@launch
+            }
+            speaking = false
+            speakingText = null
+            streamCtx = null
+            cloudSentences = null
+            val cb = streamDone
+            streamDone = null
+            cb?.invoke()
+        }
+    }
+
+    private fun createPcmTrack(sampleRate: Int, channels: Int): AudioTrack? {
+        val channelMask = if (channels == 2) {
+            AudioFormat.CHANNEL_OUT_STEREO
+        } else {
+            AudioFormat.CHANNEL_OUT_MONO
+        }
+        val min = AudioTrack.getMinBufferSize(
+            sampleRate,
+            channelMask,
+            AudioFormat.ENCODING_PCM_16BIT
+        )
+        if (min <= 0) return null
+        // ~200 ms of cushion keeps playback smooth without adding noticeable
+        // start delay; the first write is audible as soon as it lands.
+        val bytesPerSecond = sampleRate * channels * 2
+        val bufferSize = maxOf(min * 2, bytesPerSecond / 5)
+        return try {
+            AudioTrack.Builder()
+                .setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build()
+                )
+                .setAudioFormat(
+                    AudioFormat.Builder()
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setSampleRate(sampleRate)
+                        .setChannelMask(channelMask)
+                        .build()
+                )
+                .setBufferSizeInBytes(bufferSize)
+                .setTransferMode(AudioTrack.MODE_STREAM)
+                .build()
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     /** Feeds the latest full text; newly completed sentences are spoken. */
     fun pushStream(fullText: String) {
         streamLatest = fullText
-        onMain { pumpStream() }
+        // Token streams call this dozens of times a second. Coalesce the main
+        // thread pumps so TTS starts on time instead of queueing behind UI work.
+        if (pumpScheduled) return
+        pumpScheduled = true
+        mainHandler.postDelayed(pumpRunnable, 16L)
     }
 
     /** Speaks whatever is left and closes the stream. */
@@ -399,6 +660,8 @@ object TtsManager {
         streamLatest = fullText
         streamClosed = true
         onMain {
+            mainHandler.removeCallbacks(pumpRunnable)
+            pumpScheduled = false
             pumpStream()
             val rest = streamLatest.substring(streamSpokenLen.coerceIn(0, streamLatest.length)).trim()
             streamSpokenLen = streamLatest.length
@@ -419,22 +682,48 @@ object TtsManager {
         }
     }
 
+    /**
+     * Emits the *first* completed thought, not the last one in the buffer.
+     * The old loop scanned to the end and spoke a whole paragraph as one
+     * request; this starts audio on the first sentence and lets the pipeline
+     * synthesize the next one while it plays.
+     */
     private fun pumpStream() {
         val ctx = streamCtx ?: return
-        if (streamClosed) return
+        // No streamClosed guard: endStream calls pump once so a complete final
+        // sentence starts its own TTS request before the remainder is queued.
         if (!streamCloud && !ready) return
         val text = streamLatest
+        val start = streamSpokenLen.coerceIn(0, text.length)
+        if (start >= text.length) return
+        val firstChunk = start == 0
         var end = -1
-        var idx = streamSpokenLen.coerceIn(0, text.length)
-        while (idx < text.length) {
+        var idx = start
+        while (idx < text.length && end < 0) {
             val c = text[idx]
-            val boundary = c == '!' || c == '?' || c == '\n' ||
-                (c == '.' && (idx + 1 >= text.length || text[idx + 1].isWhitespace()))
-            if (boundary && idx + 1 - streamSpokenLen >= 12) end = idx + 1
+            val next = if (idx + 1 < text.length) text[idx + 1] else null
+            val sentence = c == '!' || c == '?' || c == '\n' ||
+                (c == '.' && (next == null || next.isWhitespace()))
+            val clause = c == ',' || c == ';' || c == ':'
+            val len = idx + 1 - start
+            val minSentence = if (firstChunk) 2 else 8
+            val minClause = if (firstChunk) 28 else 120
+            if (sentence && len >= minSentence) {
+                end = idx + 1
+            } else if (clause && len >= minClause) {
+                end = idx + 1
+            }
             idx++
         }
-        if (end > streamSpokenLen) {
-            val chunk = text.substring(streamSpokenLen, end).trim()
+        // No punctuation yet: don't wait for a whole paragraph. Cut at the
+        // last word boundary after a sensible amount of speech.
+        if (end < 0 && text.length - start >= 180) {
+            val cap = (start + 180).coerceAtMost(text.length)
+            val space = text.lastIndexOf(' ', cap)
+            if (space > start + 40) end = space + 1
+        }
+        if (end > start) {
+            val chunk = text.substring(start, end).trim()
             streamSpokenLen = end
             emitChunk(ctx, chunk)
         }
@@ -487,6 +776,24 @@ object TtsManager {
         cloudSentences = null
         streamCloud = false
         try {
+            cloudPcmStream?.close()
+        } catch (_: Exception) {
+        }
+        cloudPcmStream = null
+        try {
+            cloudTrack?.pause()
+        } catch (_: Exception) {
+        }
+        try {
+            cloudTrack?.flush()
+        } catch (_: Exception) {
+        }
+        try {
+            cloudTrack?.release()
+        } catch (_: Exception) {
+        }
+        cloudTrack = null
+        try {
             cloudPlayer?.release()
         } catch (_: Exception) {
         }
@@ -495,6 +802,8 @@ object TtsManager {
             tts?.stop()
         } catch (_: Exception) {
         }
+        mainHandler.removeCallbacks(pumpRunnable)
+        pumpScheduled = false
         pending = null
         streamPending = 0
         streamClosed = true

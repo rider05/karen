@@ -20,6 +20,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -30,13 +32,57 @@ import com.karen.rememberVoiceStt
 
 /** Spoken-reply instruction: short, human, TTS-safe answers for Live mode. */
 const val VOICE_REPLY_STYLE =
-    "Reply as natural human speech for text-to-speech: 1-3 short spoken sentences, " +
-        "warm and conversational, plain words only — no markdown, no lists, no tables, " +
-        "no code, no emojis, no stage directions, no bullet points."
+    "Answer immediately with the useful part first — no preamble, no filler, " +
+        "no restating the question. Reply as natural human speech for text-to-speech: " +
+        "1-3 short spoken sentences, warm and conversational, plain words only — " +
+        "no markdown, no lists, no tables, no code, no emojis, no stage directions, " +
+        "no bullet points."
+
+/**
+ * One useful spoken sentence for a failed Live-mode chat request.
+ *
+ * Deliberately does not echo raw exception text: Gemini puts its key in the
+ * request URL, and transport errors can include that URL. Status codes are
+ * enough to tell the user which key/quota/model to fix.
+ */
+private fun voiceFailureText(e: Exception): String {
+    val status = (e as? CloudApiException)?.status
+    return when {
+        status == 400 -> "The chat provider rejected the request. Check the selected model."
+        status == 401 || status == 403 -> "The chat provider rejected the API key."
+        status == 402 -> "The chat provider says the account has no credits or quota left."
+        status == 404 -> "The selected chat model was not found."
+        status == 408 || status == 504 -> "The chat provider timed out."
+        status == 429 -> "The chat provider is rate-limiting requests right now."
+        status != null && status >= 500 -> "The chat provider is temporarily unavailable."
+        e is java.net.SocketTimeoutException -> "The chat provider timed out."
+        e is java.net.UnknownHostException || e is java.net.ConnectException ->
+            "Could not reach the chat provider. Check the connection and key."
+        else -> "The chat request failed. Check the provider key and model in Model Manager."
+    }
+}
+
+/**
+ * Voice turns care about first-token time, not the largest model. When the
+ * user has not pinned a specific cloud model, use the provider's small fast
+ * sibling instead of its flagship default.
+ */
+private fun voiceModelFor(provider: CloudProvider, stored: String): String {
+    if (stored.isNotBlank()) return stored
+    return when (provider.id) {
+        "groq" -> "llama-3.1-8b-instant"
+        "openai" -> "gpt-4o-mini"
+        "sambanova" -> "Meta-Llama-3.1-8B-Instruct"
+        "githubmodels" -> "openai/gpt-4o-mini"
+        "nvidia" -> "meta/llama-3.1-8b-instruct"
+        else -> stored
+    }
+}
 
 @Composable
 fun VoiceScreen(
-    onClose: () -> Unit = {}
+    onClose: () -> Unit = {},
+    onOpenModelManager: () -> Unit = {}
 ) {
     val device = rememberDeviceTelemetry()
     var isMuted by remember { mutableStateOf(false) }
@@ -72,11 +118,22 @@ fun VoiceScreen(
     // Voice chat loop: STT transcript → model API → human-spoken TTS reply.
     var voiceBusy by remember { mutableStateOf(false) }
     var voiceReply by remember { mutableStateOf("") }
+    // True when a turn failed for a setup reason (no chat model/key, or the
+    // provider rejected the key/model). The transcript then offers a direct
+    // jump to Model Manager instead of only telling the user to go find it.
+    var voiceNeedsModel by remember { mutableStateOf(false) }
     var cancelVoice by remember { mutableStateOf(false) }
     var autoVoice by remember { mutableStateOf(true) }
     var autoArmed by remember { mutableStateOf(false) }
     var wasSpeaking by remember { mutableStateOf(false) }
     val voiceScope = rememberCoroutineScope()
+    val haptic = LocalHapticFeedback.current
+
+    // A quiet tick when the turn leaves the microphone and moves to the
+    // model. It makes the 1-2 seconds of thinking feel acknowledged.
+    androidx.compose.runtime.LaunchedEffect(voiceBusy) {
+        if (voiceBusy) haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+    }
 
     fun runVoiceTurn(prompt: String) {
         val text = prompt.trim()
@@ -84,95 +141,202 @@ fun VoiceScreen(
         voiceBusy = true
         cancelVoice = false
         voiceReply = ""
+        voiceNeedsModel = false
         voiceScope.launch {
             try {
-                val locals = UserPrefs.models(personaCtx)
-                    .filter { !isCloudProviderName(it) && ModelDownloader.isRunnableWeight(personaCtx, it) }
-                val keyed = allCloudProviders(personaCtx).filter { UserPrefs.apiKey(personaCtx, it.id).isNotBlank() }
-                // Manual pick wins when auto-switching is off (same rule as Chat).
-                val pinned = UserPrefs.selectedModel(personaCtx).takeIf { isSelectableModel(personaCtx, it) }
-                val pick = if (!UserPrefs.autoRoute(personaCtx)) {
-                    pinned
-                } else {
-                    routeModel(
-                        text, locals, keyed, UserPrefs.autoCloud(personaCtx),
-                        UserPrefs.preferredLocalModel(personaCtx), UserPrefs.preferredApiModel(personaCtx)
-                    )?.modelName ?: pinned
-                }
                 val customs = UserPrefs.customProviders(personaCtx)
+                val locals = UserPrefs.models(personaCtx)
+                    .filter {
+                        !isCloudProviderName(it, customs) && !isEmbeddingModel(it) &&
+                            ModelDownloader.isRunnableWeight(personaCtx, it)
+                    }
+                val keyed = allCloudProviders(personaCtx).filter { UserPrefs.apiKey(personaCtx, it.id).isNotBlank() }
+                val manual = UserPrefs.selectedModel(personaCtx).takeIf { isSelectableModel(personaCtx, it) }
+                val manualCloud = manual?.let { findCloudProviderByName(it, customs) }
+                val manualLocal = manual?.takeIf { it in locals }
+                // Route even when Auto is off: if the manual pick vanished,
+                // still use any installed/keyed model instead of failing.
+                val routed = routeModel(
+                    text, locals, keyed, UserPrefs.autoCloud(personaCtx),
+                    UserPrefs.preferredLocalModel(personaCtx), UserPrefs.preferredApiModel(personaCtx)
+                )?.modelName
+                val auto = UserPrefs.autoRoute(personaCtx)
+                // Speech has no "typing" time to hide behind: loading a local
+                // GGUF can take seconds before the first token. With auto
+                // routing on, take the fastest connected cloud provider; local
+                // still wins when it is the only option or the user pinned it.
+                // Keep cloud routing off if the user disabled it.
+                val fastestCloud = if (UserPrefs.autoCloud(personaCtx)) {
+                    keyed.maxByOrNull { scoreCloud(it.id, detectIntent(text)) }?.name
+                } else {
+                    null
+                }
+                val pick = when {
+                    !auto && manualCloud != null -> manualCloud.name
+                    !auto && manualLocal != null -> manualLocal
+                    auto && fastestCloud != null -> fastestCloud
+                    manualCloud != null -> manualCloud.name
+                    manualLocal != null -> manualLocal
+                    else -> routed
+                }
                 val cloud = pick?.let { findCloudProviderByName(it, customs) }
                 val key = cloud?.let { UserPrefs.apiKey(personaCtx, it.id) }.orEmpty()
+                var failure: String? = null
+                // A setup problem (missing key/model) is worth an inline jump
+                // to Model Manager; a transient network failure is not.
+                var needsSetup = false
                 // Realtime: stream tokens straight into sentence TTS so speech
                 // starts on the first sentence instead of the full reply.
                 var full = ""
-                TtsManager.startStream(personaCtx, voicePersona)
+                var lastUiAt = 0L
+                val speechFinished = java.util.concurrent.atomic.AtomicBoolean(false)
+                TtsManager.startStream(personaCtx, voicePersona) {
+                    speechFinished.set(true)
+                }
+                fun publish(force: Boolean = false) {
+                    val now = android.os.SystemClock.elapsedRealtime()
+                    if (force || now - lastUiAt >= 70L) {
+                        lastUiAt = now
+                        voiceReply = full
+                    }
+                }
                 fun onPiece(piece: String) {
                     if (cancelVoice) return
                     full += piece
-                    voiceReply = full
                     TtsManager.pushStream(full)
+                    // Recomposition per token fights the orb animation; 14 fps
+                    // is plenty for the live transcript and keeps the main
+                    // thread free for the first TTS pump.
+                    publish()
                 }
                 if (cloud != null && key.isNotBlank()) {
-                    try {
-                        cloud.withModelFallback(personaCtx, UserPrefs.apiModel(personaCtx, cloud.id)) { useModel ->
-                            cloud.completeStreaming(
-                                key,
-                                listOf("user" to "$VOICE_REPLY_STYLE\n\n$text"),
-                                maxTokensFor("Low"),
-                                thinkingBudget = null,
-                                historyLimit = 4,
-                                model = useModel,
-                                onToken = ::onPiece,
-                                isCancelled = { cancelVoice }
-                            )
-                        }
-                    } catch (_: Exception) {
-                        // Streaming blocked: fall back to one shot.
-                        val once = try {
-                            cloud.withModelFallback(personaCtx, UserPrefs.apiModel(personaCtx, cloud.id)) { useModel ->
-                                cloud.complete(
-                                    key,
+                    // One failing provider should not sink the turn when another
+                    // connected key works. The chosen provider goes first, then
+                    // the best remaining keyed providers for this intent.
+                    val preferredApi = UserPrefs.preferredApiModel(personaCtx)
+                    val candidates = buildList {
+                        add(cloud to key)
+                        keyed.filter { it.name != cloud.name }
+                            .sortedByDescending {
+                                scoreCloud(it.id, detectIntent(text)) +
+                                    if (it.name == preferredApi) 8 else 0
+                            }
+                            .forEach { add(it to UserPrefs.apiKey(personaCtx, it.id)) }
+                    }
+                    for ((provider, providerKey) in candidates) {
+                        if (cancelVoice) break
+                        val voiceModel = voiceModelFor(
+                            provider,
+                            UserPrefs.apiModel(personaCtx, provider.id)
+                        )
+                        val streamText = try {
+                            provider.withModelFallback(personaCtx, voiceModel) { useModel ->
+                                provider.completeStreaming(
+                                    providerKey,
                                     listOf("user" to "$VOICE_REPLY_STYLE\n\n$text"),
                                     maxTokensFor("Low"),
                                     thinkingBudget = null,
                                     historyLimit = 4,
-                                    model = useModel
+                                    model = useModel,
+                                    onToken = ::onPiece,
+                                    isCancelled = { cancelVoice },
+                                    connectTimeoutMs = 6000,
+                                    readTimeoutMs = 12000
                                 )
                             }
-                        } catch (_: Exception) {
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            if (cancelVoice) {
+                                TtsManager.stop()
+                                return@launch
+                            }
+                            ""
+                        }
+                        if (cancelVoice) break
+                        if (full.isBlank() && streamText.isNotBlank()) {
+                            full = streamText
+                            publish(force = true)
+                        }
+                        // A partial stream must not be replayed by another
+                        // provider; only fail over when nothing was produced.
+                        if (full.isNotBlank()) break
+                        // Streaming can succeed with no token events (or fail
+                        // after the endpoint rejected SSE). A one-shot call is
+                        // the bridge before trying the next connected key.
+                        val once = try {
+                            provider.withModelFallback(personaCtx, voiceModel) { useModel ->
+                                provider.complete(
+                                    providerKey,
+                                    listOf("user" to "$VOICE_REPLY_STYLE\n\n$text"),
+                                    maxTokensFor("Low"),
+                                    thinkingBudget = null,
+                                    historyLimit = 4,
+                                    model = useModel,
+                                    timeoutMs = 20000
+                                )
+                            }
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            failure = voiceFailureText(e)
+                            val status = (e as? CloudApiException)?.status
+                            if (status != null && status in 400..404) needsSetup = true
                             ""
                         }
                         if (!cancelVoice && once.isNotBlank()) {
                             full = once
-                            voiceReply = full
+                            publish(force = true)
+                            break
                         }
                     }
+                } else if (cloud != null) {
+                    failure = "No API key is stored for ${cloud.name}."
+                    needsSetup = true
                 } else {
                     val modelName = pick
-                    val wf = if (cloud == null && modelName != null) ModelDownloader.weightFileFor(personaCtx, modelName) else null
+                    val wf = if (modelName != null) ModelDownloader.weightFileFor(personaCtx, modelName) else null
                     if (wf != null && KarenLlama.ready && modelName != null) {
                         val threads = maxOf(2, minOf(6, Runtime.getRuntime().availableProcessors()))
                         val ok = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                             KarenLlama.ensureLoaded(wf, modelName, 2048, threads)
                         }
                         if (ok && !cancelVoice) {
-                            full = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                                KarenLlama.completeStream(
-                                    "You are Karen, a voice assistant. $VOICE_REPLY_STYLE",
-                                    arrayOf("user"),
-                                    arrayOf(text),
-                                    maxTokensFor("Low")
-                                ) { piece ->
-                                    if (!cancelVoice) {
-                                        full += piece
-                                        val snap = full
-                                        voiceScope.launch { voiceReply = snap }
-                                        TtsManager.pushStream(snap)
+                            val reply = try {
+                                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                    KarenLlama.completeStream(
+                                        "You are Karen, a voice assistant. $VOICE_REPLY_STYLE",
+                                        arrayOf("user"),
+                                        arrayOf(text),
+                                        maxTokensFor("Low")
+                                    ) { piece ->
+                                        if (!cancelVoice) {
+                                            full += piece
+                                            TtsManager.pushStream(full)
+                                            publish()
+                                        }
                                     }
                                 }
-                            }?.trim().orEmpty()
+                            } catch (e: Exception) {
+                                if (!cancelVoice) {
+                                    failure = "The on-device model failed: " +
+                                        (e.message?.trim()?.take(120) ?: "unknown error")
+                                }
+                                null
+                            }
+                            if (!reply.isNullOrBlank()) full = reply.trim()
                             if (!cancelVoice) voiceReply = full
+                        } else if (!cancelVoice) {
+                            failure = "Could not load $modelName on this device."
+                            needsSetup = true
                         }
+                    } else if (!cancelVoice && modelName != null) {
+                        failure = if (!KarenLlama.ready) {
+                            "The on-device model runtime is unavailable."
+                        } else {
+                            "No runnable GGUF is installed for $modelName."
+                        }
+                        needsSetup = true
                     }
                 }
                 if (!cancelVoice) TtsManager.endStream(full) else TtsManager.stop()
@@ -180,16 +344,44 @@ fun VoiceScreen(
                 val said = full.trim()
                 if (said.isNotBlank()) {
                     voiceReply = said
+                    voiceNeedsModel = false
                     autoArmed = true
                 } else {
                     TtsManager.stop()
-                    voiceReply = "I couldn't answer that. Connect a model in Model Manager to chat by voice."
+                    val noModel = pick == null
+                    voiceNeedsModel = noModel || needsSetup
+                    voiceReply = when {
+                        noModel && keyed.isNotEmpty() ->
+                            "A chat API key is connected, but cloud routing is off. Turn on cloud routing or choose a model in Model Manager."
+                        noModel && CloudTts.available(personaCtx) ->
+                            "Fish Audio is set up for the voice, but no chat model is connected. Add a chat API key (for example OpenRouter) or download a local GGUF in Model Manager."
+                        noModel ->
+                            "Connect a chat model in Model Manager to talk by voice."
+                        failure != null ->
+                            "I couldn't answer that. $failure"
+                        else ->
+                            "I couldn't answer that. The model returned an empty reply."
+                    }
                     TtsManager.speak(personaCtx, voiceReply, voicePersona)
                 }
+                // Keep "Thinking…" up until the first audio actually starts
+                // (or the clip finishes instantly). Without this, the pill
+                // flips to Ready during the TTS header wait and invites a tap
+                // that cancels the pending reply.
+                if (!cancelVoice && said.isNotBlank()) {
+                    kotlinx.coroutines.withTimeoutOrNull(4000) {
+                        while (!speechFinished.get() && !TtsManager.speaking) {
+                            kotlinx.coroutines.delay(50)
+                        }
+                    }
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 if (!cancelVoice) {
                     TtsManager.stop()
-                    voiceReply = "Sorry, something went wrong."
+                    voiceNeedsModel = false
+                    voiceReply = "Sorry, something went wrong. ${voiceFailureText(e)}"
                     TtsManager.speak(personaCtx, voiceReply, voicePersona)
                 }
             } finally {
@@ -207,13 +399,15 @@ fun VoiceScreen(
             userSpokenText = interim
         }
     )
+    val isTranscribing = voiceStt.state.isTranscribing
+    val isThinking = voiceBusy && !isSpeaking
 
     // Hands-free loop: when the spoken reply finishes, listen again.
     androidx.compose.runtime.LaunchedEffect(TtsManager.speaking) {
         if (wasSpeaking && !TtsManager.speaking) {
             if (autoArmed && !cancelVoice && autoVoice && !isMuted && voiceReply.isNotBlank()) {
                 autoArmed = false
-                kotlinx.coroutines.delay(150)
+                kotlinx.coroutines.delay(100)
                 voiceStt.startListening()
             } else {
                 autoArmed = false
@@ -244,10 +438,10 @@ fun VoiceScreen(
     // Warm the TTS engine and start listening on entry (Gemini-style).
     androidx.compose.runtime.LaunchedEffect(Unit) {
         TtsManager.warmup(personaCtx)
-        voiceScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            VoiceEngine.vadReady(personaCtx)
-        }
-        kotlinx.coroutines.delay(350)
+        // DNS/TLS + VAD warm in parallel; neither blocks the mic.
+        voiceScope.launch(kotlinx.coroutines.Dispatchers.IO) { CloudTts.warmup(personaCtx) }
+        voiceScope.launch(kotlinx.coroutines.Dispatchers.IO) { VoiceEngine.vadReady(personaCtx) }
+        kotlinx.coroutines.delay(250)
         if (!voiceBusy && !TtsManager.speaking && !isMuted) voiceStt.startListening()
     }
 
@@ -347,7 +541,14 @@ fun VoiceScreen(
         initialValue = 0f,
         targetValue = 360f,
         animationSpec = infiniteRepeatable(
-            animation = tween(if (isSpeaking || voiceStt.state.isListening) 5000 else 12000, easing = LinearEasing),
+            animation = tween(
+                when {
+                    isSpeaking || voiceStt.state.isListening -> 5000
+                    isThinking || isTranscribing -> 2600
+                    else -> 12000
+                },
+                easing = LinearEasing
+            ),
             repeatMode = RepeatMode.Restart
         ),
         label = "orb_rotation"
@@ -356,9 +557,20 @@ fun VoiceScreen(
     // Breathing scale animation
     val breatheScale by infiniteTransition.animateFloat(
         initialValue = 0.88f,
-        targetValue = if (isSpeaking) 1.15f else 1.02f,
+        targetValue = when {
+            isSpeaking -> 1.15f
+            isThinking || isTranscribing -> 1.07f
+            else -> 1.02f
+        },
         animationSpec = infiniteRepeatable(
-            animation = tween(if (isSpeaking) 1200 else 2400, easing = FastOutSlowInEasing),
+            animation = tween(
+                when {
+                    isSpeaking -> 1200
+                    isThinking || isTranscribing -> 850
+                    else -> 2400
+                },
+                easing = FastOutSlowInEasing
+            ),
             repeatMode = RepeatMode.Reverse
         ),
         label = "orb_breathe"
@@ -533,16 +745,23 @@ fun VoiceScreen(
                         .size(8.dp)
                         .clip(CircleShape)
                         .background(
-                            if (voiceStt.state.isListening) colors.accentGreen.copy(alpha = statusPulse)
-                            else if (isSpeaking) colors.accentBlue.copy(alpha = statusPulse)
-                            else colors.textMuted
+                            when {
+                                voiceStt.state.isListening -> colors.accentGreen.copy(alpha = statusPulse)
+                                isSpeaking -> colors.accentBlue.copy(alpha = statusPulse)
+                                isThinking || isTranscribing -> colors.accentGreen.copy(alpha = statusPulse)
+                                else -> colors.textMuted
+                            }
                         )
                 )
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    text = if (voiceStt.state.isListening) "Listening..."
-                    else if (isSpeaking) "Speaking · ${if (CloudTts.available(personaCtx)) selectedVoiceLabel else "System TTS"}"
-                    else "Ready · Tap to Speak",
+                    text = when {
+                        voiceStt.state.isListening -> "Listening..."
+                        isSpeaking -> "Speaking · ${if (CloudTts.available(personaCtx)) selectedVoiceLabel else "System TTS"}"
+                        isTranscribing -> "Got it…"
+                        isThinking -> "Thinking…"
+                        else -> "Ready · Tap to Speak"
+                    },
                     color = colors.textSecondary,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.Medium
@@ -564,7 +783,8 @@ fun VoiceScreen(
                 modifier = Modifier
                     .size(240.dp)
                     .clickable {
-                        if (voiceBusy) {
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        if (voiceBusy || isSpeaking) {
                             cancelVoice = true
                             autoArmed = false
                             voiceStt.stopListening()
@@ -573,6 +793,8 @@ fun VoiceScreen(
                             voiceStt.stopListening()
                         } else {
                             cancelVoice = false
+                            voiceReply = ""
+                            voiceNeedsModel = false
                             voiceStt.startListening()
                         }
                     },
@@ -681,7 +903,12 @@ fun VoiceScreen(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
-                    text = if (voiceStt.state.isListening) "YOU (LISTENING...)" else if (isSpeaking) "KAREN · ${activeVoiceLabel.uppercase()}" else "STANDBY",
+                    text = when {
+                        voiceStt.state.isListening -> "YOU (LISTENING...)"
+                        isSpeaking -> "KAREN · ${activeVoiceLabel.uppercase()}"
+                        isThinking || isTranscribing -> "KAREN · THINKING"
+                        else -> "STANDBY"
+                    },
                     color = colors.accentGreen,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
@@ -691,6 +918,7 @@ fun VoiceScreen(
                 Text(
                     text = when {
                         voiceStt.state.isListening -> "YOU (LISTENING...)"
+                        isTranscribing -> "Got it — thinking…"
                         voiceBusy -> "Thinking…"
                         voiceReply.isNotBlank() -> "“$voiceReply”"
                         !voiceStt.state.errorMessage.isNullOrBlank() -> "⚠ ${voiceStt.state.errorMessage} — tap orb to retry"
@@ -742,6 +970,21 @@ fun VoiceScreen(
                                 .height(h.dp)
                                 .clip(RoundedCornerShape(2.dp))
                                 .background(if (voiceStt.state.isListening) colors.accentGreen else colors.border)
+                        )
+                    }
+                }
+
+                if (voiceNeedsModel) {
+                    Spacer(Modifier.height(4.dp))
+                    TextButton(
+                        onClick = onOpenModelManager,
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                    ) {
+                        Text(
+                            text = "Open Model Manager →",
+                            color = colors.accentGreen,
+                            fontSize = 12.5.sp,
+                            fontWeight = FontWeight.SemiBold
                         )
                     }
                 }

@@ -157,7 +157,10 @@ fun isSelectableModel(ctx: Context, name: String): Boolean {
     if (isCloudProviderName(name, customs)) {
         return findCloudProviderByName(name, customs)?.let { UserPrefs.apiKey(ctx, it.id).isNotBlank() } ?: false
     }
-    return name in UserPrefs.models(ctx) || catalogEntryFor(name) != null
+    // Catalog-only names are downloadable models, not installed weights. Treating
+    // them as selectable made Live Mode pick a model with no file on disk and
+    // fall back to "connect a model" even when a cloud key was configured.
+    return name in UserPrefs.models(ctx)
 }
 
 /** True for embedding-only weights: downloaded, but never chat-routed. */

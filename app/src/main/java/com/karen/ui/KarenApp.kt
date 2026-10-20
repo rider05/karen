@@ -182,7 +182,8 @@ fun KarenApp(startScreen: String = "Home") {
             // If in Live mode, show immersive full screen without bottom bar
             if (currentScreen == "Voice") {
                 VoiceScreen(
-                    onClose = { currentScreen = "Home" }
+                    onClose = { currentScreen = "Home" },
+                    onOpenModelManager = { currentScreen = "ModelManager" }
                 )
             } else {
                 Scaffold(

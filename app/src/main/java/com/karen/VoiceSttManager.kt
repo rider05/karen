@@ -21,12 +21,16 @@ class VoiceSttState(
     isListening: Boolean = false,
     partialText: String = "",
     rmsDb: Float = 0f,
-    errorMessage: String? = null
+    errorMessage: String? = null,
+    isTranscribing: Boolean = false
 ) {
     var isListening by mutableStateOf(isListening)
     var partialText by mutableStateOf(partialText)
     var rmsDb by mutableStateOf(rmsDb)
     var errorMessage by mutableStateOf(errorMessage)
+
+    /** True between end-of-speech and the final transcript. */
+    var isTranscribing by mutableStateOf(isTranscribing)
 }
 
 class VoiceSttController(
@@ -55,6 +59,11 @@ fun rememberVoiceStt(
     val context = LocalContext.current
     val state = remember { VoiceSttState() }
 
+    // The recognizer is reused across hands-free turns; keep the newest
+    // callbacks without recreating it and losing the warm engine.
+    val currentOnResult = rememberUpdatedState(onResult)
+    val currentOnPartial = rememberUpdatedState(onPartialResult)
+
     var speechRecognizer by remember { mutableStateOf<SpeechRecognizer?>(null) }
 
     // Fallback system dialog intent launcher
@@ -62,12 +71,13 @@ fun rememberVoiceStt(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
         state.isListening = false
+        state.isTranscribing = false
         if (result.resultCode == Activity.RESULT_OK && result.data != null) {
             val spokenMatches = result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
             val text = spokenMatches?.firstOrNull()?.trim()
             if (!text.isNullOrEmpty()) {
                 state.partialText = ""
-                onResult(text)
+                currentOnResult.value(text)
             }
         }
     }
@@ -79,6 +89,11 @@ fun rememberVoiceStt(
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
             putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
+            // Ask the service to endpoint a little sooner. Live Mode feels
+            // dead when the recognizer sits on a finished sentence; these are
+            // hints, and recognizers that ignore them keep their defaults.
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 750L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 400L)
         }
     }
 
@@ -89,83 +104,123 @@ fun rememberVoiceStt(
             systemIntentLauncher.launch(intent)
         } catch (e: Exception) {
             state.isListening = false
+            state.isTranscribing = false
             state.errorMessage = "No speech recognition service available"
             Toast.makeText(context, "Speech recognition not available on device", Toast.LENGTH_SHORT).show()
         }
     }
+    val currentFallback = rememberUpdatedState(launchSystemDialogFallback)
+
+    val listener = remember {
+        object : RecognitionListener {
+            override fun onReadyForSpeech(params: Bundle?) {
+                state.isListening = true
+                state.isTranscribing = false
+                state.errorMessage = null
+            }
+
+            override fun onBeginningOfSpeech() {
+                state.isListening = true
+            }
+
+            override fun onRmsChanged(rmsdB: Float) {
+                state.rmsDb = (rmsdB.coerceIn(0f, 10f) / 10f)
+            }
+
+            override fun onBufferReceived(buffer: ByteArray?) {}
+
+            override fun onEndOfSpeech() {
+                // The final transcript is still in flight. Showing this
+                // immediately removes the silent gap before "Thinking…".
+                state.isListening = false
+                state.isTranscribing = true
+            }
+
+            override fun onError(error: Int) {
+                state.isListening = false
+                state.isTranscribing = false
+                val msg = when (error) {
+                    SpeechRecognizer.ERROR_AUDIO -> "Audio recording error"
+                    SpeechRecognizer.ERROR_CLIENT -> "Client error"
+                    SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Insufficient permissions"
+                    SpeechRecognizer.ERROR_NETWORK -> "Network error"
+                    SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Network timeout"
+                    SpeechRecognizer.ERROR_NO_MATCH -> "No speech detected"
+                    SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Recognition service busy"
+                    SpeechRecognizer.ERROR_SERVER -> "Server error"
+                    SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "No speech input"
+                    else -> "Recognition error ($error)"
+                }
+                state.errorMessage = msg
+                if (error == SpeechRecognizer.ERROR_CLIENT || error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY) {
+                    // The engine is wedged: discard it before the dialog.
+                    try {
+                        speechRecognizer?.destroy()
+                    } catch (_: Exception) {
+                    }
+                    speechRecognizer = null
+                    currentFallback.value()
+                }
+            }
+
+            override fun onResults(results: Bundle?) {
+                state.isListening = false
+                state.isTranscribing = false
+                val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                val finalSpeech = matches?.firstOrNull()?.trim()
+                if (!finalSpeech.isNullOrEmpty()) {
+                    state.partialText = ""
+                    currentOnResult.value(finalSpeech)
+                }
+            }
+
+            override fun onPartialResults(partialResults: Bundle?) {
+                val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                val interim = matches?.firstOrNull()?.trim() ?: ""
+                if (interim.isNotEmpty()) {
+                    state.partialText = interim
+                    currentOnPartial.value(interim)
+                }
+            }
+
+            override fun onEvent(eventType: Int, params: Bundle?) {}
+        }
+    }
+
+    fun createRecognizer(): SpeechRecognizer =
+        SpeechRecognizer.createSpeechRecognizer(context).also {
+            it.setRecognitionListener(listener)
+            speechRecognizer = it
+        }
+
+    fun beginListening(recognizer: SpeechRecognizer) {
+        recognizer.startListening(createRecognizerIntent())
+        state.isListening = true
+        state.isTranscribing = false
+    }
 
     val startRecognizingInternal = {
         if (SpeechRecognizer.isRecognitionAvailable(context)) {
+            state.isTranscribing = false
+            state.errorMessage = null
+            state.partialText = ""
             try {
-                speechRecognizer?.destroy()
-                val recognizer = SpeechRecognizer.createSpeechRecognizer(context).apply {
-                    setRecognitionListener(object : RecognitionListener {
-                        override fun onReadyForSpeech(params: Bundle?) {
-                            state.isListening = true
-                            state.errorMessage = null
-                        }
-
-                        override fun onBeginningOfSpeech() {
-                            state.isListening = true
-                        }
-
-                        override fun onRmsChanged(rmsdB: Float) {
-                            state.rmsDb = (rmsdB.coerceIn(0f, 10f) / 10f)
-                        }
-
-                        override fun onBufferReceived(buffer: ByteArray?) {}
-
-                        override fun onEndOfSpeech() {
-                            state.isListening = false
-                        }
-
-                        override fun onError(error: Int) {
-                            state.isListening = false
-                            val msg = when (error) {
-                                SpeechRecognizer.ERROR_AUDIO -> "Audio recording error"
-                                SpeechRecognizer.ERROR_CLIENT -> "Client error"
-                                SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Insufficient permissions"
-                                SpeechRecognizer.ERROR_NETWORK -> "Network error"
-                                SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Network timeout"
-                                SpeechRecognizer.ERROR_NO_MATCH -> "No speech detected"
-                                SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Recognition service busy"
-                                SpeechRecognizer.ERROR_SERVER -> "Server error"
-                                SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "No speech input"
-                                else -> "Recognition error ($error)"
-                            }
-                            state.errorMessage = msg
-                            if (error == SpeechRecognizer.ERROR_CLIENT || error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY) {
-                                // Fallback to system dialog
-                                launchSystemDialogFallback()
-                            }
-                        }
-
-                        override fun onResults(results: Bundle?) {
-                            state.isListening = false
-                            val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                            val finalSpeech = matches?.firstOrNull()?.trim()
-                            if (!finalSpeech.isNullOrEmpty()) {
-                                state.partialText = ""
-                                onResult(finalSpeech)
-                            }
-                        }
-
-                        override fun onPartialResults(partialResults: Bundle?) {
-                            val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                            val interim = matches?.firstOrNull()?.trim() ?: ""
-                            if (interim.isNotEmpty()) {
-                                state.partialText = interim
-                                onPartialResult(interim)
-                            }
-                        }
-
-                        override fun onEvent(eventType: Int, params: Bundle?) {}
-                    })
+                val recognizer = speechRecognizer ?: createRecognizer()
+                try {
+                    beginListening(recognizer)
+                } catch (_: Exception) {
+                    // A reused engine can occasionally be left busy; rebuild
+                    // once instead of dropping to the system dialog.
+                    try {
+                        recognizer.destroy()
+                    } catch (_: Exception) {
+                    }
+                    speechRecognizer = null
+                    beginListening(createRecognizer())
                 }
-                speechRecognizer = recognizer
-                recognizer.startListening(createRecognizerIntent())
-                state.isListening = true
             } catch (e: Exception) {
+                state.isListening = false
+                state.isTranscribing = false
                 launchSystemDialogFallback()
             }
         } else {
@@ -181,6 +236,7 @@ fun rememberVoiceStt(
             startRecognizingInternal()
         } else {
             state.isListening = false
+            state.isTranscribing = false
             state.errorMessage = "Audio recording permission required"
             Toast.makeText(context, "Microphone permission is required for voice input", Toast.LENGTH_SHORT).show()
         }
@@ -211,6 +267,7 @@ fun rememberVoiceStt(
             speechRecognizer?.cancel()
         } catch (_: Exception) {}
         state.isListening = false
+        state.isTranscribing = false
         state.partialText = ""
     }
 

@@ -712,7 +712,11 @@ suspend fun CloudProvider.completeStreamingResult(
     onToken: (String) -> Unit = {},
     isCancelled: () -> Boolean = { false },
     /** Karen effort pill; becomes Anthropic `output_config.effort` on 4.7+. */
-    effort: String? = null
+    effort: String? = null,
+    /** Connection timeout; realtime voice uses a shorter one to fail over fast. */
+    connectTimeoutMs: Int = 15000,
+    /** Per-read timeout; live voice uses a shorter one to avoid dead air. */
+    readTimeoutMs: Int = 90000
 ): CloudResult {
     val budget = creditBudget(maxTokens)
     val thinking = if (budget < maxTokens) null else thinkingBudget
@@ -723,7 +727,8 @@ suspend fun CloudProvider.completeStreamingResult(
     }
     return try {
         completeStreamingResultOnce(
-            apiKey, history, budget, thinking, historyLimit, model, images, tracked, isCancelled, effort, budget < maxTokens
+            apiKey, history, budget, thinking, historyLimit, model, images, tracked,
+            isCancelled, effort, budget < maxTokens, connectTimeoutMs, readTimeoutMs
         )
     } catch (e: CloudApiException) {
         val affordable = affordableBudget(budget, e) ?: throw e
@@ -731,7 +736,8 @@ suspend fun CloudProvider.completeStreamingResult(
         // a retry would duplicate them.
         if (emitted) throw e
         completeStreamingResultOnce(
-            apiKey, history, affordable, null, historyLimit, model, images, tracked, isCancelled, effort, true
+            apiKey, history, affordable, null, historyLimit, model, images, tracked,
+            isCancelled, effort, true, connectTimeoutMs, readTimeoutMs
         )
     }
 }
@@ -750,7 +756,9 @@ private suspend fun CloudProvider.completeStreamingResultOnce(
     /** Karen effort pill; becomes Anthropic `output_config.effort` on 4.7+. */
     effort: String? = null,
     /** OpenRouter: send reasoning.enabled=false on a clamped budget. */
-    disableReasoning: Boolean = false
+    disableReasoning: Boolean = false,
+    connectTimeoutMs: Int = 15000,
+    readTimeoutMs: Int = 90000
 ): CloudResult = withContext(Dispatchers.IO) {
     val trimmed = history.takeLast(historyLimit.coerceIn(4, 80))
     val effectiveModel = modelOrDefault(model)
@@ -791,7 +799,14 @@ private suspend fun CloudProvider.completeStreamingResultOnce(
                 headers["X-Title"] = "Karen"
             }
             fun runOnce(tokenField: String) {
-                postStreamLines(URL("$apiBase/chat/completions"), headers, body(tokenField), isCancelled) { line ->
+                postStreamLines(
+                    URL("$apiBase/chat/completions"),
+                    headers,
+                    body(tokenField),
+                    isCancelled,
+                    connectTimeoutMs,
+                    readTimeoutMs
+                ) { line ->
                     if (!line.startsWith("data:")) return@postStreamLines
                     val payload = line.removePrefix("data:").trim()
                     if (payload.isBlank() || payload == "[DONE]") return@postStreamLines
@@ -893,15 +908,24 @@ private suspend fun CloudProvider.completeStreamingResultOnce(
                 }
             }
             try {
-                postStreamLines(url, headers, body(false, effortLevel), isCancelled, onEvent)
+                postStreamLines(
+                    url, headers, body(false, effortLevel), isCancelled,
+                    connectTimeoutMs, readTimeoutMs, onEvent
+                )
             } catch (e: CloudApiException) {
                 // Nothing was emitted yet: the 400 arrived before the stream.
                 if (full.isNotEmpty() || thoughts.isNotEmpty() || !e.isThinkingShapeRejected()) throw e
                 try {
-                    postStreamLines(url, headers, body(true, effortLevel), isCancelled, onEvent)
+                    postStreamLines(
+                        url, headers, body(true, effortLevel), isCancelled,
+                        connectTimeoutMs, readTimeoutMs, onEvent
+                    )
                 } catch (e2: CloudApiException) {
                     if (!e2.isEffortRejected()) throw e2
-                    postStreamLines(url, headers, body(true, "high"), isCancelled, onEvent)
+                    postStreamLines(
+                        url, headers, body(true, "high"), isCancelled,
+                        connectTimeoutMs, readTimeoutMs, onEvent
+                    )
                 }
             }
         }
@@ -912,7 +936,9 @@ private suspend fun CloudProvider.completeStreamingResultOnce(
                 URL("$apiBase/models/$effectiveModel:streamGenerateContent?alt=sse&key=${java.net.URLEncoder.encode(apiKey, "UTF-8")}"),
                 mapOf("Content-Type" to "application/json", "Accept" to "text/event-stream"),
                 body,
-                isCancelled
+                isCancelled,
+                connectTimeoutMs,
+                readTimeoutMs
             ) { line ->
                 if (!line.startsWith("data:")) return@postStreamLines
                 val payload = line.removePrefix("data:").trim()
@@ -956,7 +982,9 @@ suspend fun CloudProvider.completeStreaming(
     model: String? = null,
     onToken: (String) -> Unit = {},
     isCancelled: () -> Boolean = { false },
-    effort: String? = null
+    effort: String? = null,
+    connectTimeoutMs: Int = 15000,
+    readTimeoutMs: Int = 90000
 ): String = completeStreamingResult(
     apiKey = apiKey,
     history = history,
@@ -966,7 +994,9 @@ suspend fun CloudProvider.completeStreaming(
     model = model,
     onToken = onToken,
     isCancelled = isCancelled,
-    effort = effort
+    effort = effort,
+    connectTimeoutMs = connectTimeoutMs,
+    readTimeoutMs = readTimeoutMs
 ).text
 
 /** POSTs a JSON body and streams SSE `data:` lines until disconnect/cancel. */
@@ -975,12 +1005,14 @@ private fun postStreamLines(
     headers: Map<String, String>,
     body: JSONObject,
     isCancelled: () -> Boolean,
+    connectTimeoutMs: Int = 15000,
+    readTimeoutMs: Int = 90000,
     onLine: (String) -> Unit
 ) {
     val conn = (url.openConnection() as HttpURLConnection).apply {
         requestMethod = "POST"
-        connectTimeout = 15000
-        readTimeout = 90000
+        connectTimeout = connectTimeoutMs
+        readTimeout = readTimeoutMs
         doOutput = true
         headers.forEach { (k, v) -> setRequestProperty(k, v) }
     }

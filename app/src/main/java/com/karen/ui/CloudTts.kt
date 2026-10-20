@@ -5,7 +5,9 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import java.io.BufferedInputStream
 import java.io.File
+import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
@@ -16,8 +18,9 @@ import java.net.URLEncoder
  * Preferred route: the direct Fish Audio API (`api.fish.audio`) with the
  * selected Fish Audio model and a stored Fish Audio key. If no Fish Audio key
  * is present, the OpenRouter speech endpoint is used with the equivalent Fish
- * Audio model. Both return raw MP3 bytes, played by [TtsManager] with
- * MediaPlayer. Keys live only in SharedPreferences.
+ * Audio model. Live mode requests raw PCM and streams it into AudioTrack as
+ * it arrives; read-aloud requests MP3 and plays it with MediaPlayer. Keys
+ * live only in SharedPreferences.
  */
 object CloudTts {
     /** OpenRouter's free Fish Audio model. The `:free` suffix is part of the id. */
@@ -80,6 +83,128 @@ object CloudTts {
     fun available(ctx: Context): Boolean =
         UserPrefs.fishTts(ctx) && route(ctx) != Route.NONE
 
+    /** Both Fish routes can return raw PCM, so Live mode can start audio early. */
+    fun canStreamPcm(ctx: Context): Boolean = available(ctx)
+
+    /**
+     * Open a raw PCM stream for one spoken sentence. PCM lets [TtsManager]
+     * feed [android.media.AudioTrack] as bytes arrive instead of waiting for a
+     * complete MP3, which is the difference between hearing Karen in ~1 s and
+     * waiting for the whole sentence to synthesize.
+     *
+     * Direct Fish Audio is tried first, then OpenRouter's Fish model. Both
+     * return 16-bit mono PCM; the sample rate comes from the response headers.
+     */
+    suspend fun openPcmStream(
+        ctx: Context,
+        text: String,
+        voiceId: String = ""
+    ): PcmStream = withContext(Dispatchers.IO) {
+        val input = text.trim().take(MAX_INPUT_CHARS)
+        if (input.isEmpty()) throw IllegalArgumentException("empty TTS input")
+        val fishKey = UserPrefs.fishAudioKey(ctx)
+        val openRouterKey = UserPrefs.apiKey(ctx, "openrouter")
+        val fishModel = UserPrefs.fishModel(ctx).trim().ifBlank { FISH_MODEL }
+        val voice = voiceId.trim().ifBlank { DEFAULT_FISH_VOICE }
+
+        fun viaOpenRouter(): PcmStream = requestPcm(
+            endpoint = OPENROUTER_ENDPOINT,
+            apiKey = openRouterKey,
+            extraHeaders = mapOf(
+                "HTTP-Referer" to "https://karen.local",
+                "X-Title" to "Karen"
+            ),
+            payload = JSONObject()
+                .put("model", openRouterModelFor(fishModel))
+                .put("input", input)
+                .put("response_format", "pcm")
+                .put("voice", voice),
+            provider = "OpenRouter",
+            defaultRate = 44100
+        )
+
+        when {
+            fishKey.isNotBlank() -> {
+                val payload = JSONObject()
+                    .put("text", input)
+                    .put("reference_id", voice)
+                    .put("format", "pcm")
+                    // Match OpenRouter's 44.1 kHz so a mid-reply route switch
+                    // does not change the AudioTrack format.
+                    .put("sample_rate", 44100)
+                    // Fish's API default is "normal"; "low" starts audio first.
+                    .put("latency", "low")
+                    .put("chunk_length", 100)
+                    .put("min_chunk_length", 20)
+                try {
+                    requestPcm(
+                        endpoint = FISH_ENDPOINT,
+                        apiKey = fishKey,
+                        extraHeaders = mapOf("model" to fishModel),
+                        payload = payload,
+                        provider = "Fish Audio",
+                        defaultRate = 44100
+                    )
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // Invalid key, model hiccup, or no PCM support: OpenRouter
+                    // is still Fish Audio, just through the gateway.
+                    if (openRouterKey.isBlank()) throw e
+                    viaOpenRouter()
+                }
+            }
+            openRouterKey.isNotBlank() -> viaOpenRouter()
+            else -> throw IllegalStateException("No Fish Audio or OpenRouter key")
+        }
+    }
+
+    /** One live PCM response; close it to cancel a blocked read immediately. */
+    class PcmStream internal constructor(
+        val sampleRate: Int,
+        val channels: Int,
+        val input: InputStream,
+        private val connection: HttpURLConnection
+    ) {
+        fun close() {
+            try {
+                input.close()
+            } catch (_: Exception) {
+            }
+            try {
+                connection.disconnect()
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    /**
+     * Warms DNS/TLS for the voice endpoints when Live mode opens, so the first
+     * spoken sentence does not also pay for a cold connection.
+     */
+    suspend fun warmup(ctx: Context) = withContext(Dispatchers.IO) {
+        if (!available(ctx)) return@withContext
+        val endpoint = if (route(ctx) == Route.DIRECT) FISH_ENDPOINT else OPENROUTER_ENDPOINT
+        try {
+            val conn = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+                requestMethod = "HEAD"
+                connectTimeout = 4000
+                readTimeout = 4000
+            }
+            try {
+                conn.responseCode
+                try {
+                    conn.inputStream.close()
+                } catch (_: Exception) {
+                }
+            } finally {
+                conn.disconnect()
+            }
+        } catch (_: Exception) {
+            // Warmup is best-effort; the real request reports its own errors.
+        }
+    }
+
     /**
      * Synthesizes [text] to a local MP3 cache file. Throws on missing key,
      * HTTP failure, or a non-audio response; callers fall back to system TTS.
@@ -118,6 +243,9 @@ object CloudTts {
                         .put("text", input)
                         .put("reference_id", voiceId.trim().ifBlank { DEFAULT_FISH_VOICE })
                         .put("format", "mp3")
+                        .put("latency", "low")
+                        .put("chunk_length", 100)
+                        .put("min_chunk_length", 20)
                     try {
                         requestAudio(
                             ctx = ctx,
@@ -214,6 +342,77 @@ object CloudTts {
             voices.distinctBy { it.id }
         } finally {
             conn.disconnect()
+        }
+    }
+
+    /**
+     * POSTs a PCM request and returns as soon as the response headers arrive.
+     * The caller reads [PcmStream.input] while the service is still generating.
+     */
+    private fun requestPcm(
+        endpoint: String,
+        apiKey: String,
+        extraHeaders: Map<String, String>,
+        payload: JSONObject,
+        provider: String,
+        defaultRate: Int
+    ): PcmStream {
+        val conn = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 8000
+            readTimeout = 30000
+            doOutput = true
+            setRequestProperty("Authorization", "Bearer $apiKey")
+            setRequestProperty("Content-Type", "application/json")
+            setRequestProperty("Accept", "audio/pcm, audio/*")
+            extraHeaders.forEach { (name, value) -> setRequestProperty(name, value) }
+        }
+        var keep = false
+        try {
+            conn.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
+            val code = conn.responseCode
+            if (code !in 200..299) {
+                val body = conn.errorStream
+                    ?.bufferedReader()
+                    ?.use { it.readText() }
+                    .orEmpty()
+                throw IllegalStateException("$provider TTS HTTP $code: ${body.take(300)}")
+            }
+            val type = conn.contentType.orEmpty()
+            val mime = type.substringBefore(';').trim().lowercase()
+            if (mime.isNotEmpty() && !mime.startsWith("audio/") && mime != "application/octet-stream") {
+                val body = conn.inputStream.bufferedReader().use { it.readText() }
+                throw IllegalStateException("$provider TTS returned $type: ${body.take(300)}")
+            }
+            if (mime.isNotEmpty() &&
+                mime != "audio/pcm" &&
+                mime != "audio/x-pcm" &&
+                mime != "application/octet-stream"
+            ) {
+                throw IllegalStateException("$provider returned $mime instead of PCM")
+            }
+            val rate = Regex("""rate=(\d+)""", RegexOption.IGNORE_CASE)
+                .find(type)
+                ?.groupValues
+                ?.get(1)
+                ?.toIntOrNull()
+                ?: defaultRate
+            val channels = Regex("""channels=(\d+)""", RegexOption.IGNORE_CASE)
+                .find(type)
+                ?.groupValues
+                ?.get(1)
+                ?.toIntOrNull()
+                ?: 1
+            val stream = PcmStream(
+                sampleRate = rate.coerceIn(8000, 48000),
+                channels = channels.coerceIn(1, 2),
+                input = BufferedInputStream(conn.inputStream, 16 * 1024),
+                connection = conn
+            )
+            keep = true
+            return stream
+        } finally {
+            if (!keep) conn.disconnect()
         }
     }
 

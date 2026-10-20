@@ -1890,6 +1890,22 @@ fun ChatScreen(
                 }
             }
 
+            // Compute routing: the node selector lives here, pinned under the
+            // header where it stays visible for the whole conversation and
+            // out of the composer's typing path. The row collapses to nothing
+            // when routing is local-only (no nodes, no stored route).
+            ChatRoutingStatus(
+                route = workerRoute,
+                onSelect = {
+                    workerRoute = it
+                    UserPrefs.setWorkerTarget(context, it)
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp)
+                    .padding(top = 2.dp, bottom = 2.dp)
+            )
+
             // Chat Messages Stream
             LazyColumn(
                 state = listState,
@@ -2551,20 +2567,6 @@ fun ChatScreen(
                     onPick = { pick -> setInputEnd("$pick ") }
                 )
             }
-            // Run-on-node routing: only meaningful while a slave node is joined.
-            WorkerRouteChip(
-                current = workerRoute,
-                onSelect = {
-                    workerRoute = it
-                    UserPrefs.setWorkerTarget(context, it)
-                },
-                modifier = Modifier.padding(start = 22.dp, bottom = 6.dp)
-            )
-            // Per-turn model for the picked node (hidden for this phone / auto).
-            WorkerModelChip(
-                route = workerRoute,
-                modifier = Modifier.padding(start = 22.dp, bottom = 6.dp)
-            )
             ChatGPTFloatingComposer(
                 value = input,
                 onValueChange = { input = it },
@@ -3052,6 +3054,28 @@ private fun HelpTierRow(dotColor: Color, tier: String, desc: String, colors: Kar
             lineHeight = 15.sp,
             modifier = Modifier.weight(1f)
         )
+    }
+}
+
+/**
+ * Pinned compute-routing row under the chat header. The node selector and the
+ * per-node model chip sit together here — visible for the whole conversation,
+ * never inside the composer — and both collapse away for phone-only chats.
+ */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+private fun ChatRoutingStatus(
+    route: String,
+    onSelect: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    androidx.compose.foundation.layout.FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.End),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+        modifier = modifier
+    ) {
+        WorkerRouteChip(current = route, onSelect = onSelect)
+        WorkerModelChip(route = route)
     }
 }
 

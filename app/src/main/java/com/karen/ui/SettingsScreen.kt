@@ -277,6 +277,7 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                     var autoRoutePref by remember { mutableStateOf(UserPrefs.autoRoute(context)) }
                     var autoCloudPref by remember { mutableStateOf(UserPrefs.autoCloud(context)) }
                     var apiFailoverPref by remember { mutableStateOf(UserPrefs.apiFailover(context)) }
+                    var modelFallbackPref by remember { mutableStateOf(UserPrefs.modelFallback(context)) }
                     var localFallbackPref by remember { mutableStateOf(UserPrefs.cloudLocalFallback(context)) }
                     Text("Model Routing", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -440,6 +441,34 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                             onCheckedChange = {
                                 apiFailoverPref = it
                                 UserPrefs.setApiFailover(context, it)
+                            },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color.White,
+                                checkedTrackColor = colors.accentGreen,
+                                uncheckedThumbColor = colors.textMuted,
+                                uncheckedTrackColor = colors.surfaceHover
+                            )
+                        )
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(colors.surfaceHover.copy(alpha = 0.55f))
+                            .border(1.dp, colors.border.copy(alpha = 0.6f), RoundedCornerShape(12.dp))
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Model fallback (same provider)", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
+                            Text("Token/context limit hit → retry on another model from the same API, largest window first", color = colors.textMuted, fontSize = 11.5.sp)
+                        }
+                        Switch(
+                            checked = modelFallbackPref,
+                            onCheckedChange = {
+                                modelFallbackPref = it
+                                UserPrefs.setModelFallback(context, it)
                             },
                             colors = SwitchDefaults.colors(
                                 checkedThumbColor = Color.White,

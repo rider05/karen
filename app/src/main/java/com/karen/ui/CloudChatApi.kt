@@ -353,10 +353,80 @@ fun CloudApiException.isUnknownModel(): Boolean {
 }
 
 /**
- * Runs [call] with [override] as the model id. When the provider rejects that
- * id as non-existent (OpenRouter: "No endpoints found"), the stale override is
- * cleared from Model Manager and the call is retried once on the default
- * model, so one bad id can never brick a whole provider.
+ * True when a turn was rejected for token/context room rather than for a bad
+ * key or a network failure: context overflow, an output cap above the model's
+ * limit, an oversized body, or a credit balance that only covers a few tokens.
+ * Another model from the same provider can still take the turn.
+ */
+fun CloudApiException.isTokenLimit(): Boolean {
+    if (status !in listOf(400, 402, 413, 422)) return false
+    val m = message.orEmpty().lowercase()
+    return "context length" in m || "context_length" in m ||
+        "maximum context" in m || "max context" in m ||
+        "too many tokens" in m || "token limit" in m ||
+        "max_tokens" in m || "maximum number of tokens" in m ||
+        "prompt is too long" in m || "input is too long" in m ||
+        "reduce the length" in m || "string_above_max_length" in m ||
+        "request too large" in m || "request entity too large" in m ||
+        "fewer max_tokens" in m || "can only afford" in m ||
+        "requires more credits" in m || "exceeds the maximum" in m
+}
+
+/** Models tried after the picked one rejects a turn for token room. */
+private const val MAX_MODEL_FALLBACKS = 4
+
+/** True when the rejection was about credit balance, not raw context size. */
+private fun CloudApiException.isCreditsLimit(): Boolean {
+    val m = message.orEmpty().lowercase()
+    return "credits" in m || "can only afford" in m || "fewer max_tokens" in m
+}
+
+/**
+ * Other models of this provider worth trying after [failing] was rejected.
+ * Curated ids come first, then any live model list already fetched in Model
+ * Manager. A credit error prefers free models; a context overflow prefers
+ * models with a larger window than the one that failed.
+ */
+private suspend fun CloudProvider.fallbackModels(failing: String, credits: Boolean): List<String> {
+    // OpenRouter's curated list is only "auto"; fetch its live catalog once so
+    // a credit/context failure has real alternatives (free models first).
+    var live = liveModelCache[id].orEmpty()
+    if (live.isEmpty() && id == "openrouter") {
+        live = try {
+            listModelsLive("")
+        } catch (_: Exception) {
+            emptyList()
+        }
+        if (live.isNotEmpty()) liveModelCache[id] = live
+    }
+    val pool = (providerModelChoices(this, failing) + live.map { it.id })
+        .distinct()
+        .filter { it != CUSTOM_MODEL && !it.equals(failing, ignoreCase = true) }
+    if (credits) {
+        val free = live.filter { it.free }.map { it.id }
+        return (free.filter { it in pool } + pool).distinct().take(MAX_MODEL_FALLBACKS)
+    }
+    val failingCtx = liveContextOf(id, failing)
+    val larger = if (failingCtx > 0) {
+        pool.filter { liveContextOf(id, it) > failingCtx }
+    } else {
+        emptyList()
+    }
+    val ordered = if (larger.isNotEmpty()) larger + pool else pool
+    return ordered.distinct()
+        .sortedByDescending { liveContextOf(id, it) }
+        .take(MAX_MODEL_FALLBACKS)
+}
+
+/**
+ * Runs [call] with [override] as the model id, then repairs predictable model
+ * problems inside the same provider:
+ *
+ * - an id the provider does not know is cleared from Model Manager and the
+ *   call retries on the provider default (one bad id never bricks a provider);
+ * - a turn rejected for token/context room (with Model Fallback enabled in
+ *   Settings) retries on up to [MAX_MODEL_FALLBACKS] other models from the
+ *   same provider, largest known context window first.
  */
 suspend fun <T> CloudProvider.withModelFallback(
     ctx: Context,
@@ -364,17 +434,38 @@ suspend fun <T> CloudProvider.withModelFallback(
     call: suspend (model: String?) -> T
 ): T {
     val stored = override?.takeIf { it.isNotBlank() }
-    return try {
-        call(stored)
+    try {
+        return call(stored)
     } catch (e: CloudApiException) {
-        if (stored == null || !e.isUnknownModel()) throw e
-        UserPrefs.setApiModel(ctx, id, "")
-        android.widget.Toast.makeText(
-            ctx,
-            "$name has no model \"$stored\" — switched back to $defaultModel",
-            android.widget.Toast.LENGTH_LONG
-        ).show()
-        call(null)
+        if (stored != null && e.isUnknownModel()) {
+            UserPrefs.setApiModel(ctx, id, "")
+            android.widget.Toast.makeText(
+                ctx,
+                "$name has no model \"$stored\" — switched back to $defaultModel",
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+            return call(null)
+        }
+        if (!UserPrefs.modelFallback(ctx) || !e.isTokenLimit()) throw e
+        val failing = stored ?: defaultModel
+        val credits = e.isCreditsLimit()
+        val candidates = fallbackModels(failing, credits)
+        for (next in candidates) {
+            try {
+                val result = call(next)
+                android.widget.Toast.makeText(
+                    ctx,
+                    "$name: $failing hit its ${if (credits) "credit" else "token"} limit — retried on $next for this turn",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+                return result
+            } catch (e2: CloudApiException) {
+                // A missing or equally capped alternative is skipped; a real
+                // failure (auth, network) is reported as-is.
+                if (!e2.isTokenLimit() && !e2.isUnknownModel()) throw e2
+            }
+        }
+        throw e
     }
 }
 
@@ -396,6 +487,50 @@ suspend fun CloudProvider.complete(
     effort: String? = null
 ): String = completeResult(apiKey, history, maxTokens, thinkingBudget, historyLimit, model, images, timeoutMs, effort).text
 
+/**
+ * Last output budget a provider's credits could cover ("can only afford N").
+ * Cached briefly so continuation rounds don't re-trigger the same 402.
+ */
+private data class CreditBudget(val tokens: Int, val at: Long)
+private val creditBudgets =
+    java.util.concurrent.ConcurrentHashMap<String, CreditBudget>()
+private const val CREDIT_BUDGET_TTL_MS = 10 * 60 * 1000L
+
+/** Requested budget, clamped to a fresh credit ceiling for this provider. */
+private fun CloudProvider.creditBudget(maxTokens: Int): Int {
+    val cached = creditBudgets[id] ?: return maxTokens
+    if (System.currentTimeMillis() - cached.at > CREDIT_BUDGET_TTL_MS) {
+        creditBudgets.remove(id)
+        return maxTokens
+    }
+    return minOf(maxTokens, cached.tokens)
+}
+
+/**
+ * Reads "can only afford 222" out of a credit rejection, remembers it for
+ * this provider, and returns the affordable budget. Null when the error has
+ * no numeric ceiling or asking for less would change nothing.
+ */
+private fun CloudProvider.affordableBudget(requested: Int, e: CloudApiException): Int? {
+    if (!e.isTokenLimit()) return null
+    val n = Regex("(?i)afford\\s+(\\d+)").find(e.message.orEmpty())
+        ?.groupValues?.get(1)?.toIntOrNull() ?: return null
+    if (n <= 0) return null
+    // Two tokens of headroom: the provider's price rounding can reject a
+    // request that sits exactly on the ceiling it just quoted.
+    val target = (n - 2).coerceAtLeast(16)
+    if (target >= requested) return null
+    creditBudgets[id] = CreditBudget(target, System.currentTimeMillis())
+    return target
+}
+
+/**
+ * Chat completion with a credit-aware budget. OpenRouter answers 402 with
+ * "You requested up to 256 tokens, but can only afford 222"; instead of
+ * failing the turn, the same model is retried with the affordable budget and
+ * thinking disabled (its reservation is what blew the balance). Continuation
+ * then completes the answer in parts.
+ */
 suspend fun CloudProvider.completeResult(
     apiKey: String,
     history: List<Pair<String, String>>,
@@ -406,6 +541,30 @@ suspend fun CloudProvider.completeResult(
     images: List<VisionImage> = emptyList(),
     timeoutMs: Int = 90000,
     effort: String? = null
+): CloudResult {
+    val budget = creditBudget(maxTokens)
+    val thinking = if (budget < maxTokens) null else thinkingBudget
+    return try {
+        completeResultOnce(apiKey, history, budget, thinking, historyLimit, model, images, timeoutMs, effort, budget < maxTokens)
+    } catch (e: CloudApiException) {
+        val affordable = affordableBudget(budget, e) ?: throw e
+        completeResultOnce(apiKey, history, affordable, null, historyLimit, model, images, timeoutMs, effort, true)
+    }
+}
+
+private suspend fun CloudProvider.completeResultOnce(
+    apiKey: String,
+    history: List<Pair<String, String>>,
+    maxTokens: Int,
+    thinkingBudget: Int? = null,
+    historyLimit: Int = 20,
+    model: String? = null,
+    images: List<VisionImage> = emptyList(),
+    timeoutMs: Int = 90000,
+    effort: String? = null,
+    /** OpenRouter: send reasoning.enabled=false so a tiny credit budget
+        reaches the visible answer instead of hidden thinking tokens. */
+    disableReasoning: Boolean = false
 ): CloudResult = withContext(Dispatchers.IO) {
     val trimmed = history.takeLast(historyLimit.coerceIn(4, 80))
     val effectiveModel = modelOrDefault(model)
@@ -417,8 +576,13 @@ suspend fun CloudProvider.completeResult(
                 .put("messages", openAiMessages(trimmed, images))
                 .apply {
                     // Effort becomes thinking depth on reasoning-capable routes.
-                    if (id == "openrouter" && thinkingBudget != null) {
-                        put("reasoning", JSONObject().put("max_tokens", thinkingBudget))
+                    if (id == "openrouter") {
+                        when {
+                            thinkingBudget != null ->
+                                put("reasoning", JSONObject().put("max_tokens", thinkingBudget))
+                            disableReasoning ->
+                                put("reasoning", JSONObject().put("enabled", false))
+                        }
                     }
                 }
             val headers = mutableMapOf(
@@ -533,6 +697,8 @@ suspend fun CloudProvider.completeResult(
  * returns with the finish reason so chat can continue cut-off replies.
  * Thinking deltas are never shown live — they only back up the body when a
  * model emits no visible text (mirrors [extractOpenAiText]).
+ *
+ * Applies the same credit-aware budget as [completeResult].
  */
 suspend fun CloudProvider.completeStreamingResult(
     apiKey: String,
@@ -547,6 +713,44 @@ suspend fun CloudProvider.completeStreamingResult(
     isCancelled: () -> Boolean = { false },
     /** Karen effort pill; becomes Anthropic `output_config.effort` on 4.7+. */
     effort: String? = null
+): CloudResult {
+    val budget = creditBudget(maxTokens)
+    val thinking = if (budget < maxTokens) null else thinkingBudget
+    var emitted = false
+    val tracked: (String) -> Unit = { piece ->
+        emitted = true
+        onToken(piece)
+    }
+    return try {
+        completeStreamingResultOnce(
+            apiKey, history, budget, thinking, historyLimit, model, images, tracked, isCancelled, effort, budget < maxTokens
+        )
+    } catch (e: CloudApiException) {
+        val affordable = affordableBudget(budget, e) ?: throw e
+        // A 402 arrives before the first delta; if bytes already streamed,
+        // a retry would duplicate them.
+        if (emitted) throw e
+        completeStreamingResultOnce(
+            apiKey, history, affordable, null, historyLimit, model, images, tracked, isCancelled, effort, true
+        )
+    }
+}
+
+private suspend fun CloudProvider.completeStreamingResultOnce(
+    apiKey: String,
+    history: List<Pair<String, String>>,
+    maxTokens: Int,
+    thinkingBudget: Int? = null,
+    historyLimit: Int = 20,
+    model: String? = null,
+    /** Page/document images attached to the last user message. */
+    images: List<VisionImage> = emptyList(),
+    onToken: (String) -> Unit = {},
+    isCancelled: () -> Boolean = { false },
+    /** Karen effort pill; becomes Anthropic `output_config.effort` on 4.7+. */
+    effort: String? = null,
+    /** OpenRouter: send reasoning.enabled=false on a clamped budget. */
+    disableReasoning: Boolean = false
 ): CloudResult = withContext(Dispatchers.IO) {
     val trimmed = history.takeLast(historyLimit.coerceIn(4, 80))
     val effectiveModel = modelOrDefault(model)
@@ -568,8 +772,13 @@ suspend fun CloudProvider.completeStreamingResult(
                 .put("stream", true)
                 .put("messages", openAiMessages(trimmed, images))
                 .apply {
-                    if (id == "openrouter" && thinkingBudget != null) {
-                        put("reasoning", JSONObject().put("max_tokens", thinkingBudget))
+                    if (id == "openrouter") {
+                        when {
+                            thinkingBudget != null ->
+                                put("reasoning", JSONObject().put("max_tokens", thinkingBudget))
+                            disableReasoning ->
+                                put("reasoning", JSONObject().put("enabled", false))
+                        }
                     }
                 }
             val headers = mutableMapOf(

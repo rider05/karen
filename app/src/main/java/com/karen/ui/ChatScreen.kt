@@ -1030,6 +1030,10 @@ fun ChatScreen(
                     }
                 } catch (e: Exception) {
                     if (cancelGeneration) break
+                    // A token/context rejection already retried every fallback
+                    // model inside the same provider — don't spend another
+                    // non-streaming round on the same capped model.
+                    if (e is CloudApiException && e.isTokenLimit()) throw e
                     // Endpoints that reject SSE: retry this round in one shot.
                     provider.withModelFallback(context, UserPrefs.apiModel(context, provider.id)) { useModel ->
                         provider.completeResult(

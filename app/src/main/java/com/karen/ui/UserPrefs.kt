@@ -172,6 +172,14 @@ object UserPrefs {
         prefs(ctx).edit().putBoolean(KEY_API_FAILOVER, enabled).apply()
     }
 
+    // Same-provider model fallback: when the chosen model rejects a turn for
+    // token/context limits, retry on another model from that provider.
+    private const val KEY_MODEL_FALLBACK = "model_fallback"
+    fun modelFallback(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_MODEL_FALLBACK, true)
+    fun setModelFallback(ctx: Context, enabled: Boolean) {
+        prefs(ctx).edit().putBoolean(KEY_MODEL_FALLBACK, enabled).apply()
+    }
+
     // All keyed APIs failed: continue the turn on the first runnable
     // on-device weight instead of showing an error.
     private const val KEY_CLOUD_LOCAL_FALLBACK = "cloud_local_fallback"

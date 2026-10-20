@@ -163,6 +163,7 @@ fun effortDelayMs(effort: String): Long = when (effort) {
     "High" -> 24L
     "Max" -> 36L
     "Extreme" -> 50L
+    "XHigh" -> 60L
     else -> 12L
 }
 
@@ -172,6 +173,9 @@ fun maxTokensFor(effort: String): Int = when (effort) {
     "High" -> 1024
     "Max" -> 2048
     "Extreme" -> 4096
+    // Same ceiling as Extreme: only reasoning providers can act on XHigh, and
+    // they steer depth with the effort string, not this budget.
+    "XHigh" -> 4096
     else -> 512
 }
 
@@ -924,7 +928,8 @@ fun ChatScreen(
                                     }
                                 }
                             },
-                            isCancelled = { cancelGeneration }
+                            isCancelled = { cancelGeneration },
+                            effort = effort
                         )
                     }
                 } catch (e: Exception) {
@@ -937,7 +942,8 @@ fun ChatScreen(
                             maxTokensFor(effort),
                             thinkingBudget = if (provider.reasoning) thinkingBudgetFor(effort) else null,
                             historyLimit = limit,
-                            model = useModel
+                            model = useModel,
+                            effort = effort
                         )
                     }
                 }
@@ -996,7 +1002,8 @@ fun ChatScreen(
                             maxTokensFor(effort),
                             thinkingBudget = if (provider.reasoning) thinkingBudgetFor(effort) else null,
                             historyLimit = limit,
-                            model = useModel
+                            model = useModel,
+                            effort = effort
                         )
                     }.text.trim()
                     if (ans.isNotBlank() && !cancelGeneration) {

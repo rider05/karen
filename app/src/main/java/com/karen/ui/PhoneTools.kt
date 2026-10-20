@@ -570,7 +570,7 @@ object DocVision {
     private fun visionDefault(providerId: String): String? = when (providerId) {
         "groq" -> "llama-3.2-90b-vision-preview"
         "openai" -> "gpt-4o"
-        "anthropic" -> "claude-sonnet-4-20250514"
+        "anthropic" -> "claude-sonnet-5-5"
         "gemini" -> "gemini-2.0-flash"
         "openrouter" -> "openrouter/auto"
         else -> null

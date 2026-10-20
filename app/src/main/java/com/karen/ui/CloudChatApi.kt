@@ -35,7 +35,7 @@ data class CloudProvider(
 
 val cloudProviders = listOf(
     CloudProvider("openai", "OpenAI GPT-4o", "platform.openai.com/api-keys", "GPT-4o + o-series via API", "https://api.openai.com/v1", "gpt-4o", CloudProtocol.OPENAI),
-    CloudProvider("anthropic", "Anthropic Claude", "console.anthropic.com", "Claude Sonnet + Opus via API", "https://api.anthropic.com/v1", "claude-sonnet-4-20250514", CloudProtocol.ANTHROPIC, reasoning = true),
+    CloudProvider("anthropic", "Anthropic Claude", "console.anthropic.com", "Claude Sonnet + Opus via API", "https://api.anthropic.com/v1", "claude-sonnet-5-5", CloudProtocol.ANTHROPIC, reasoning = true),
     CloudProvider("gemini", "Google Gemini", "aistudio.google.com/apikey", "Gemini Flash + Pro via API", "https://generativelanguage.googleapis.com/v1beta", "gemini-2.0-flash", CloudProtocol.GEMINI),
     CloudProvider("mistral", "Mistral Large", "console.mistral.ai", "Mistral Large + Codestral", "https://api.mistral.ai/v1", "mistral-large-latest", CloudProtocol.OPENAI),
     CloudProvider("grok", "xAI Grok", "console.x.ai", "Grok 3 + mini via API", "https://api.x.ai/v1", "grok-3", CloudProtocol.OPENAI),
@@ -53,7 +53,7 @@ val cloudProviders = listOf(
 /** Supported model ids per provider for the key dialog (default first). */
 val providerModels: Map<String, List<String>> = mapOf(
     "openai" to listOf("gpt-4o", "gpt-4o-mini"),
-    "anthropic" to listOf("claude-sonnet-4-20250514", "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022"),
+    "anthropic" to listOf("claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5", "claude-sonnet-4-6"),
     "gemini" to listOf("gemini-2.0-flash", "gemini-1.5-flash"),
     "mistral" to listOf("mistral-large-latest", "mistral-small-latest"),
     "grok" to listOf("grok-3", "grok-3-mini"),
@@ -86,9 +86,12 @@ fun liveContextOf(providerId: String, modelId: String): Int {
 val modelContextWindows: Map<String, Int> = mapOf(
     "gpt-4o" to 128000,
     "gpt-4o-mini" to 128000,
-    "claude-sonnet-4-20250514" to 200000,
-    "claude-3-5-sonnet-20241022" to 200000,
-    "claude-3-5-haiku-20241022" to 200000,
+    "claude-sonnet-5-5" to 1000000,
+    "claude-opus-5-5" to 1000000,
+    "claude-haiku-5-5" to 1000000,
+    "claude-sonnet-4-6" to 1000000,
+    "claude-opus-4-6" to 1000000,
+    "claude-opus-4-5" to 1000000,
     "gemini-2.0-flash" to 1000000,
     "gemini-1.5-flash" to 1000000,
     "mistral-large-latest" to 128000,
@@ -214,11 +217,29 @@ private fun getJson(url: java.net.URL, headers: Map<String, String> = emptyMap()
 
 /** Thinking-token budget per effort level for reasoning models. */
 fun thinkingBudgetFor(effort: String): Int = when (effort) {
-    "Low" -> 1000
+    // 1024 is the API minimum for budget_tokens; anything smaller is a 400.
+    "Low" -> 1024
     "High" -> 4000
     "Max" -> 8000
     "Extreme" -> 16000
+    "XHigh" -> 32000
     else -> 2000
+}
+
+/**
+ * Karen's six effort pills → Anthropic `output_config.effort` levels.
+ * Adaptive-thinking models (4.7+) reject `thinking.type: "enabled"`; depth is
+ * steered by this string instead. Karen has one step more than the API, so
+ * Extreme folds into max.
+ */
+fun anthropicEffortFor(effort: String): String = when (effort) {
+    "Low" -> "low"
+    "Medium" -> "medium"
+    "High" -> "high"
+    "Max" -> "max"
+    "Extreme" -> "max"
+    "XHigh" -> "xhigh"
+    else -> "high"
 }
 
 fun findCloudProviderByName(name: String, extra: List<CloudProvider> = emptyList()): CloudProvider? =
@@ -228,6 +249,24 @@ fun findCloudProviderByName(name: String, extra: List<CloudProvider> = emptyList
 fun isCloudProviderName(name: String, extra: List<CloudProvider> = emptyList()): Boolean =
     (cloudProviders + extra).any { it.name == name }
 
+/**
+ * True when a 400 means this model wants adaptive thinking rather than
+ * `thinking.type: "enabled"` — the Claude 4.7+ contract.
+ */
+fun CloudApiException.isThinkingShapeRejected(): Boolean {
+    if (status != 400) return false
+    val m = message.orEmpty().lowercase()
+    return "thinking" in m &&
+        ("is not supported" in m || "not permitted" in m || "unexpected" in m || "extra inputs" in m)
+}
+
+/** True when a 400 names the effort level (not every model takes xhigh/max). */
+fun CloudApiException.isEffortRejected(): Boolean {
+    if (status != 400) return false
+    val m = message.orEmpty().lowercase()
+    return "effort" in m || "output_config" in m
+}
+
 /** Built-ins plus user-added custom API providers. */
 fun allCloudProviders(ctx: Context): List<CloudProvider> =
     cloudProviders + UserPrefs.customProviders(ctx)
@@ -236,8 +275,18 @@ fun allCloudProviders(ctx: Context): List<CloudProvider> =
 class CloudApiException(val status: Int, message: String) : Exception(message)
 
 /** Result of a cloud call: text plus whether the model was cut off by its output cap. */
-/** Provider-reported token counts for one request; all-zero means not reported. */
-data class CloudUsage(val input: Int = 0, val output: Int = 0, val reasoning: Int = 0) {
+/**
+ * Provider-reported token counts for one request; all-zero means not reported.
+ * [cacheRead] and [cacheWrite] are Anthropic prompt-cache buckets — a cache hit
+ * bills at 0.1x input, so a cost readout needs them to be honest.
+ */
+data class CloudUsage(
+    val input: Int = 0,
+    val output: Int = 0,
+    val reasoning: Int = 0,
+    val cacheRead: Int = 0,
+    val cacheWrite: Int = 0
+) {
     val any: Boolean get() = input > 0 || output > 0 || reasoning > 0
 }
 
@@ -255,10 +304,23 @@ private fun openAiUsage(json: JSONObject?): CloudUsage? {
     return if (usage.any) usage else null
 }
 
-/** Anthropic usage: input_tokens/output_tokens on the message object. */
+/** Anthropic usage: message counts plus thinking and prompt-cache buckets. */
 private fun anthropicUsage(json: JSONObject?): CloudUsage? {
     val u = json?.optJSONObject("usage") ?: return null
-    val usage = CloudUsage(u.optInt("input_tokens", 0), u.optInt("output_tokens", 0), 0)
+    return anthropicUsageOf(u)
+}
+
+/** Shared by the one-shot reply and the SSE `message_delta` event. */
+private fun anthropicUsageOf(u: JSONObject?): CloudUsage? {
+    if (u == null) return null
+    val usage = CloudUsage(
+        input = u.optInt("input_tokens", 0),
+        output = u.optInt("output_tokens", 0),
+        // Thinking bills as output; this is the only place it surfaces.
+        reasoning = u.optJSONObject("output_tokens_details")?.optInt("thinking_tokens", 0) ?: 0,
+        cacheRead = u.optInt("cache_read_input_tokens", 0),
+        cacheWrite = u.optInt("cache_creation_input_tokens", 0)
+    )
     return if (usage.any) usage else null
 }
 
@@ -285,7 +347,9 @@ fun CloudApiException.isUnknownModel(): Boolean {
     if (status != 404) return false
     val m = message.orEmpty().lowercase()
     return "no endpoints found" in m || "model not found" in m ||
-        ("does not exist" in m && "model" in m)
+        ("does not exist" in m && "model" in m) ||
+        // Anthropic: {"type":"error","error":{"type":"not_found_error","message":"model: …"}}
+        ("not_found_error" in m && "model" in m)
 }
 
 /**
@@ -327,8 +391,10 @@ suspend fun CloudProvider.complete(
     /** Page/document images attached to the last user message. */
     images: List<VisionImage> = emptyList(),
     /** Socket read timeout per request. */
-    timeoutMs: Int = 90000
-): String = completeResult(apiKey, history, maxTokens, thinkingBudget, historyLimit, model, images, timeoutMs).text
+    timeoutMs: Int = 90000,
+    /** Karen effort pill; becomes Anthropic `output_config.effort` on 4.7+. */
+    effort: String? = null
+): String = completeResult(apiKey, history, maxTokens, thinkingBudget, historyLimit, model, images, timeoutMs, effort).text
 
 suspend fun CloudProvider.completeResult(
     apiKey: String,
@@ -338,7 +404,8 @@ suspend fun CloudProvider.completeResult(
     historyLimit: Int = 20,
     model: String? = null,
     images: List<VisionImage> = emptyList(),
-    timeoutMs: Int = 90000
+    timeoutMs: Int = 90000,
+    effort: String? = null
 ): CloudResult = withContext(Dispatchers.IO) {
     val trimmed = history.takeLast(historyLimit.coerceIn(4, 80))
     val effectiveModel = modelOrDefault(model)
@@ -376,30 +443,47 @@ suspend fun CloudProvider.completeResult(
         CloudProtocol.ANTHROPIC -> {
             // Thinking budget must stay below max_tokens: headroom for the answer.
             val total = if (thinkingBudget != null) maxOf(maxTokens, thinkingBudget + 1024) else maxTokens
-            val body = JSONObject()
+            val effortLevel = anthropicEffortFor(effort ?: "High")
+            fun body(adaptive: Boolean, level: String) = JSONObject()
                 .put("model", effectiveModel)
                 .put("max_tokens", total)
                 .put("messages", anthropicMessages(trimmed, images))
                 .apply {
                     if (thinkingBudget != null) {
-                        put(
-                            "thinking",
-                            JSONObject()
-                                .put("type", "enabled")
-                                .put("budget_tokens", thinkingBudget)
-                        )
+                        if (adaptive) {
+                            // 4.7+ rejects "enabled"+budget_tokens; effort steers depth.
+                            put("thinking", JSONObject().put("type", "adaptive"))
+                            put("output_config", JSONObject().put("effort", level))
+                        } else {
+                            put(
+                                "thinking",
+                                JSONObject()
+                                    .put("type", "enabled")
+                                    .put("budget_tokens", thinkingBudget)
+                            )
+                        }
                     }
                 }
-            val json = post(
-                URL("$apiBase/messages"),
-                mapOf(
-                    "x-api-key" to apiKey,
-                    "anthropic-version" to "2023-06-01",
-                    "Content-Type" to "application/json"
-                ),
-                body,
-                timeoutMs
+            val headers = mapOf(
+                "x-api-key" to apiKey,
+                "anthropic-version" to "2023-06-01",
+                "Content-Type" to "application/json"
             )
+            val url = URL("$apiBase/messages")
+            val json = try {
+                // Manual thinking first: the only mode on 4.5 and earlier.
+                post(url, headers, body(false, effortLevel), timeoutMs)
+            } catch (e: CloudApiException) {
+                if (!e.isThinkingShapeRejected()) throw e
+                // Adaptive thinking. If this model also lacks the effort level
+                // (xhigh/max are not on every model), fall back to high.
+                try {
+                    post(url, headers, body(true, effortLevel), timeoutMs)
+                } catch (e2: CloudApiException) {
+                    if (!e2.isEffortRejected()) throw e2
+                    post(url, headers, body(true, "high"), timeoutMs)
+                }
+            }
             val blocks = json.getJSONArray("content")
             val text = (0 until blocks.length())
                 .map { blocks.getJSONObject(it) }
@@ -457,8 +541,12 @@ suspend fun CloudProvider.completeStreamingResult(
     thinkingBudget: Int? = null,
     historyLimit: Int = 20,
     model: String? = null,
+    /** Page/document images attached to the last user message. */
+    images: List<VisionImage> = emptyList(),
     onToken: (String) -> Unit = {},
-    isCancelled: () -> Boolean = { false }
+    isCancelled: () -> Boolean = { false },
+    /** Karen effort pill; becomes Anthropic `output_config.effort` on 4.7+. */
+    effort: String? = null
 ): CloudResult = withContext(Dispatchers.IO) {
     val trimmed = history.takeLast(historyLimit.coerceIn(4, 80))
     val effectiveModel = modelOrDefault(model)
@@ -478,12 +566,7 @@ suspend fun CloudProvider.completeStreamingResult(
                 .put("model", effectiveModel)
                 .put(tokenField, maxTokens)
                 .put("stream", true)
-                .put(
-                    "messages",
-                    JSONArray(trimmed.map { (role, text) ->
-                        JSONObject().put("role", role).put("content", text)
-                    })
-                )
+                .put("messages", openAiMessages(trimmed, images))
                 .apply {
                     if (id == "openrouter" && thinkingBudget != null) {
                         put("reasoning", JSONObject().put("max_tokens", thinkingBudget))
@@ -535,68 +618,86 @@ suspend fun CloudProvider.completeStreamingResult(
         }
         CloudProtocol.ANTHROPIC -> {
             val total = if (thinkingBudget != null) maxOf(maxTokens, thinkingBudget + 1024) else maxTokens
-            val body = JSONObject()
+            val effortLevel = anthropicEffortFor(effort ?: "High")
+            fun body(adaptive: Boolean, level: String) = JSONObject()
                 .put("model", effectiveModel)
                 .put("max_tokens", total)
                 .put("stream", true)
-                .put(
-                    "messages",
-                    JSONArray(trimmed.map { (role, text) ->
-                        JSONObject().put("role", role).put("content", text)
-                    })
-                )
-            postStreamLines(
-                URL("$apiBase/messages"),
-                mapOf(
-                    "x-api-key" to apiKey,
-                    "anthropic-version" to "2023-06-01",
-                    "Content-Type" to "application/json",
-                    "Accept" to "text/event-stream"
-                ),
-                body,
-                isCancelled
-            ) { line ->
-                if (!line.startsWith("data:")) return@postStreamLines
-                val payload = line.removePrefix("data:").trim()
-                if (payload.isBlank()) return@postStreamLines
-                try {
-                    val data = JSONObject(payload)
-                    when (data.optString("type")) {
-                        "message_start" -> {
-                            val u = data.optJSONObject("message")?.optJSONObject("usage")
-                            if (u != null) {
-                                usage = CloudUsage(u.optInt("input_tokens", 0), usage?.output ?: 0, 0)
-                            }
-                        }
-                        "content_block_delta" -> {
-                            val delta = data.optJSONObject("delta")
-                            if (delta?.optString("type") == "thinking_delta") {
-                                thoughts.append(delta.optString("thinking", ""))
-                            } else {
-                                emit(delta?.optString("text", "").orEmpty())
-                            }
-                        }
-                        "message_delta" -> {
-                            if (data.optJSONObject("delta")?.optString("stop_reason", "") == "max_tokens") truncated = true
-                            val u = data.optJSONObject("usage")
-                            if (u != null) {
-                                usage = CloudUsage(usage?.input ?: 0, u.optInt("output_tokens", 0), 0)
-                            }
+                .put("messages", anthropicMessages(trimmed, images))
+                .apply {
+                    if (thinkingBudget != null) {
+                        if (adaptive) {
+                            put("thinking", JSONObject().put("type", "adaptive"))
+                            put("output_config", JSONObject().put("effort", level))
+                        } else {
+                            put(
+                                "thinking",
+                                JSONObject()
+                                    .put("type", "enabled")
+                                    .put("budget_tokens", thinkingBudget)
+                            )
                         }
                     }
-                } catch (_: Exception) {
+                }
+            val headers = mapOf(
+                "x-api-key" to apiKey,
+                "anthropic-version" to "2023-06-01",
+                "Content-Type" to "application/json",
+                "Accept" to "text/event-stream"
+            )
+            val url = URL("$apiBase/messages")
+            val onEvent: (String) -> Unit = on@{ line ->
+                if (!line.startsWith("data:")) return@on
+                val payload = line.removePrefix("data:").trim()
+                if (payload.isNotBlank()) {
+                    try {
+                        val data = JSONObject(payload)
+                        when (data.optString("type")) {
+                            "message_start" -> {
+                                anthropicUsageOf(data.optJSONObject("message")?.optJSONObject("usage"))
+                                    ?.let { usage = it.copy(output = usage?.output ?: 0) }
+                            }
+                            "content_block_delta" -> {
+                                val delta = data.optJSONObject("delta")
+                                if (delta?.optString("type") == "thinking_delta") {
+                                    thoughts.append(delta.optString("thinking", ""))
+                                } else {
+                                    emit(delta?.optString("text", "").orEmpty())
+                                }
+                            }
+                            "message_delta" -> {
+                                if (data.optJSONObject("delta")?.optString("stop_reason", "") == "max_tokens") truncated = true
+                                // Thinking tokens ride this event, on the final delta.
+                                anthropicUsageOf(data.optJSONObject("usage"))?.let {
+                                    usage = CloudUsage(
+                                        input = usage?.input ?: it.input,
+                                        output = it.output,
+                                        reasoning = it.reasoning,
+                                        cacheRead = it.cacheRead.takeIf { c -> c > 0 } ?: (usage?.cacheRead ?: 0),
+                                        cacheWrite = it.cacheWrite.takeIf { c -> c > 0 } ?: (usage?.cacheWrite ?: 0)
+                                    )
+                                }
+                            }
+                        }
+                    } catch (_: Exception) {
+                    }
+                }
+            }
+            try {
+                postStreamLines(url, headers, body(false, effortLevel), isCancelled, onEvent)
+            } catch (e: CloudApiException) {
+                // Nothing was emitted yet: the 400 arrived before the stream.
+                if (full.isNotEmpty() || thoughts.isNotEmpty() || !e.isThinkingShapeRejected()) throw e
+                try {
+                    postStreamLines(url, headers, body(true, effortLevel), isCancelled, onEvent)
+                } catch (e2: CloudApiException) {
+                    if (!e2.isEffortRejected()) throw e2
+                    postStreamLines(url, headers, body(true, "high"), isCancelled, onEvent)
                 }
             }
         }
         CloudProtocol.GEMINI -> {
-            val body = JSONObject().put(
-                "contents",
-                JSONArray(trimmed.map { (role, text) ->
-                    JSONObject()
-                        .put("role", if (role == "assistant") "model" else "user")
-                        .put("parts", JSONArray().put(JSONObject().put("text", text)))
-                })
-            )
+            val body = JSONObject().put("contents", geminiContents(trimmed, images))
             var lastChunk = ""
             postStreamLines(
                 URL("$apiBase/models/$effectiveModel:streamGenerateContent?alt=sse&key=${java.net.URLEncoder.encode(apiKey, "UTF-8")}"),
@@ -645,9 +746,18 @@ suspend fun CloudProvider.completeStreaming(
     historyLimit: Int = 20,
     model: String? = null,
     onToken: (String) -> Unit = {},
-    isCancelled: () -> Boolean = { false }
+    isCancelled: () -> Boolean = { false },
+    effort: String? = null
 ): String = completeStreamingResult(
-    apiKey, history, maxTokens, thinkingBudget, historyLimit, model, onToken, isCancelled
+    apiKey = apiKey,
+    history = history,
+    maxTokens = maxTokens,
+    thinkingBudget = thinkingBudget,
+    historyLimit = historyLimit,
+    model = model,
+    onToken = onToken,
+    isCancelled = isCancelled,
+    effort = effort
 ).text
 
 /** POSTs a JSON body and streams SSE `data:` lines until disconnect/cancel. */

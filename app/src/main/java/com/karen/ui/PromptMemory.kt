@@ -64,6 +64,24 @@ object PromptMemory {
     }
 
     /**
+     * Pill-row suggestions: prefix matches first (a completion extends what is
+     * already typed), then prompts that merely contain the typed words — a
+     * distinctive word still finds its ask. Queries under two characters
+     * return none.
+     */
+    fun matches(ctx: Context, typed: String, limit: Int = 4): List<String> {
+        val query = clean(typed)
+        if (query.length < 2) return emptyList()
+        val all = list(ctx).filterNot { it.equals(query, ignoreCase = true) }
+        val prefix = all.filter { it.startsWith(query, ignoreCase = true) }
+        val contains = all.filter {
+            !it.startsWith(query, ignoreCase = true) &&
+                it.contains(query, ignoreCase = true)
+        }
+        return (prefix + contains).take(limit)
+    }
+
+    /**
      * One-time seed from local chat history, newest conversation first, so
      * memory is useful immediately after an update instead of only after the
      * next prompt. Runs at most once — a reset marks it done so history is

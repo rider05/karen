@@ -19,6 +19,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
@@ -26,6 +28,7 @@ import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.Dp
 import com.karen.formatSize
 import com.karen.rememberVoiceStt
 import kotlinx.coroutines.launch
@@ -2173,55 +2176,9 @@ fun ChatScreen(
                 )
         )
 
-        // Floating Bottom Composer Dock
-        // ChatGPT-style starter chips: only on a fresh chat and only while the
-        // composer is empty — typing hides them so the memory completions
-        // above the composer can take over.
-        AnimatedVisibility(
-            visible = messages.size <= 1 && input.text.isBlank(),
-            enter = fadeIn(),
-            exit = fadeOut(),
-            modifier = Modifier.align(Alignment.BottomCenter)
-        ) {
-            val suggestions = listOf("Inspect my timetable", "Summarize a document", "Set a reminder", "Open Workspace")
-            @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
-            androidx.compose.foundation.layout.FlowRow(
-                horizontalArrangement = Arrangement.Center,
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-                modifier = Modifier
-                    .navigationBarsPadding()
-                    .padding(bottom = 104.dp, start = 20.dp, end = 20.dp)
-            ) {
-                suggestions.forEach { suggestion ->
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .padding(horizontal = 4.dp)
-                            .clip(RoundedCornerShape(20.dp))
-                            .background(colors.surface)
-                            .border(1.dp, colors.border.copy(alpha = 0.6f), RoundedCornerShape(20.dp))
-                            // Trailing space: picking a chip never welds the
-                            // next word onto it.
-                            .clickable { setInputEnd("$suggestion ") }
-                            .padding(horizontal = 14.dp, vertical = 9.dp)
-                    ) {
-                        Icon(
-                            Icons.Default.AutoAwesome,
-                            contentDescription = null,
-                            tint = colors.accentGreen,
-                            modifier = Modifier.size(13.dp)
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        Text(
-                            suggestion,
-                            color = colors.textPrimary,
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Medium
-                        )
-                    }
-                }
-            }
-        }
+        // Starter prompts and memory completions live in the composer stack
+        // (see ChatSuggestionPills) so they align above the Run-on chip
+        // instead of floating over the message list.
 
         // Jump-to-latest FAB (ChatGPT-style): visible only when scrolled
         // up away from the end; hides at the bottom of the chat.
@@ -2564,6 +2521,36 @@ fun ChatScreen(
                     )
                 }
             }
+            // Suggestion pills above the composer, matching the design's
+            // staggered stack: starter prompts on a fresh chat, memory
+            // completions (past asks remembered on this device) once typing
+            // starts. Picking one fills the field and parks the cursor after a
+            // trailing space.
+            val memoryQuery = input.text.trim()
+            val memoryMatches = remember(memoryQuery, promptMemoryRevision) {
+                if (memoryQuery.length < 2 || mentionMatch != null || slashToken != null) {
+                    emptyList<String>()
+                } else {
+                    PromptMemory.matches(context, memoryQuery)
+                }
+            }
+            val starterSuggestions = remember(messages.size) {
+                if (messages.size <= 1) {
+                    listOf("Inspect my timetable", "Summarize a document", "Set a reminder", "Open Workspace")
+                } else {
+                    emptyList()
+                }
+            }
+            if (memoryMatches.isNotEmpty() ||
+                (memoryQuery.isBlank() && starterSuggestions.isNotEmpty())
+            ) {
+                ChatSuggestionPills(
+                    starter = starterSuggestions,
+                    memory = memoryMatches,
+                    colors = colors,
+                    onPick = { pick -> setInputEnd("$pick ") }
+                )
+            }
             // Run-on-node routing: only meaningful while a slave node is joined.
             WorkerRouteChip(
                 current = workerRoute,
@@ -2578,62 +2565,6 @@ fun ChatScreen(
                 route = workerRoute,
                 modifier = Modifier.padding(start = 22.dp, bottom = 6.dp)
             )
-            // Memory completions: once typing starts, earlier prompts
-            // remembered on this device sit above the composer instead of the
-            // starter chips. Prefix matches only; picking one fills the field
-            // and parks the cursor after a trailing space.
-            val memoryQuery = input.text.trim()
-            val memoryMatches = remember(memoryQuery, promptMemoryRevision) {
-                if (memoryQuery.length < 2 || mentionMatch != null || slashToken != null) {
-                    emptyList<String>()
-                } else {
-                    PromptMemory.suggestions(context, memoryQuery)
-                }
-            }
-            if (memoryMatches.isNotEmpty()) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(start = 22.dp, end = 14.dp, bottom = 6.dp)
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(colors.surface)
-                        .border(1.dp, colors.border, RoundedCornerShape(14.dp))
-                        .padding(vertical = 4.dp)
-                ) {
-                    Text(
-                        text = "MEMORY · tap to complete",
-                        color = colors.textMuted,
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
-                    )
-                    memoryMatches.forEach { suggestion ->
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { setInputEnd("$suggestion ") }
-                                .padding(horizontal = 12.dp, vertical = 7.dp)
-                        ) {
-                            Icon(
-                                Icons.Default.History,
-                                contentDescription = null,
-                                tint = colors.accentBlue,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            Text(
-                                text = suggestion,
-                                color = colors.textPrimary,
-                                fontSize = 13.sp,
-                                maxLines = 1,
-                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f)
-                            )
-                        }
-                    }
-                }
-            }
             ChatGPTFloatingComposer(
                 value = input,
                 onValueChange = { input = it },
@@ -2945,63 +2876,17 @@ fun ChatScreen(
             )
         }
 
-        // New-chat transition animation overlay — ripple rings + dots.
+        // New-chat transition overlay — a quiet bloom, not a spinner.
         androidx.compose.animation.AnimatedVisibility(
             visible = resettingNewChat,
             enter = androidx.compose.animation.fadeIn(
-                animationSpec = androidx.compose.animation.core.tween(250)
+                animationSpec = androidx.compose.animation.core.tween(220)
             ),
             exit = androidx.compose.animation.fadeOut(
-                animationSpec = androidx.compose.animation.core.tween(250)
+                animationSpec = androidx.compose.animation.core.tween(220)
             )
         ) {
-            val ripple = androidx.compose.animation.core.rememberInfiniteTransition(label = "new_chat_ripple")
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.32f)),
-                contentAlignment = Alignment.Center
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Box(
-                        contentAlignment = Alignment.Center,
-                        modifier = Modifier.size(128.dp)
-                    ) {
-                        repeat(3) { i ->
-                            val progress by ripple.animateFloat(
-                                initialValue = 0f,
-                                targetValue = 1f,
-                                animationSpec = androidx.compose.animation.core.infiniteRepeatable(
-                                    animation = androidx.compose.animation.core.tween(1800, delayMillis = i * 600),
-                                    repeatMode = androidx.compose.animation.core.RepeatMode.Restart
-                                ),
-                                label = "new_chat_ring_$i"
-                            )
-                            Box(
-                                modifier = Modifier
-                                    .size(72.dp)
-                                    .graphicsLayer(
-                                        scaleX = 0.75f + 0.9f * progress,
-                                        scaleY = 0.75f + 0.9f * progress,
-                                        alpha = (1f - progress) * 0.55f
-                                    )
-                                    .border(2.dp, colors.accentGreen, androidx.compose.foundation.shape.CircleShape)
-                            )
-                        }
-                        Box(
-                            modifier = Modifier
-                                .size(72.dp)
-                                .clip(androidx.compose.foundation.shape.CircleShape)
-                                .background(colors.accentGreen),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(Icons.Default.AutoAwesome, contentDescription = "New chat", tint = Color.White, modifier = Modifier.size(34.dp))
-                        }
-                    }
-                    Spacer(Modifier.height(18.dp))
-                    ThinkingIndicator(label = "Starting a fresh chat")
-                }
-            }
+            NewChatBloomOverlay(colors)
         }
     }
 }
@@ -3167,5 +3052,304 @@ private fun HelpTierRow(dotColor: Color, tier: String, desc: String, colors: Kar
             lineHeight = 15.sp,
             modifier = Modifier.weight(1f)
         )
+    }
+}
+
+/**
+ * Suggestion pills above the composer (design ref: the staggered stack —
+ * "Inspect my timetable", then "Summarize a document" + "Set a reminder",
+ * then "Open Workspace"). A fresh chat keeps that 1-2-1 rhythm; while
+ * typing, memory completions flow in the same pill style.
+ *
+ * The stack assembles: each pill rises out of a faint green halo, unwinding
+ * its sparkle and passing one light sweep across the surface. The halo
+ * breathes slowly behind the block so an empty chat never feels frozen.
+ */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+private fun ChatSuggestionPills(
+    starter: List<String>,
+    memory: List<String>,
+    colors: KarenColors,
+    onPick: (String) -> Unit
+) {
+    val typing = memory.isNotEmpty()
+    val halo = rememberInfiniteTransition(label = "pill_halo")
+    val breathe by halo.animateFloat(
+        initialValue = 0.30f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(2800, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "pill_halo_alpha"
+    )
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .drawBehind {
+                drawRect(
+                    brush = androidx.compose.ui.graphics.Brush.radialGradient(
+                        colors = listOf(
+                            colors.accentGreen.copy(alpha = 0.075f * breathe),
+                            Color.Transparent
+                        ),
+                        center = androidx.compose.ui.geometry.Offset(
+                            size.width / 2f,
+                            size.height * 0.55f
+                        ),
+                        radius = size.width * 0.58f
+                    )
+                )
+            }
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 6.dp)
+        ) {
+            if (typing) {
+                androidx.compose.foundation.layout.FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    memory.forEachIndexed { i, text ->
+                        SuggestionPill(text, colors, 300.dp, i) { onPick(text) }
+                    }
+                }
+            } else if (starter.size >= 4) {
+                SuggestionPill(starter[0], colors, 300.dp, 0) { onPick(starter[0]) }
+                androidx.compose.foundation.layout.FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    SuggestionPill(starter[1], colors, 240.dp, 1) { onPick(starter[1]) }
+                    SuggestionPill(starter[2], colors, 240.dp, 2) { onPick(starter[2]) }
+                }
+                SuggestionPill(starter[3], colors, 300.dp, 3) { onPick(starter[3]) }
+            }
+        }
+    }
+}
+
+/**
+ * One suggestion pill: green sparkle + label, full radius, no border.
+ * [index] staggers the entrance so the stack assembles top-to-bottom.
+ */
+@Composable
+private fun SuggestionPill(
+    text: String,
+    colors: KarenColors,
+    maxWidth: Dp,
+    index: Int,
+    onClick: () -> Unit
+) {
+    var landed by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { landed = true }
+    // One driver: rise + scale + sparkle unwind + a single light sweep.
+    val enter by animateFloatAsState(
+        targetValue = if (landed) 1f else 0f,
+        animationSpec = tween(
+            durationMillis = 440,
+            delayMillis = 30 + index * 55,
+            easing = CubicBezierEasing(0.16f, 0.84f, 0.24f, 1f)
+        ),
+        label = "pill_enter_$index"
+    )
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .widthIn(max = maxWidth)
+            .graphicsLayer {
+                alpha = enter
+                translationY = (1f - enter) * 22.dp.toPx()
+                scaleX = 0.90f + 0.10f * enter
+                scaleY = 0.90f + 0.10f * enter
+            }
+            .clip(RoundedCornerShape(50))
+            .background(colors.surfaceHover)
+            .drawWithContent {
+                drawContent()
+                val sweep = ((enter - 0.30f) / 0.70f).coerceIn(0f, 1f)
+                if (sweep > 0f && sweep < 1f) {
+                    val x = -size.width * 0.7f + size.width * 2.1f * sweep
+                    drawRect(
+                        brush = androidx.compose.ui.graphics.Brush.linearGradient(
+                            colors = listOf(
+                                Color.Transparent,
+                                Color.White.copy(alpha = 0.06f),
+                                Color.Transparent
+                            ),
+                            start = androidx.compose.ui.geometry.Offset(x, 0f),
+                            end = androidx.compose.ui.geometry.Offset(
+                                x + size.width * 0.55f,
+                                size.height
+                            )
+                        )
+                    )
+                }
+            }
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 11.dp)
+    ) {
+        Icon(
+            Icons.Default.AutoAwesome,
+            contentDescription = null,
+            tint = colors.accentGreen,
+            modifier = Modifier
+                .size(14.dp)
+                .graphicsLayer {
+                    scaleX = 0.55f + 0.45f * enter
+                    scaleY = 0.55f + 0.45f * enter
+                    rotationZ = (1f - enter) * -70f
+                }
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text = text,
+            color = colors.textPrimary,
+            fontSize = 13.5.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+        )
+    }
+}
+
+/**
+ * New-chat moment ("quiet bloom"): a dark veil with a faint green core, a
+ * sparkle tile that lands with a soft overshoot, one expanding hairline ring,
+ * and a thin green→blue rule that fills for the reset. Replaces the old
+ * ripple + spinner, which read as a generic loader — this reads as the page
+ * turning. Runs ~760ms, matching the caller's hold before the transcript
+ * clears, so the exit fade lands exactly on the empty chat.
+ */
+@Composable
+private fun NewChatBloomOverlay(colors: KarenColors) {
+    var start by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { start = true }
+
+    val land by animateFloatAsState(
+        targetValue = if (start) 1f else 0f,
+        animationSpec = spring(dampingRatio = 0.58f, stiffness = 320f),
+        label = "new_chat_land"
+    )
+    val ring by animateFloatAsState(
+        targetValue = if (start) 1f else 0f,
+        animationSpec = tween(durationMillis = 720, easing = FastOutSlowInEasing),
+        label = "new_chat_ring"
+    )
+    val fill by animateFloatAsState(
+        targetValue = if (start) 1f else 0f,
+        animationSpec = tween(
+            durationMillis = 560,
+            delayMillis = 90,
+            easing = FastOutSlowInEasing
+        ),
+        label = "new_chat_rule"
+    )
+    val copy by animateFloatAsState(
+        targetValue = if (start) 1f else 0f,
+        animationSpec = tween(
+            durationMillis = 320,
+            delayMillis = 110,
+            easing = FastOutSlowInEasing
+        ),
+        label = "new_chat_copy"
+    )
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(
+                androidx.compose.ui.graphics.Brush.radialGradient(
+                    colors = listOf(
+                        colors.accentGreen.copy(alpha = 0.10f),
+                        Color.Black.copy(alpha = 0.88f)
+                    )
+                )
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Box(contentAlignment = Alignment.Center, modifier = Modifier.size(96.dp)) {
+                // One hairline ring: born with the tile, gone by the reset.
+                Box(
+                    modifier = Modifier
+                        .size(64.dp)
+                        .graphicsLayer {
+                            val s = 0.72f + 1.55f * ring
+                            scaleX = s
+                            scaleY = s
+                            alpha = (1f - ring) * 0.45f
+                        }
+                        .border(1.dp, colors.accentGreen, CircleShape)
+                )
+                // Sparkle tile: pops with a small overshoot, unrotates as it lands.
+                Box(
+                    modifier = Modifier.graphicsLayer {
+                        scaleX = 0.70f + 0.30f * land
+                        scaleY = 0.70f + 0.30f * land
+                        rotationZ = (1f - land) * -22f
+                    }
+                ) {
+                    KLogoMark(size = 58.dp) {
+                        Icon(
+                            Icons.Default.AutoAwesome,
+                            contentDescription = "New chat",
+                            tint = colors.accentGreen,
+                            modifier = Modifier.size(25.dp)
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(18.dp))
+            Text(
+                text = "New chat",
+                color = colors.textPrimary,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.SemiBold,
+                letterSpacing = 0.2.sp,
+                modifier = Modifier.graphicsLayer {
+                    alpha = copy
+                    translationY = (1f - copy) * 8.dp.toPx()
+                }
+            )
+            Spacer(Modifier.height(5.dp))
+            Text(
+                text = "A CLEAN SLATE",
+                color = colors.textMuted,
+                fontSize = 9.5.sp,
+                fontWeight = FontWeight.Medium,
+                letterSpacing = 0.18.sp,
+                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                modifier = Modifier.graphicsLayer { alpha = copy * 0.9f }
+            )
+            Spacer(Modifier.height(18.dp))
+            // The wait has a shape: a 2dp rule filling once, left to right.
+            Box(
+                modifier = Modifier
+                    .width(108.dp)
+                    .height(2.dp)
+                    .clip(CircleShape)
+                    .background(colors.border)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .fillMaxWidth(fill.coerceIn(0f, 1f))
+                        .clip(CircleShape)
+                        .background(
+                            androidx.compose.ui.graphics.Brush.horizontalGradient(
+                                listOf(colors.accentGreen, colors.accentBlue)
+                            )
+                        )
+                )
+            }
+        }
     }
 }

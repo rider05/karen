@@ -508,7 +508,7 @@ private fun fileIconFor(name: String, isDir: Boolean): androidx.compose.ui.graph
 }
 
 /** Max model follow-ups per build: big projects stream in chunk after chunk. */
-private const val MAX_SCAFFOLD_CHUNKS = 4
+private const val MAX_SCAFFOLD_CHUNKS = 8
 
 /** True when the reply was cut off mid-build: more blocks opened than closed. */
 private fun isTruncatedScaffold(reply: String): Boolean {

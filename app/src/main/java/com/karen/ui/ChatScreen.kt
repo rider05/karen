@@ -419,38 +419,6 @@ fun ChatScreen(
     // Id of a queued user message awaiting its turn (set by completeSettle).
     var pendingDrainId by remember { mutableStateOf<String?>(null) }
 
-    /**
-     * Immediate stop feedback: swaps a bare status bubble to "Cancelling…"
-     * while the native call winds down. Real reply text is never clobbered.
-     */
-    fun markCancelling() {
-        streamingId?.let { id ->
-            val i = messages.indexOfFirst { (it as? ChatItem.Assistant)?.id == id }
-            if (i >= 0) {
-                (messages[i] as? ChatItem.Assistant)?.let {
-                    if (it.text.isBlank() || it.text.trimEnd().endsWith("…")) {
-                        messages[i] = it.copy(text = "Cancelling…")
-                    }
-                }
-            }
-        }
-    }
-
-    // System back button: dismiss open sheets first, stop generation, else Home
-    androidx.activity.compose.BackHandler {
-        when {
-            showModelSheet -> showModelSheet = false
-            showAttachmentSheet -> showAttachmentSheet = false
-            webConsentGate != null -> {
-                webConsentGate?.complete(false)
-                webConsentGate = null
-                webConsentPreview = null
-            }
-            isGenerating -> { cancelGeneration = true; KarenLlama.cancel(); markCancelling() }
-            else -> onNavigateToHome()
-        }
-    }
-
     /** Parks the current composer text to run after the in-flight reply. */
     fun enqueueCurrent() {
         val userText = input.text.trim()
@@ -494,6 +462,9 @@ fun ChatScreen(
 
     /** Updates the in-list provisional reply (the reply streams in place). */
     fun setStreamingText(id: String, text: String) {
+        // Stop settles the bubble and clears streamingId immediately; a chunk
+        // still in flight must never repaint the stopped reply.
+        if (id != streamingId) return
         val i = messages.indexOfFirst { (it as? ChatItem.Assistant)?.id == id }
         if (i >= 0) {
             val cur = messages[i] as ChatItem.Assistant
@@ -764,8 +735,16 @@ fun ChatScreen(
         pendingDrainId = qid
     }
 
-    /** End-of-generation after Stop: keep partial text, drop bare placeholders. */
+    /**
+     * End-of-generation after Stop: keep partial text, drop bare placeholders.
+     * When [stopNow] already finalized the bubble this is the abandoned turn
+     * unwinding, so leave the settled UI alone and release the queue.
+     */
     suspend fun cancelSettle(id: String) {
+        if (streamingId != id) {
+            drainQueue()
+            return
+        }
         if (!streamingContent) {
             messages.removeAll { (it as? ChatItem.Assistant)?.id == id }
         } else {
@@ -778,20 +757,73 @@ fun ChatScreen(
         }
         isGenerating = false
         streamingId = null
+        streamingContent = false
         genLive = null
         scrollToBottomIfNear()
         drainQueue()
     }
 
-    /** End-of-generation on success: stamp stats, archive, then run queued prompts. */
-    suspend fun completeSettle() {
+    /**
+     * Stop, effective immediately: settle the live bubble and re-enable the
+     * composer on the spot instead of waiting for a blocked cloud read or a
+     * native decode to notice the flag. The abandoned turn is fenced by
+     * streamingId + cancelGeneration, so any late chunk is ignored.
+     */
+    fun stopNow() {
+        cancelGeneration = true
+        KarenLlama.cancel()
+        webConsentGate?.complete(false)
+        webConsentGate = null
+        webConsentPreview = null
         val id = streamingId
+        if (id != null) {
+            val i = messages.indexOfFirst { (it as? ChatItem.Assistant)?.id == id }
+            if (i >= 0) {
+                val cur = messages[i] as? ChatItem.Assistant
+                if (cur != null && streamingContent && hasVisibleContent(cur.text)) {
+                    val elapsed = System.currentTimeMillis() - streamStartMs
+                    val out = if (cur.usageReal && cur.tokens > 0) cur.tokens else cur.text.length / 4
+                    messages[i] = cur.copy(tookMs = elapsed, tokens = out, interrupted = true)
+                } else {
+                    // Bare "Thinking…"/"Searching…" status is not a reply.
+                    messages.removeAt(i)
+                }
+            }
+        }
+        isGenerating = false
+        streamingId = null
+        streamingContent = false
+        genLive = null
+        persist()
+        coroutineScope.launch { scrollToBottomIfNear() }
+    }
+
+    // System back button: dismiss open sheets first, stop generation, else Home.
+    androidx.activity.compose.BackHandler {
+        when {
+            showModelSheet -> showModelSheet = false
+            showAttachmentSheet -> showAttachmentSheet = false
+            webConsentGate != null -> {
+                webConsentGate?.complete(false)
+                webConsentGate = null
+                webConsentPreview = null
+            }
+            isGenerating -> stopNow()
+            else -> onNavigateToHome()
+        }
+    }
+
+    /** End-of-generation on success: stamp stats, archive, then run queued prompts. */
+    suspend fun completeSettle(id: String) {
+        // A stopped or superseded turn must never settle the live one.
+        if (streamingId != id || cancelGeneration) return
         // Length from the played text so stats match exactly what is shown.
         val len = (messages.firstOrNull { (it as? ChatItem.Assistant)?.id == id } as? ChatItem.Assistant)?.text?.length ?: 0
-        id?.let { stampTook(it, len / 4) }
+        stampTook(id, len / 4)
         persist()
         isGenerating = false
         streamingId = null
+        streamingContent = false
         genLive = null
         scrollToBottomIfNear()
         // Queued prompts (typed while busy) run now, one following the other.
@@ -800,6 +832,8 @@ fun ChatScreen(
 
     /** Failed turn: show the error inline in the provisional bubble. */
     suspend fun errorSettle(id: String, text: String) {
+        // A stopped turn never gets to overwrite the stopped reply with an error.
+        if (streamingId != id || cancelGeneration) return
         streamingContent = true
         setStreamingText(id, text)
         stampTook(id, 0)
@@ -962,7 +996,9 @@ fun ChatScreen(
             var roundHistory = styled
             var rounds = 0
             var cut = true
-            while (cut && rounds < 4 && !cancelGeneration) {
+            // Brute-force continuation: keep asking for the remainder until
+            // the model stops by itself or the round cap is spent.
+            while (cut && rounds < MAX_CONTINUE_ROUNDS && !cancelGeneration) {
                 if (rounds > 0) {
                     setStreamingText(aid, (liveView() + "\n\nContinuing… (part ${rounds + 1})").trim())
                 }
@@ -1016,14 +1052,24 @@ fun ChatScreen(
                         turnReason += u.reasoning
                     }
                 }
-                fullReply.append(res.text)
-                cut = res.truncated && res.text.isNotBlank()
+                val beforeJoin = fullReply.length
+                fullReply.append(
+                    if (rounds == 0) res.text else stitchContinuation(fullReply.toString(), res.text)
+                )
+                val added = fullReply.length - beforeJoin
+                // A round that only repeated itself makes no progress: stop
+                // instead of burning the rest of the budget on duplicates.
+                val capUsed = maxTokensFor(effort)
+                val outTokens = res.usage?.output ?: 0
+                cut = added > 0 && res.text.isNotBlank() &&
+                    (res.truncated || looksCutOff(res.text, capUsed, hitCap = outTokens >= capUsed - 1))
                 rounds++
-                if (cut && rounds < 4) {
-                    roundHistory = (roundHistory + ("assistant" to res.text) + ("user" to "Continue exactly where you stopped. Output only the continuation — no recap, no repetition.")).takeLast(limit)
+                if (cut && rounds < MAX_CONTINUE_ROUNDS) {
+                    roundHistory = (roundHistory + ("assistant" to res.text.takeLast(CONTINUE_CONTEXT_CHARS)) + ("user" to CONTINUE_PROMPT)).takeLast(limit)
                 }
             }
-            val reply = cleanReply(fullReply.toString())
+            val cutNote = if (cut) continuationLimitNote(rounds) else ""
+            val reply = cleanReply(fullReply.toString()) + cutNote
             if (cancelGeneration) {
                 cancelSettle(aid)
                 return
@@ -1131,7 +1177,7 @@ fun ChatScreen(
                 // the typing effect.
                 setStreamingText(aid, withTools)
                 scrollToBottomIfNear()
-                if (cancelGeneration) cancelSettle(aid) else completeSettle()
+                if (cancelGeneration) cancelSettle(aid) else completeSettle(aid)
                 return
             }
             lastError = "The model returned an empty reply"
@@ -1196,35 +1242,39 @@ fun ChatScreen(
     ): Boolean {
         setStreamingText(aid, "Assigning to $label…")
         val buf = StringBuilder()
-        val res = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            LocalApiServer.runOnWorker(
-                sel = sel,
-                system = system,
-                pairs = pairs,
-                temperature = 0.7,
-                maxTokens = maxTok,
-                model = modelOverride,
-                onStatus = { s ->
-                    if (buf.isEmpty()) coroutineScope.launch { setStreamingText(aid, s) }
-                },
-                onDelta = { d ->
-                    buf.append(d)
-                    val snap = buf.toString()
-                    coroutineScope.launch {
-                        streamingContent = true
-                        setStreamingText(aid, snap)
-                        scrollToBottomIfNear()
-                    }
-                },
-                cancelled = { cancelGeneration }
-            )
-        }
+
+        suspend fun runNode(roundPairs: List<Pair<String, String>>): LocalApiServer.WorkerRun =
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                LocalApiServer.runOnWorker(
+                    sel = sel,
+                    system = system,
+                    pairs = roundPairs,
+                    temperature = 0.7,
+                    maxTokens = maxTok,
+                    model = modelOverride,
+                    onStatus = { s ->
+                        if (buf.isEmpty()) coroutineScope.launch { setStreamingText(aid, s) }
+                    },
+                    onDelta = { d ->
+                        buf.append(d)
+                        val snap = buf.toString()
+                        coroutineScope.launch {
+                            streamingContent = true
+                            setStreamingText(aid, snap)
+                            scrollToBottomIfNear()
+                        }
+                    },
+                    cancelled = { cancelGeneration }
+                )
+            }
+
+        val res = runNode(pairs)
         if (res.noWorker) return false
         if (res.error == "cancelled" || cancelGeneration) {
             cancelSettle(aid)
             return true
         }
-        val raw = res.text.trim()
+        var raw = res.text.trim()
         if (!res.ok || raw.isBlank()) {
             val why = res.error.ifBlank { "the node returned an empty reply" }
             if (raw.isNotBlank()) {
@@ -1234,6 +1284,29 @@ fun ChatScreen(
                 errorSettle(aid, "$why (node route: $label)")
             }
             return true
+        }
+        // Brute-force continuation: the node has no finish_reason, so an
+        // unclosed code block or a near-cap broken tail re-asks for the rest.
+        var nodeRounds = 1
+        while (nodeRounds < MAX_CONTINUE_ROUNDS && !cancelGeneration && looksCutOff(raw, maxTok)) {
+            setStreamingText(
+                aid,
+                (raw.trimEnd() + "\n\nContinuing… (part ${nodeRounds + 1})").trim()
+            )
+            buf.setLength(0)
+            buf.append(raw.trimEnd()).append("\n\n")
+            val contPairs = (pairs +
+                ("assistant" to raw.takeLast(CONTINUE_CONTEXT_CHARS)) +
+                ("user" to CONTINUE_PROMPT)).takeLast(pairLimit)
+            val more = runNode(contPairs)
+            val joined = if (more.text.isBlank()) raw else stitchContinuation(raw, more.text.trim())
+            val grew = joined.length > raw.length
+            raw = joined
+            if (!more.ok || more.text.isBlank() || !grew) break
+            nodeRounds++
+        }
+        if (looksCutOff(raw, maxTok) && nodeRounds >= MAX_CONTINUE_ROUNDS) {
+            raw += continuationLimitNote(nodeRounds)
         }
         val settled = settleTools(aid, cleanReply(raw))
         var withTools = settled.visible
@@ -1263,7 +1336,7 @@ fun ChatScreen(
         if (hasVisibleContent(withTools)) {
             setStreamingText(aid, withTools)
             scrollToBottomIfNear()
-            if (cancelGeneration) cancelSettle(aid) else completeSettle()
+            if (cancelGeneration) cancelSettle(aid) else completeSettle(aid)
         } else {
             errorSettle(aid, "The node returned an empty reply.")
         }
@@ -1439,36 +1512,105 @@ fun ChatScreen(
                         }
                         val streamBuf = StringBuilder()
                         var lastPostMs = 0L
-                        val out = awaitAbandoned {
-                            val l = KarenLlama.ensureLoaded(weightFile, sendModel, window, threads)
-                            var r = ""
-                            if (l) {
-                                // True token streaming: each predicted piece
-                                // lands in the bubble as it is generated.
-                                r = KarenLlama.completeStream(
-                                    "You are Karen, a concise on-device assistant." +
-                                        if (isReasoningModel(sendModel)) reasoningEffortHint(effort) else "" +
-                                        shaping,
-                                    instructedPairs.map { it.first }.toTypedArray(),
-                                    instructedPairs.map { it.second }.toTypedArray(),
-                                    maxTokensFor(effort)
-                                ) { piece ->
-                                    streamBuf.append(piece)
-                                    val now = System.currentTimeMillis()
-                                    if (now - lastPostMs > 60) {
-                                        lastPostMs = now
-                                        val snap = streamBuf.toString()
-                                        coroutineScope.launch {
-                                            streamingContent = true
-                                            setStreamingText(aid, snap)
-                                            scrollToBottomIfNear()
+                        val localMax = maxTokensFor(effort)
+                        val localSystem = "You are Karen, a concise on-device assistant." +
+                            (if (isReasoningModel(sendModel)) reasoningEffortHint(effort) else "") +
+                            shaping
+                        var localHistory = instructedPairs
+                        var localTokens = 0
+                        var localRounds = 0
+                        var localCut = true
+                        var localStillCut = false
+                        var localFail: String? = null
+                        var localTimedOut = false
+                        // Brute-force continuation: on-device replies stopped at
+                        // the token cap are re-asked for the remainder.
+                        while (localCut && localRounds < MAX_CONTINUE_ROUNDS && !cancelGeneration) {
+                            if (localRounds > 0) {
+                                setStreamingText(
+                                    aid,
+                                    (streamBuf.toString().trimEnd() + "\n\nContinuing… (part ${localRounds + 1})").trim()
+                                )
+                            }
+                            val tokensBefore = localTokens
+                            var budget = localMax
+                            var round: LocalOut? = null
+                            var trimmed = localHistory
+                            while (round == null && !cancelGeneration) {
+                                val attempt = try {
+                                    awaitAbandoned {
+                                        val l = KarenLlama.ensureLoaded(weightFile, sendModel, window, threads)
+                                        var r = ""
+                                        if (l) {
+                                            // One piece per predicted token: the
+                                            // count is the exact cap signal.
+                                            r = KarenLlama.completeStream(
+                                                localSystem,
+                                                trimmed.map { it.first }.toTypedArray(),
+                                                trimmed.map { it.second }.toTypedArray(),
+                                                budget
+                                            ) { piece ->
+                                                localTokens++
+                                                streamBuf.append(piece)
+                                                val now = System.currentTimeMillis()
+                                                if (now - lastPostMs > 60) {
+                                                    lastPostMs = now
+                                                    val snap = streamBuf.toString()
+                                                    coroutineScope.launch {
+                                                        streamingContent = true
+                                                        setStreamingText(aid, snap)
+                                                        scrollToBottomIfNear()
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        LocalOut(l, r)
+                                    }
+                                } catch (e: Exception) {
+                                    // Brute-force fit: when the prompt overflows the
+                                    // context, drop half the history (then shrink the
+                                    // reply budget) and retry instead of failing.
+                                    if (e.message?.contains("prompt too long", true) == true) {
+                                        if (trimmed.size > 1) {
+                                            trimmed = trimmed.drop(maxOf(1, trimmed.size / 2))
+                                            continue
+                                        }
+                                        val est = (localSystem.length + trimmed.sumOf { it.second.length }) / 4 + 16
+                                        val fit = (window - est).coerceAtLeast(256)
+                                        if (fit < budget) {
+                                            budget = fit
+                                            continue
                                         }
                                     }
+                                    localFail = e.message ?: "local model error"
+                                    null
                                 }
+                                if (attempt == null) {
+                                    if (localFail == null) localTimedOut = true
+                                    break
+                                }
+                                round = attempt
                             }
-                            LocalOut(l, r)
+                            val r = round ?: break
+                            if (!r.loaded || cancelGeneration) {
+                                if (!r.loaded && streamBuf.isBlank()) localFail = "load"
+                                break
+                            }
+                            val made = localTokens - tokensBefore
+                            val capUsed = budget
+                            val cutHere = r.reply.isNotBlank() &&
+                                looksCutOff(r.reply, capUsed, hitCap = made >= capUsed - 1)
+                            localRounds++
+                            localStillCut = cutHere
+                            localCut = cutHere && localRounds < MAX_CONTINUE_ROUNDS
+                            if (cutHere) {
+                                localHistory = (trimmed +
+                                    ("assistant" to r.reply.takeLast(CONTINUE_CONTEXT_CHARS)) +
+                                    ("user" to CONTINUE_PROMPT)).takeLast(pairLimit)
+                            }
                         }
-                        if (out == null) {
+                        val produced = streamBuf.toString().trim()
+                        if (localTimedOut && produced.isBlank()) {
                             // Local took too long (abandoned above): switch to
                             // API without breaking flow.
                             if (cancelGeneration) {
@@ -1482,13 +1624,21 @@ fun ChatScreen(
                                     cloudTurn(fb, UserPrefs.apiKey(context, fb.id), aid, userText, web, regenerateHint, sentAttachments, allowLocalFallback = false)
                                 }
                             }
-                        } else if (!out.loaded) {
-                            if (cancelGeneration) cancelSettle(aid)
-                            else errorSettle(aid, "Could not load $sendModel into RAM.")
                         } else if (cancelGeneration) {
                             cancelSettle(aid)
+                        } else if (produced.isBlank()) {
+                            when {
+                                localFail == "load" -> errorSettle(aid, "Could not load $sendModel into RAM.")
+                                localFail != null -> errorSettle(aid, "Local model error: $localFail")
+                                else -> errorSettle(aid, "The model returned an empty reply.")
+                            }
                         } else {
-                            val finalReply = cleanReply(out.reply)
+                            var finalReply = cleanReply(produced)
+                            if (localStillCut && localRounds >= MAX_CONTINUE_ROUNDS) {
+                                finalReply += continuationLimitNote(localRounds)
+                            } else if (localFail != null) {
+                                finalReply += "\n\n⚠ $localFail"
+                            }
                             val settled = settleTools(aid, finalReply)
                             var withTools = settled.visible
                             if (settled.docText != null && !cancelGeneration) {
@@ -1521,7 +1671,7 @@ fun ChatScreen(
                                 // replaying it with the typing effect.
                                 setStreamingText(aid, withTools)
                                 scrollToBottomIfNear()
-                                if (cancelGeneration) cancelSettle(aid) else completeSettle()
+                                if (cancelGeneration) cancelSettle(aid) else completeSettle(aid)
                             } else {
                                 errorSettle(aid, "The model returned an empty reply.")
                             }
@@ -1547,7 +1697,7 @@ fun ChatScreen(
                     cancelSettle(aid)
                 } else {
                     playOut(aid, fullText)
-                    if (cancelGeneration) cancelSettle(aid) else completeSettle()
+                    if (cancelGeneration) cancelSettle(aid) else completeSettle(aid)
                 }
             }
         }
@@ -2603,14 +2753,7 @@ fun ChatScreen(
             isListening = voiceStt.state.isListening,
             listeningText = voiceStt.state.partialText,
             isGenerating = isGenerating,
-            onStop = {
-                cancelGeneration = true
-                KarenLlama.cancel()
-                markCancelling()
-                webConsentGate?.complete(false)
-                webConsentGate = null
-                webConsentPreview = null
-            },
+            onStop = { stopNow() },
             onQueue = { enqueueCurrent() },
             modifier = Modifier.fillMaxWidth()
         )

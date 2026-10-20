@@ -775,18 +775,32 @@ private fun postStreamLines(
         doOutput = true
         headers.forEach { (k, v) -> setRequestProperty(k, v) }
     }
-    conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
-    val code = conn.responseCode
-    if (code !in 200..299) {
-        val err = try {
-            conn.errorStream?.bufferedReader()?.use { it.readText() }
-        } catch (_: Exception) {
-            null
-        } ?: ""
-        conn.disconnect()
-        throw CloudApiException(code, err.take(300))
+    // A blocked readLine() cannot see the flag until the next token (up to the
+    // 90 s read timeout), so disconnect the socket from a watchdog thread the
+    // moment Stop flips it. Without this the turn kept "generating" in the UI
+    // long after the user pressed Stop.
+    val watchdog = Thread {
+        try {
+            while (!isCancelled()) Thread.sleep(100)
+            runCatching { conn.disconnect() }
+        } catch (_: InterruptedException) {
+        }
+    }.apply {
+        isDaemon = true
+        name = "karen-cancel-watchdog"
+        start()
     }
     try {
+        conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+        val code = conn.responseCode
+        if (code !in 200..299) {
+            val err = try {
+                conn.errorStream?.bufferedReader()?.use { it.readText() }
+            } catch (_: Exception) {
+                null
+            } ?: ""
+            throw CloudApiException(code, err.take(300))
+        }
         conn.inputStream.bufferedReader().use { reader ->
             while (!isCancelled()) {
                 val line = try {
@@ -798,6 +812,7 @@ private fun postStreamLines(
             }
         }
     } finally {
+        watchdog.interrupt()
         conn.disconnect()
     }
 }

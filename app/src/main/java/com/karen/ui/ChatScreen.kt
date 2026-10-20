@@ -51,7 +51,7 @@ import java.io.File
 /** Built-in /help answer: how tools, mentions, and routing work. */
 private const val HELP_TEXT = """How Karen tools work
 
-Type / anywhere to list 21 phone tools, or @ to attach a vault file. Works mid-sentence.
+Type / anywhere to list every phone tool, or @ to attach a vault file. Works mid-sentence.
 
 RUNNING A TOOL
 • /tool plus plain text — e.g. /calculator 1847*23, /get_time Asia/Kolkata, /open_app Spotify, /set_timer 2 min eggs
@@ -1570,7 +1570,18 @@ fun ChatScreen(
             messages.add(ChatItem.Assistant(id = aid, text = HELP_TEXT, model = "tools", help = true))
             stampTook(aid)
             persist()
-            coroutineScope.launch { scrollToBottomIfNear() }
+            // The card is a full reference now: anchor its top so /help opens
+            // at "How Karen works" instead of the last tool in the catalog.
+            // One frame for the new item to enter the lazy layout first.
+            val helpIndex = messages.lastIndex
+            coroutineScope.launch {
+                try {
+                    kotlinx.coroutines.delay(80)
+                    listState.animateScrollToItem(helpIndex.coerceAtLeast(0))
+                } catch (_: Exception) {
+                    scrollToBottomIfNear()
+                }
+            }
             return true
         }
         val (spec, rest) = matchSlash(context, rawText) ?: return false
@@ -2894,13 +2905,19 @@ fun ChatScreen(
 }
 
 /**
- * The /help answer as a structured card instead of a text wall: every chip is
- * tappable and drops that exact command into the composer ("@" opens the vault
- * file menu). Colors follow the existing chat surfaces.
+ * The /help answer as a structured card instead of a text wall. The quick-start
+ * rows are hand-picked examples; the catalog under them is generated from
+ * tools.json (name, required args, tier, description), so every command and
+ * tool is documented and tapping any row drops it into the composer ("@"
+ * opens the vault file menu). Colors follow the existing chat surfaces.
  */
 @Composable
 private fun KarenHelpCard(onInsert: (String) -> Unit) {
     val colors = LocalKarenColors.current
+    val context = LocalContext.current
+    // Generated from tools.json so the guide can never drift from the tool
+    // schemas the router actually exposes.
+    val toolSpecs = remember { ToolSpecs.load(context) }
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -2925,19 +2942,61 @@ private fun KarenHelpCard(onInsert: (String) -> Unit) {
             )
             Spacer(Modifier.weight(1f))
             Text(
-                "tap a chip to use it",
+                "tap a row to insert",
                 color = colors.textMuted,
                 fontSize = 10.sp,
                 fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
             )
         }
 
-        HelpSectionLabel("SLASH COMMANDS · RUN WITHOUT THE MODEL", colors)
+        Text(
+            "Every phone tool is a slash command. Type / to open the tool menu, or tap any row " +
+                "below to put it in the composer. Plain language works too — “call Arun”, " +
+                "“remind me at 6” route the same way.",
+            color = colors.textSecondary,
+            fontSize = 11.5.sp,
+            lineHeight = 16.sp,
+            modifier = Modifier.padding(top = 10.dp)
+        )
+
+        HelpSectionLabel("START HERE · TAP TO INSERT", colors)
         HelpRow("/calculator", "1847*23", "solved on the phone itself", "/calculator 1847*23", colors, onInsert)
         HelpRow("/get_time", "Asia/Kolkata", "real device clock, any timezone", "/get_time Asia/Kolkata", colors, onInsert)
         HelpRow("/open_app", "Spotify", "launches any installed app", "/open_app Spotify", colors, onInsert)
         HelpRow("/set_timer", "2 min eggs", "real system timer", "/set_timer 2 min eggs", colors, onInsert)
+        HelpRow("/place_call", "Arun", "T2 — matches the contact, asks before dialing", "/place_call Arun", colors, onInsert)
+        HelpRow("/search", "today's AI news", "keyless DuckDuckGo + Wikipedia; also “search: …”", "/search today's AI news", colors, onInsert)
         HelpRow("/help", "", "this card", "/help", colors, onInsert)
+
+        HelpSectionLabel("ALL TOOLS · /name <required args>", colors)
+        Text(
+            "T0 reads and math · T1 reversible · T2 asks first · T3 blocked. " +
+                "Tap a tool to insert it, then add the arguments.",
+            color = colors.textMuted,
+            fontSize = 10.5.sp,
+            lineHeight = 14.sp
+        )
+        if (toolSpecs.isEmpty()) {
+            Text(
+                "Tool catalog could not be loaded.",
+                color = colors.textMuted,
+                fontSize = 11.5.sp,
+                modifier = Modifier.padding(top = 8.dp)
+            )
+        } else {
+            listOf(
+                "T0" to "T0 · READS + MATH — always auto-run",
+                "T1" to "T1 · REVERSIBLE — auto-run, visible result pill",
+                "T2" to "T2 · ASKS FIRST — Run/Cancel card",
+                "T3" to "T3 · BLOCKED — disabled"
+            ).forEach { (tier, title) ->
+                val tools = toolSpecs.filter { it.tier == tier }.sortedBy { it.name }
+                if (tools.isNotEmpty()) {
+                    HelpSectionLabel("$title (${tools.size})", colors)
+                    tools.forEach { HelpToolRow(it, colors, onInsert) }
+                }
+            }
+        }
 
         HelpSectionLabel("MENTIONS · VAULT GROUNDING (RAG)", colors)
         HelpRow(
@@ -2946,18 +3005,13 @@ private fun KarenHelpCard(onInsert: (String) -> Unit) {
             "@", colors, onInsert
         )
 
-        HelpSectionLabel("SAFETY TIERS · COLORED DOTS", colors)
-        HelpTierRow(colors.accentGreen, "T0", "reads + math — always auto-runs", colors)
-        HelpTierRow(colors.accentBlue, "T1", "reversible (open app, timer) — auto, with a visible pill", colors)
-        HelpTierRow(colors.accentAmber, "T2", "calls, messages, calendar, memory — a Run/Cancel card asks first", colors)
-        HelpTierRow(colors.textMuted, "T3", "irreversible — stays disabled", colors)
-
         HelpSectionLabel("WHAT ANSWERS · WHERE TO CHANGE IT", colors)
         HelpRow("header pill", "", "shows the active model; Auto routes per task — Settings → Model Routing", "", colors, onInsert)
         HelpRow("voice", "", "streams sentence by sentence; wake word lives in Settings → Voice & Speech", "", colors, onInsert)
 
         Text(
-            "Ask normally too — “call Arun”, “remind me at 6” route exactly like the slash forms.",
+            "Karen only reports a tool as done after the phone returns the result. T2 actions " +
+                "wait for your tap — nothing calls, messages, or writes memory on its own.",
             color = colors.textMuted,
             fontSize = 11.sp,
             lineHeight = 15.sp,
@@ -3023,37 +3077,75 @@ private fun HelpRow(
     }
 }
 
-/** One tier legend line: colored dot, tier tag, meaning. */
+/**
+ * One row in the generated tool catalog: the slash form plus required-argument
+ * hints on the first line, the tool's own description underneath. Tapping
+ * inserts "/name " so the composer is ready for arguments.
+ */
 @Composable
-private fun HelpTierRow(dotColor: Color, tier: String, desc: String, colors: KarenColors) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
+private fun HelpToolRow(
+    spec: ToolSpec,
+    colors: KarenColors,
+    onInsert: (String) -> Unit
+) {
+    val hint = spec.args
+        .filter { it.required }
+        .joinToString(" ") { "<${it.name}>" }
+    // Enum values are the part a bare argument name cannot convey (which
+    // settings page, which media action, which flashlight state).
+    val values = spec.args
+        .filter { it.required && it.enum.isNotEmpty() }
+        .joinToString(" · ") { "${it.name}: ${it.enum.joinToString("|")}" }
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 3.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .clickable { onInsert("/${spec.name} ") }
+            .padding(vertical = 4.dp)
     ) {
-        Box(
-            modifier = Modifier
-                .size(8.dp)
-                .clip(CircleShape)
-                .background(dotColor)
-        )
-        Spacer(Modifier.width(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "/${spec.name}",
+                color = colors.accentBlue,
+                fontSize = 11.sp,
+                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(colors.background)
+                    .border(1.dp, colors.border, RoundedCornerShape(6.dp))
+                    .padding(horizontal = 6.dp, vertical = 2.dp)
+            )
+            if (hint.isNotBlank()) {
+                Spacer(Modifier.width(7.dp))
+                Text(
+                    text = hint,
+                    color = colors.textMuted,
+                    fontSize = 10.sp,
+                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                    maxLines = 2,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+        Spacer(Modifier.height(3.dp))
         Text(
-            text = tier,
-            color = colors.textPrimary,
-            fontSize = 11.5.sp,
-            fontWeight = FontWeight.SemiBold,
-            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
-        )
-        Spacer(Modifier.width(9.dp))
-        Text(
-            text = desc,
+            text = spec.desc,
             color = colors.textSecondary,
-            fontSize = 11.5.sp,
-            lineHeight = 15.sp,
-            modifier = Modifier.weight(1f)
+            fontSize = 11.sp,
+            lineHeight = 15.sp
         )
+        if (values.isNotBlank()) {
+            Text(
+                text = values,
+                color = colors.textMuted,
+                fontSize = 9.5.sp,
+                lineHeight = 13.sp,
+                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                modifier = Modifier.padding(top = 2.dp)
+            )
+        }
     }
 }
 

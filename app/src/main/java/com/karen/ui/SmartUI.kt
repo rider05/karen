@@ -269,7 +269,8 @@ fun KPieChart(
     slices: List<Triple<String, Float, Color>>,
     modifier: Modifier = Modifier,
     size: androidx.compose.ui.unit.Dp = 120.dp,
-    centerLabel: String? = null
+    centerLabel: String? = null,
+    valueFormatter: (Float) -> String = { it.toInt().toString() }
 ) {
     val colors = LocalKarenColors.current
     if (slices.isEmpty()) return
@@ -335,7 +336,7 @@ fun KPieChart(
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        "${value.toInt()} · ${((value / total) * 100).toInt()}%",
+                        "${valueFormatter(value)} · ${((value / total) * 100).toInt()}%",
                         color = colors.textMuted,
                         fontFamily = LocalKarenType.current.mono,
                         fontSize = 11.sp

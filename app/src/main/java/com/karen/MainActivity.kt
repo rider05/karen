@@ -3,25 +3,66 @@ package com.karen
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.setValue
 import androidx.core.app.ActivityCompat
 import com.karen.ui.AppUpdate
 import com.karen.ui.KarenApp
 import com.karen.ui.UserPrefs
+import kotlin.math.sqrt
 
 class MainActivity : ComponentActivity() {
     private var wakeStartScreen = "Home"
+
+    // Shake → Karen Settings. The counter is Compose state so KarenApp can
+    // react without the activity having to reach into its navigation state.
+    private var shakeSignal by mutableIntStateOf(0)
+    private var sensorManager: SensorManager? = null
+    private var accelerometer: Sensor? = null
+    private var lastShakeAt = 0L
+    private val gravity = FloatArray(3)
+
+    private val shakeListener = object : SensorEventListener {
+        override fun onSensorChanged(event: SensorEvent) {
+            if (event.sensor.type != Sensor.TYPE_ACCELEROMETER) return
+            // High-pass the accelerometer to drop gravity, then measure the
+            // remaining linear impulse. A firm shake clears ~11 m/s².
+            var linearSq = 0f
+            for (i in 0..2) {
+                gravity[i] = 0.8f * gravity[i] + 0.2f * event.values[i]
+                val linear = event.values[i] - gravity[i]
+                linearSq += linear * linear
+            }
+            val magnitude = sqrt(linearSq)
+            if (magnitude > 11f) {
+                val now = SystemClock.elapsedRealtime()
+                if (now - lastShakeAt > 1200L) {
+                    lastShakeAt = now
+                    shakeSignal++
+                }
+            }
+        }
+
+        override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         wakeStartScreen = startScreenFor(intent)
         if (wakeStartScreen == "Voice") WakeWordService.notifyAppOpened(this)
-        setContent { KarenApp(startScreen = wakeStartScreen) }
+        setContent { KarenApp(startScreen = wakeStartScreen, shakeSignal = shakeSignal) }
         requestEssentialPermissions()
         // Cold start via wake trigger: keep the listener alive while in use.
         maybeRestartWakeListener()
@@ -31,6 +72,21 @@ class MainActivity : ComponentActivity() {
         if (AppUpdate.checkPostInstall(this)) {
             android.widget.Toast.makeText(this, "Update installed successfully", android.widget.Toast.LENGTH_SHORT).show()
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        sensorManager = getSystemService(SENSOR_SERVICE) as? SensorManager
+        accelerometer = sensorManager?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+        val accel = accelerometer
+        if (accel != null) {
+            sensorManager?.registerListener(shakeListener, accel, SensorManager.SENSOR_DELAY_GAME)
+        }
+    }
+
+    override fun onPause() {
+        sensorManager?.unregisterListener(shakeListener)
+        super.onPause()
     }
 
     override fun onNewIntent(intent: Intent) {

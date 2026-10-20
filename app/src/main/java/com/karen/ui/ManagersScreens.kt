@@ -4,6 +4,8 @@ import android.content.Context
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,6 +17,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Archive
@@ -39,9 +42,12 @@ import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -53,11 +59,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.io.File
@@ -74,6 +84,443 @@ import kotlinx.coroutines.withContext
 private fun toast(ctx: android.content.Context, msg: String) {
     android.widget.Toast.makeText(ctx, msg, android.widget.Toast.LENGTH_SHORT).show()
 }
+
+// ---- shared manager chrome -------------------------------------------------
+
+/**
+ * The six data screens share one visual language: a quiet accent-tinted hero,
+ * semantic status chip, a three-value metric strip, then grouped panels. The
+ * flows below are unchanged — only the surfaces and hierarchy are new.
+ */
+private data class HeroMetric(
+    val label: String,
+    val value: String,
+    val tone: KTone = KTone.Neutral,
+    val caption: String? = null
+)
+
+@Composable
+private fun ManagerHero(
+    kicker: String,
+    title: String,
+    subtitle: String,
+    icon: ImageVector,
+    status: String,
+    statusTone: KTone,
+    metrics: List<HeroMetric>
+) {
+    val colors = LocalKarenColors.current
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(20.dp))
+            .background(
+                Brush.linearGradient(
+                    listOf(
+                        colors.accentGreen.copy(alpha = if (colors.isDark) 0.10f else 0.06f),
+                        colors.surface,
+                        colors.surface
+                    )
+                )
+            )
+            .border(1.dp, colors.border, RoundedCornerShape(20.dp))
+            .padding(16.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier
+                    .size(42.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(colors.accentGreen.copy(alpha = 0.12f))
+                    .border(1.dp, colors.accentGreen.copy(alpha = 0.35f), RoundedCornerShape(12.dp)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(icon, contentDescription = null, tint = colors.accentGreen, modifier = Modifier.size(20.dp))
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    kicker.uppercase(),
+                    color = colors.textMuted,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 9.5.sp,
+                    letterSpacing = 1.sp,
+                    maxLines = 1
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    title,
+                    color = colors.textPrimary,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    lineHeight = 23.sp,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            KStatusChip(status, statusTone, led = true)
+        }
+        Spacer(Modifier.height(10.dp))
+        Text(subtitle, color = colors.textSecondary, fontSize = 12.sp, lineHeight = 17.sp)
+        Spacer(Modifier.height(14.dp))
+        KHairline()
+        Spacer(Modifier.height(12.dp))
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            metrics.forEachIndexed { index, metric ->
+                if (index > 0) {
+                    Box(Modifier.width(1.dp).height(30.dp).background(colors.border))
+                }
+                Column(
+                    Modifier
+                        .weight(1f)
+                        .padding(start = if (index == 0) 0.dp else 12.dp, end = if (index == metrics.lastIndex) 0.dp else 4.dp)
+                ) {
+                    Text(
+                        metric.label.uppercase(),
+                        color = colors.textMuted,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 9.sp,
+                        letterSpacing = 0.4.sp,
+                        maxLines = 1
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        metric.value,
+                        color = metric.tone.color(colors),
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (metric.caption != null) {
+                        Text(
+                            metric.caption,
+                            color = colors.textMuted,
+                            fontSize = 9.5.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PanelIcon(icon: ImageVector, tone: KTone = KTone.Primary, size: Dp = 18.dp) {
+    val colors = LocalKarenColors.current
+    val tint = tone.color(colors)
+    Box(
+        Modifier
+            .size(30.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(tint.copy(alpha = 0.12f)),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(size))
+    }
+}
+
+@Composable
+private fun ManagerNote(
+    text: String,
+    icon: ImageVector = Icons.Default.Lock,
+    tone: KTone = KTone.Muted
+) {
+    val colors = LocalKarenColors.current
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = 8.dp),
+        verticalAlignment = Alignment.Top
+    ) {
+        Icon(icon, contentDescription = null, tint = tone.color(colors), modifier = Modifier.size(14.dp))
+        Spacer(Modifier.width(8.dp))
+        Text(text, color = colors.textMuted, fontSize = 11.5.sp, lineHeight = 16.sp)
+    }
+}
+
+@Composable
+private fun ManagerEmptyState(
+    icon: ImageVector,
+    title: String,
+    body: String,
+    actionLabel: String? = null,
+    onAction: () -> Unit = {}
+) {
+    val colors = LocalKarenColors.current
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Box(
+            Modifier
+                .size(48.dp)
+                .clip(RoundedCornerShape(14.dp))
+                .background(colors.surfaceHover)
+                .border(1.dp, colors.border, RoundedCornerShape(14.dp)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(icon, contentDescription = null, tint = colors.accentGreen, modifier = Modifier.size(22.dp))
+        }
+        Spacer(Modifier.height(10.dp))
+        Text(
+            title,
+            color = colors.textPrimary,
+            fontSize = 14.5.sp,
+            fontWeight = FontWeight.SemiBold,
+            textAlign = TextAlign.Center
+        )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            body,
+            color = colors.textMuted,
+            fontSize = 11.5.sp,
+            lineHeight = 16.sp,
+            textAlign = TextAlign.Center
+        )
+        if (actionLabel != null) {
+            Spacer(Modifier.height(12.dp))
+            KPrimaryButton(actionLabel, onAction)
+        }
+    }
+}
+
+@Composable
+private fun SelectableTile(
+    selected: Boolean,
+    title: String,
+    subtitle: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    badge: String? = null
+) {
+    val colors = LocalKarenColors.current
+    Row(
+        modifier
+            .fillMaxWidth()
+            .padding(vertical = 3.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(if (selected) colors.accentGreen.copy(alpha = 0.07f) else Color.Transparent)
+            .border(
+                1.dp,
+                if (selected) colors.accentGreen.copy(alpha = 0.45f) else colors.border,
+                RoundedCornerShape(12.dp)
+            )
+            .clickable { onClick() }
+            .padding(start = 4.dp, end = 12.dp, top = 7.dp, bottom = 7.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        RadioButton(
+            selected = selected,
+            onClick = onClick,
+            colors = RadioButtonDefaults.colors(
+                selectedColor = colors.accentGreen,
+                unselectedColor = colors.textMuted
+            )
+        )
+        Spacer(Modifier.width(2.dp))
+        Column(Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    title,
+                    color = if (selected) colors.accentGreen else colors.textPrimary,
+                    fontSize = 13.5.sp,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+                if (badge != null) {
+                    Spacer(Modifier.width(8.dp))
+                    KStatusChip(badge, if (selected) KTone.Success else KTone.Muted)
+                }
+            }
+            Spacer(Modifier.height(2.dp))
+            Text(subtitle, color = colors.textMuted, fontSize = 11.5.sp, lineHeight = 15.sp)
+        }
+    }
+}
+
+@Composable
+private fun ManagerStepRow(index: Int, label: String, done: Boolean, last: Boolean = false) {
+    val colors = LocalKarenColors.current
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Box(
+                Modifier
+                    .size(22.dp)
+                    .clip(CircleShape)
+                    .background(if (done) colors.accentGreen else colors.surfaceHover)
+                    .border(1.dp, if (done) colors.accentGreen else colors.border, CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                if (done) {
+                    Icon(Icons.Default.Check, contentDescription = null, tint = Color.White, modifier = Modifier.size(13.dp))
+                } else {
+                    Text(
+                        "$index",
+                        color = colors.textMuted,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+            if (!last) {
+                Box(
+                    Modifier
+                        .width(1.dp)
+                        .height(18.dp)
+                        .background(if (done) colors.accentGreen.copy(alpha = 0.40f) else colors.border)
+                )
+            }
+        }
+        Spacer(Modifier.width(10.dp))
+        Column(
+            Modifier
+                .weight(1f)
+                .padding(top = 1.dp, bottom = if (last) 0.dp else 8.dp)
+        ) {
+            Text(
+                label,
+                color = if (done) colors.textPrimary else colors.textSecondary,
+                fontSize = 12.5.sp,
+                fontWeight = if (done) FontWeight.Medium else FontWeight.Normal,
+                lineHeight = 17.sp
+            )
+            if (done) {
+                Text(
+                    "DONE",
+                    color = colors.accentGreen,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 9.sp,
+                    letterSpacing = 0.6.sp
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ManagerFileRow(
+    icon: ImageVector,
+    title: String,
+    meta: String,
+    trailing: String? = null,
+    tone: KTone = KTone.Muted
+) {
+    val colors = LocalKarenColors.current
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            Modifier
+                .size(32.dp)
+                .clip(RoundedCornerShape(9.dp))
+                .background(colors.surfaceHover),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(icon, contentDescription = null, tint = tone.color(colors), modifier = Modifier.size(15.dp))
+        }
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                title,
+                color = colors.textPrimary,
+                fontSize = 12.5.sp,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Spacer(Modifier.height(1.dp))
+            Text(
+                meta,
+                color = colors.textMuted,
+                fontFamily = FontFamily.Monospace,
+                fontSize = 10.5.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        if (trailing != null) {
+            Spacer(Modifier.width(8.dp))
+            Text(
+                trailing,
+                color = tone.color(colors),
+                fontFamily = FontFamily.Monospace,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1
+            )
+        }
+    }
+}
+
+@Composable
+private fun ManagerResult(ok: Boolean, text: String, sub: String) {
+    val colors = LocalKarenColors.current
+    val tone = if (ok) KTone.Success else KTone.Amber
+    KPanel(
+        title = if (ok) "Complete" else "Needs attention",
+        subtitle = if (ok) "verified on device" else "nothing was changed",
+        icon = { PanelIcon(if (ok) Icons.Default.CheckCircle else Icons.Default.Warning, tone) },
+        trailing = { KStatusChip(if (ok) "DONE" else "CHECK", tone, led = true) }
+    ) {
+        Text(text, color = colors.textPrimary, fontSize = 13.sp, lineHeight = 18.sp)
+        if (sub.isNotBlank()) {
+            Spacer(Modifier.height(6.dp))
+            Text(sub, color = colors.textMuted, fontSize = 11.5.sp, lineHeight = 16.sp)
+        }
+    }
+}
+
+@Composable
+private fun PrivacyRulesPanel() {
+    val colors = LocalKarenColors.current
+    val rules = listOf(
+        "Explicit action required" to "Export, import and deletion each need a tap — nothing silent.",
+        "No silent uploads" to "Models and memory never leave the device on their own.",
+        "Import shows diff first" to "What will change is previewed before it is applied.",
+        "Checksums everywhere" to "Corrupt or partial transfers are rejected."
+    )
+    KPanel(
+        title = "Privacy rules",
+        subtitle = "explicit by design",
+        icon = { PanelIcon(Icons.Default.Shield, KTone.Success) },
+        trailing = { KStatusChip("LOCAL", KTone.Success) }
+    ) {
+        rules.forEachIndexed { index, (title, body) ->
+            if (index > 0) KHairline()
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 8.dp),
+                verticalAlignment = Alignment.Top
+            ) {
+                Icon(
+                    Icons.Default.CheckCircle,
+                    contentDescription = null,
+                    tint = colors.accentGreen,
+                    modifier = Modifier.size(15.dp)
+                )
+                Spacer(Modifier.width(8.dp))
+                Column {
+                    Text(title, color = colors.textPrimary, fontSize = 12.5.sp, fontWeight = FontWeight.Medium)
+                    Text(body, color = colors.textMuted, fontSize = 11.sp, lineHeight = 15.sp)
+                }
+            }
+        }
+    }
+}
+
 
 @Composable
 fun StepRow(index: Int, label: String, done: Boolean) {
@@ -253,65 +700,89 @@ fun ModelImportScreen(onOpenDrawer: () -> Unit = {}, onNavigateToHome: () -> Uni
 
     KScreen(
         title = "Local Model Import",
-        subtitle = "Real file operations · GGUF only for on-device",
+        subtitle = "Real file operations · on-device validation · nothing uploaded",
         onOpenDrawer = onOpenDrawer,
         onBackClick = onNavigateToHome
     ) {
-        // -- Summary --
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            KpiCard("Installed", "${installedModels.size}", modifier = Modifier.weight(1f), tone = KTone.Neutral)
-            KpiCard("Size", fmtBytes(totalModelBytes), modifier = Modifier.weight(1f), tone = KTone.Primary)
-            KpiCard("Free", fmtBytes(freeBytes), modifier = Modifier.weight(1f), tone = KTone.Muted)
-        }
+        ManagerHero(
+            kicker = "Model library",
+            title = "Import a model",
+            subtitle = "Pick a local weight file. Karen checks the format, verifies integrity, measures free space, then copies and registers it in Model Manager.",
+            icon = Icons.Default.Download,
+            status = if (importing) "IMPORTING" else "LOCAL ONLY",
+            statusTone = if (importing) KTone.Blue else KTone.Success,
+            metrics = listOf(
+                HeroMetric("Installed", "${installedModels.size}", KTone.Success, "models"),
+                HeroMetric("Library", fmtBytes(totalModelBytes), KTone.Primary, "on disk"),
+                HeroMetric("Free", fmtBytes(freeBytes), KTone.Neutral, "device")
+            )
+        )
+        Spacer(Modifier.height(14.dp))
 
-        // -- Source file --
-        Section(title = "Source file") {
+        KPanel(
+            title = "Source file",
+            subtitle = if (pickedUri == null) "no file selected" else "ready to validate",
+            icon = { PanelIcon(Icons.Default.FolderOpen) },
+            trailing = { if (pickedUri != null) KStatusChip("SELECTED", KTone.Success, led = true) }
+        ) {
             if (pickedUri != null) {
                 val displayName = pickedName ?: "picked file"
-                KCard(
-                    displayName,
-                    "${if (pickedSize > 0) fmtBytes(pickedSize) else "size unknown"} · " +
+                ManagerFileRow(
+                    icon = Icons.Default.Memory,
+                    title = displayName,
+                    meta = "${if (pickedSize > 0) fmtBytes(pickedSize) else "size unknown"} · " +
                         "${displayName.substringAfterLast('.', "?").uppercase()} · " +
-                        "${detectQuant(displayName)} · arch ${detectArch(displayName)}"
+                        "${detectQuant(displayName)} · ${detectArch(displayName)}",
+                    trailing = "READY",
+                    tone = KTone.Success
                 )
-                Spacer(Modifier.height(6.dp))
+                Spacer(Modifier.height(10.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(
+                    KPrimaryButton(
+                        label = "Validate & import",
                         onClick = { startImport() },
                         enabled = !importing,
-                        colors = ButtonDefaults.buttonColors(containerColor = colors.accentGreen)
-                    ) { Text("Validate & import", fontSize = 13.sp) }
-                    OutlinedButton(
+                        modifier = Modifier.weight(1f)
+                    )
+                    KSecondaryButton(
+                        label = "Replace",
                         onClick = { picker.launch(arrayOf("*/*")) },
-                        enabled = !importing
-                    ) { Text("Choose another", fontSize = 13.sp) }
-                    OutlinedButton(
-                        onClick = {
-                            pickedUri = null
-                            pickedName = null
-                            pickedSize = 0L
-                            stage = 0
-                            importResult = null
-                        },
-                        enabled = !importing
-                    ) { Text("Clear", fontSize = 13.sp) }
+                        enabled = !importing,
+                        modifier = Modifier.weight(1f)
+                    )
                 }
+                TextButton(
+                    onClick = {
+                        pickedUri = null
+                        pickedName = null
+                        pickedSize = 0L
+                        stage = 0
+                        importResult = null
+                    },
+                    enabled = !importing,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Clear selection", color = colors.textMuted, fontSize = 12.sp)
+                }
+                ManagerNote("Only GGUF runs on-device. ONNX and PTH files are stored and exported, not loaded.")
             } else {
-                KCard(
-                    "No file selected",
-                    "Pick a .gguf, .onnx or .pth with the system file picker — Downloads, USB, anywhere."
-                )
-                Spacer(Modifier.height(6.dp))
-                Button(
-                    onClick = { picker.launch(arrayOf("*/*")) },
-                    colors = ButtonDefaults.buttonColors(containerColor = colors.accentGreen)
-                ) { Text("Browse files…", fontSize = 13.sp) }
+                ManagerEmptyState(
+                    icon = Icons.Default.Download,
+                    title = "Choose a model file",
+                    body = "Pick a .gguf, .onnx or .pth with the system file picker — Downloads, USB or anywhere.",
+                    actionLabel = "Browse files…"
+                ) { picker.launch(arrayOf("*/*")) }
+                ManagerNote("No file leaves the device. Karen hashes what it copies.")
             }
         }
 
-        // -- Import pipeline --
         if (pickedUri != null) {
-            Section(title = "Import pipeline") {
+            Spacer(Modifier.height(14.dp))
+            KPanel(
+                title = "Validation pipeline",
+                subtitle = "five on-device checks",
+                icon = { PanelIcon(Icons.Default.CheckCircle) }
+            ) {
                 listOf(
                     "Format check (.gguf / .onnx / .pth)",
                     "GGUF header + integrity",
@@ -319,45 +790,72 @@ fun ModelImportScreen(onOpenDrawer: () -> Unit = {}, onNavigateToHome: () -> Uni
                     "Copy into app storage (+ SHA-256)",
                     "Register in Model Manager"
                 ).forEachIndexed { i, label ->
-                    StepRow(i + 1, label, stage > i)
+                    ManagerStepRow(i + 1, label, done = stage > i, last = i == 4)
                 }
             }
         }
 
-        // -- Import progress --
         if (importing) {
-            Section(title = "Import progress") {
-                LinearProgressIndicator(
-                    progress = { progress },
+            Spacer(Modifier.height(14.dp))
+            KPanel(
+                title = "Importing",
+                subtitle = "copying into app storage",
+                icon = { PanelIcon(Icons.Default.Sync, KTone.Blue) },
+                trailing = { KStatusChip("${(progress * 100).toInt()}%", KTone.Blue) }
+            ) {
+                KProgressBar(progress)
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    statusLine.ifBlank { "Working…" },
+                    color = colors.textPrimary,
+                    fontSize = 12.5.sp,
+                    lineHeight = 17.sp
+                )
+                Spacer(Modifier.height(10.dp))
+                KSecondaryButton(
+                    label = "Cancel import",
+                    onClick = { cancelRequested = true },
                     modifier = Modifier.fillMaxWidth(),
-                    color = colors.accentGreen,
-                    trackColor = colors.surfaceHover
+                    tone = KTone.Danger
                 )
-                Spacer(Modifier.height(4.dp))
-                KV("Status", statusLine.ifBlank { "Working…" }, hl = true)
-                OutlinedButton(onClick = { cancelRequested = true }) { Text("Cancel", fontSize = 12.sp) }
             }
         }
 
-        // -- Result --
         if (importResult != null) {
-            Section(title = "Result") {
-                KCard(
-                    importResult!!,
-                    if (importResult!!.startsWith("Imported")) "Ready in Model Manager — pick it in the model sheet to chat"
-                    else "Nothing was changed on disk"
-                )
-            }
+            Spacer(Modifier.height(14.dp))
+            val ok = importResult!!.startsWith("Imported")
+            ManagerResult(
+                ok = ok,
+                text = importResult!!,
+                sub = if (ok) "Ready in Model Manager — pick it in the model sheet to chat" else "Nothing was changed on disk"
+            )
         }
 
-        // -- Installed models --
         if (installedModels.isNotEmpty()) {
-            Section(title = "Installed models (${installedModels.size})") {
-                installedModels.take(5).forEach { f ->
-                    KV(f.name, "${fmtBytes(f.length())} · ${detectQuant(f.name)}")
+            Spacer(Modifier.height(14.dp))
+            KPanel(
+                title = "Installed models",
+                subtitle = "${installedModels.size} in the local library",
+                icon = { PanelIcon(Icons.Default.Storage) }
+            ) {
+                installedModels.take(5).forEachIndexed { index, f ->
+                    if (index > 0) KHairline()
+                    ManagerFileRow(
+                        icon = Icons.Default.Memory,
+                        title = f.name,
+                        meta = "${fmtBytes(f.length())} · ${detectQuant(f.name)} · ${detectArch(f.name)}",
+                        trailing = "GGUF",
+                        tone = KTone.Muted
+                    )
                 }
                 if (installedModels.size > 5) {
-                    KV("…", "+${installedModels.size - 5} more")
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "+${installedModels.size - 5} more in Model Manager",
+                        color = colors.accentGreen,
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.Medium
+                    )
                 }
             }
         }
@@ -481,45 +979,52 @@ fun ModelExportScreen(onOpenDrawer: () -> Unit = {}, onNavigateToHome: () -> Uni
 
     KScreen(
         title = "Portable Model Export",
-        subtitle = "Real file operations · GGUF weights only",
+        subtitle = "GGUF weights · SHA-256 measured while copying",
         onOpenDrawer = onOpenDrawer,
         onBackClick = onNavigateToHome
     ) {
-        // -- Model selection --
-        Section(title = "Select model") {
+        ManagerHero(
+            kicker = "Portable export",
+            title = "Take a model with you",
+            subtitle = "Streams the selected GGUF to a destination you choose and hashes it on the way. The installed copy is never touched.",
+            icon = Icons.Default.CloudUpload,
+            status = if (exporting) "EXPORTING" else "READY",
+            statusTone = if (exporting) KTone.Blue else KTone.Neutral,
+            metrics = listOf(
+                HeroMetric("Models", "${installedModels.size}", KTone.Success, "GGUF"),
+                HeroMetric("Selected", selectedFile?.let { fmtBytes(it.length()) } ?: "—", KTone.Primary),
+                HeroMetric("Metadata", if (includeMetadata) "Sidecar" else "Off", if (includeMetadata) KTone.Blue else KTone.Muted)
+            )
+        )
+        Spacer(Modifier.height(14.dp))
+
+        KPanel(
+            title = "Choose a model",
+            subtitle = if (installedModels.isEmpty()) "none installed" else "${installedModels.size} available",
+            icon = { PanelIcon(Icons.Default.Memory) },
+            trailing = { if (selectedFile != null) KStatusChip("1 SELECTED", KTone.Success, led = true) }
+        ) {
             if (installedModels.isEmpty()) {
-                KCard("No GGUF models installed", "Import a model first to export it")
+                ManagerEmptyState(
+                    icon = Icons.Default.Memory,
+                    title = "No GGUF models installed",
+                    body = "Import a model first to export it."
+                )
             } else {
                 installedModels.take(5).forEach { f ->
                     val selected = selectedModel == f.name
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 3.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        androidx.compose.material3.RadioButton(
-                            selected = selected,
-                            onClick = { selectedModel = f.name }
-                        )
-                        Column {
-                            Text(
-                                f.name,
-                                color = if (selected) colors.accentGreen else colors.textPrimary,
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Medium
-                            )
-                            Text(
-                                "${fmtBytes(f.length())} · ${detectQuant(f.name)}",
-                                color = colors.textMuted,
-                                fontSize = 11.sp
-                            )
-                        }
-                    }
+                    SelectableTile(
+                        selected = selected,
+                        title = f.name,
+                        subtitle = "${fmtBytes(f.length())} · ${detectQuant(f.name)} · ${detectArch(f.name)}",
+                        onClick = { selectedModel = f.name },
+                        badge = if (selected) "READY" else null
+                    )
                 }
                 if (installedModels.size > 5) {
+                    Spacer(Modifier.height(4.dp))
                     Text(
-                        "+${installedModels.size - 5} more models",
+                        "+${installedModels.size - 5} more models in Model Manager",
                         color = colors.textMuted,
                         fontSize = 11.sp
                     )
@@ -527,39 +1032,96 @@ fun ModelExportScreen(onOpenDrawer: () -> Unit = {}, onNavigateToHome: () -> Uni
             }
         }
 
-        // -- Options --
-        Section(title = "Options") {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                androidx.compose.material3.Checkbox(
+        Spacer(Modifier.height(14.dp))
+        KPanel(
+            title = "Package options",
+            subtitle = "what gets written",
+            icon = { PanelIcon(Icons.Default.Save) }
+        ) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable { includeMetadata = !includeMetadata }
+                    .padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Checkbox(
                     checked = includeMetadata,
                     onCheckedChange = { includeMetadata = it }
                 )
-                Text("Export metadata sidecar (.json)", color = colors.textSecondary, fontSize = 13.sp)
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "Metadata sidecar",
+                        color = colors.textPrimary,
+                        fontSize = 13.5.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Text(
+                        "A .json with model id, quant, arch, size and SHA-256.",
+                        color = colors.textMuted,
+                        fontSize = 11.5.sp,
+                        lineHeight = 15.sp
+                    )
+                }
             }
             if (includeMetadata && selectedModel != null) {
-                Spacer(Modifier.height(4.dp))
-                KCard(
-                    "${selectedModel!!.removeSuffix(".gguf")}.json",
-                    "model_id · format GGUF · quant ${detectQuant(selectedModel!!)} · arch ${detectArch(selectedModel!!)} · sha256 · exported_at"
-                )
+                Spacer(Modifier.height(8.dp))
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(colors.surfaceHover)
+                        .border(1.dp, colors.border, RoundedCornerShape(12.dp))
+                        .padding(12.dp)
+                ) {
+                    Text(
+                        "${selectedModel!!.removeSuffix(".gguf")}.json",
+                        color = colors.accentBlue,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Spacer(Modifier.height(3.dp))
+                    Text(
+                        "model_id · format GGUF · quant ${detectQuant(selectedModel!!)} · arch ${detectArch(selectedModel!!)} · sha256 · exported_at",
+                        color = colors.textMuted,
+                        fontSize = 10.5.sp,
+                        lineHeight = 15.sp
+                    )
+                }
             }
-            KV("Installed copy", "Kept — never auto-deleted", hl = true)
+            Spacer(Modifier.height(10.dp))
+            KHairline()
+            Spacer(Modifier.height(4.dp))
+            KTelemetryRow("Installed copy", "Kept — never auto-deleted", valueColor = colors.accentGreen)
         }
 
-        // -- Export --
-        Section(title = "Export") {
+        Spacer(Modifier.height(14.dp))
+        KPanel(
+            title = "Export",
+            subtitle = if (exporting) "writing to destination" else "system file picker",
+            icon = { PanelIcon(Icons.Default.CloudUpload, KTone.Blue) },
+            trailing = { if (exporting) KStatusChip("${(progress * 100).toInt()}%", KTone.Blue) }
+        ) {
             if (exporting) {
-                LinearProgressIndicator(
-                    progress = { progress },
-                    modifier = Modifier.fillMaxWidth(),
-                    color = colors.accentGreen,
-                    trackColor = colors.surfaceHover
+                KProgressBar(progress)
+                Spacer(Modifier.height(8.dp))
+                KTelemetryRow(
+                    "Copied",
+                    "${fmtBytes(copiedBytes)} / ${fmtBytes(selectedFile?.length() ?: 0L)}",
+                    valueColor = colors.accentBlue
                 )
-                Spacer(Modifier.height(4.dp))
-                KV("Copied", "${fmtBytes(copiedBytes)} / ${fmtBytes(selectedFile?.length() ?: 0L)}")
-                OutlinedButton(onClick = { cancelRequested = true }) { Text("Cancel", fontSize = 12.sp) }
+                Spacer(Modifier.height(6.dp))
+                KSecondaryButton(
+                    label = "Cancel export",
+                    onClick = { cancelRequested = true },
+                    modifier = Modifier.fillMaxWidth(),
+                    tone = KTone.Danger
+                )
             } else {
-                Button(
+                KPrimaryButton(
+                    label = "Export model…",
                     onClick = {
                         val f = selectedFile
                         if (f == null) {
@@ -569,28 +1131,24 @@ fun ModelExportScreen(onOpenDrawer: () -> Unit = {}, onNavigateToHome: () -> Uni
                             modelSaver.launch(f.name)
                         }
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = colors.accentGreen),
+                    modifier = Modifier.fillMaxWidth(),
                     enabled = selectedFile != null
-                ) { Text("Export model…", fontSize = 13.sp) }
-                Spacer(Modifier.height(4.dp))
-                Text(
+                )
+                ManagerNote(
                     "The system picker chooses the destination — SD card, USB or a cloud folder. The installed copy is kept.",
-                    color = colors.textMuted,
-                    fontSize = 11.5.sp
+                    Icons.Default.Info
                 )
             }
         }
 
-        // -- Result --
         if (exportResult != null) {
-            Section(title = "Result") {
-                KCard(
-                    exportResult!!,
-                    if (exportResult!!.startsWith("Export complete") || exportResult!!.startsWith("Model copied"))
-                        "SHA-256 measured while copying — safe to transfer"
-                    else "Nothing was written"
-                )
-            }
+            Spacer(Modifier.height(14.dp))
+            val ok = exportResult!!.startsWith("Export complete") || exportResult!!.startsWith("Model copied")
+            ManagerResult(
+                ok = ok,
+                text = exportResult!!,
+                sub = if (ok) "SHA-256 measured while copying — safe to transfer" else "Nothing was written"
+            )
         }
     }
 }
@@ -743,44 +1301,70 @@ fun MemoryTransferScreen(onOpenDrawer: () -> Unit = {}, onNavigateToHome: () -> 
 
     KScreen(
         title = "Memory Export & Import",
-        subtitle = "Real data · encrypted · offline",
+        subtitle = "Portable facts · real data · encrypted at rest",
         onOpenDrawer = onOpenDrawer,
         onBackClick = onNavigateToHome
     ) {
-        // -- Summary --
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            KpiCard("Verified", "${verifiedFacts.size}", modifier = Modifier.weight(1f), tone = KTone.Success)
-            KpiCard("Pending", "${pendingFacts.size}", modifier = Modifier.weight(1f), tone = KTone.Amber)
-            KpiCard("Total", "${allFacts.size}", modifier = Modifier.weight(1f), tone = KTone.Primary)
-        }
+        ManagerHero(
+            kicker = "Memory",
+            title = "Move your memory",
+            subtitle = "Export verified facts as a portable JSON package, or merge a package from another device. Nothing leaves the phone on its own.",
+            icon = Icons.Default.SwapHoriz,
+            status = "OFFLINE",
+            statusTone = KTone.Success,
+            metrics = listOf(
+                HeroMetric("Verified", "${verifiedFacts.size}", KTone.Success, "confirmed"),
+                HeroMetric("Pending", "${pendingFacts.size}", KTone.Amber, "to review"),
+                HeroMetric("Total", "${allFacts.size}", KTone.Primary, "facts")
+            )
+        )
 
-        // -- Category breakdown --
         if (categoryCounts.isNotEmpty()) {
-            Section(title = "Categories") {
-                val palette = listOf(
-                    colors.accentGreen, colors.accentBlue, colors.accentAmber,
-                    androidx.compose.ui.graphics.Color(0xFF8B5CF6),
-                    androidx.compose.ui.graphics.Color(0xFFEC4899),
-                )
-                val slices = categoryCounts.mapIndexed { i, (cat, count) ->
-                    Triple(cat, count.toFloat(), palette[i % palette.size])
-                }
-                KPieChart(slices, size = 100.dp)
+            Spacer(Modifier.height(14.dp))
+            Text(
+                "MEMORY LIBRARY",
+                color = colors.textMuted,
+                fontFamily = FontFamily.Monospace,
+                fontSize = 10.5.sp,
+                letterSpacing = 0.6.sp,
+                modifier = Modifier.padding(bottom = 8.dp)
+            )
+            val palette = listOf(
+                colors.accentGreen, colors.accentBlue, colors.accentAmber,
+                Color(0xFF8B5CF6),
+                Color(0xFFEC4899),
+            )
+            val slices = categoryCounts.mapIndexed { i, (cat, count) ->
+                Triple(cat, count.toFloat(), palette[i % palette.size])
             }
+            KPieChart(slices, size = 104.dp, centerLabel = "${allFacts.size}")
         }
 
-        // -- Export --
-        Section(title = "Export") {
+        Spacer(Modifier.height(14.dp))
+        KPanel(
+            title = "Export",
+            subtitle = "portable JSON package",
+            icon = { PanelIcon(Icons.Default.CloudUpload) }
+        ) {
+            Text(
+                "Writes every verified and pending fact into one package in Karen's backups folder.",
+                color = colors.textSecondary,
+                fontSize = 12.sp,
+                lineHeight = 17.sp
+            )
+            Spacer(Modifier.height(10.dp))
             if (exporting) {
-                LinearProgressIndicator(
-                    modifier = Modifier.fillMaxWidth(),
-                    color = colors.accentGreen,
-                    trackColor = colors.surfaceHover
+                KProgressBar(1f)
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Writing ${allFacts.size} facts…",
+                    color = colors.accentBlue,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium
                 )
-                Spacer(Modifier.height(4.dp))
-                KV("Status", "Writing ${allFacts.size} facts…", hl = true)
             } else {
-                Button(
+                KPrimaryButton(
+                    label = "Export memory",
                     onClick = {
                         exporting = true
                         exportResult = null
@@ -795,78 +1379,85 @@ fun MemoryTransferScreen(onOpenDrawer: () -> Unit = {}, onNavigateToHome: () -> 
                             refreshKey++
                         }
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = colors.accentGreen)
-                ) { Text("Export memory", fontSize = 13.sp) }
+                    modifier = Modifier.fillMaxWidth()
+                )
             }
             if (exportResult != null) {
-                Spacer(Modifier.height(4.dp))
-                KCard(exportResult!!, "Package is offline and portable")
-            }
-        }
-
-        // -- Existing backups --
-        if (existingBackups.isNotEmpty()) {
-            Section(title = "Existing backups (${existingBackups.size})") {
-                existingBackups.take(3).forEach { f ->
-                    KV(f.name, "${fmtBytes(f.length())} · ${java.text.SimpleDateFormat("dd MMM, HH:mm", java.util.Locale.getDefault()).format(java.util.Date(f.lastModified()))}")
-                }
-                if (existingBackups.size > 3) {
-                    KV("…", "+${existingBackups.size - 3} more")
-                }
-            }
-        }
-
-        // -- Import --
-        Section(title = "Import") {
-            if (importPickedName != null && importPreview != null) {
-                val pkg = importPreview!!
-                KCard(
-                    "$importPickedName",
-                    "${pkg.facts.size} facts · schema v${pkg.schemaVersion} · " +
-                        java.text.SimpleDateFormat("dd MMM, HH:mm", java.util.Locale.getDefault())
-                            .format(java.util.Date(pkg.exportedAt))
-                )
-                Spacer(Modifier.height(4.dp))
-                val pool = if (mode == "Verified only") pkg.facts.filter { it.verified } else pkg.facts
-                val newCount = pool.count { f -> allFacts.none { it.id == f.id } }
-                val dupCount = pool.size - newCount
-                KV("New facts", if (mode == "Replace") "${pkg.facts.size} (all — memory is cleared first)" else "$newCount")
-                KV("Duplicates", "$dupCount — skipped")
-                Spacer(Modifier.height(6.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(
-                        onClick = { if (mode == "Replace") confirmReplace = true else applyImport(replace = false) },
-                        colors = ButtonDefaults.buttonColors(containerColor = colors.accentGreen)
-                    ) { Text("Import ($mode)", fontSize = 13.sp) }
-                    OutlinedButton(onClick = {
-                        importPickedName = null
-                        importPreview = null
-                    }) { Text("Cancel", fontSize = 13.sp) }
-                }
-            } else {
-                KCard("No file selected", "Pick a memory backup .json from your device")
-                Spacer(Modifier.height(6.dp))
-                Button(
-                    onClick = { importPicker.launch(arrayOf("application/json")) },
-                    colors = ButtonDefaults.buttonColors(containerColor = colors.accentGreen)
-                ) { Text("Browse files…", fontSize = 13.sp) }
-            }
-        }
-
-        // -- Import mode --
-        Section(title = "Import mode") {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf("Merge", "Verified only", "Replace").forEach { m ->
-                    OutlinedButton(onClick = { mode = m }) {
-                        Text(
-                            m,
-                            fontSize = 12.sp,
-                            color = if (mode == m) colors.accentGreen else colors.textSecondary
-                        )
+                Spacer(Modifier.height(10.dp))
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(colors.surfaceHover)
+                        .border(1.dp, colors.border, RoundedCornerShape(12.dp))
+                        .padding(12.dp),
+                    verticalAlignment = Alignment.Top
+                ) {
+                    Icon(
+                        Icons.Default.CheckCircle,
+                        contentDescription = null,
+                        tint = colors.accentGreen,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Column {
+                        Text(exportResult!!, color = colors.textPrimary, fontSize = 12.5.sp, lineHeight = 17.sp)
+                        Spacer(Modifier.height(2.dp))
+                        Text("Package is offline and portable", color = colors.textMuted, fontSize = 11.sp)
                     }
                 }
             }
-            Spacer(Modifier.height(4.dp))
+            if (existingBackups.isNotEmpty()) {
+                Spacer(Modifier.height(12.dp))
+                KHairline()
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "RECENT BACKUPS",
+                    color = colors.textMuted,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 10.sp,
+                    letterSpacing = 0.5.sp
+                )
+                existingBackups.take(3).forEachIndexed { index, f ->
+                    if (index > 0) KHairline()
+                    ManagerFileRow(
+                        icon = Icons.Default.Archive,
+                        title = f.name,
+                        meta = "${fmtBytes(f.length())} · " +
+                            java.text.SimpleDateFormat("dd MMM, HH:mm", java.util.Locale.getDefault())
+                                .format(java.util.Date(f.lastModified())),
+                        trailing = "JSON",
+                        tone = KTone.Muted
+                    )
+                }
+                if (existingBackups.size > 3) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "+${existingBackups.size - 3} more backups",
+                        color = colors.textMuted,
+                        fontSize = 11.sp
+                    )
+                }
+            }
+        }
+
+        Spacer(Modifier.height(14.dp))
+        KPanel(
+            title = "Import",
+            subtitle = if (importPickedName == null) "no package selected" else "preview ready",
+            icon = { PanelIcon(Icons.Default.Download) },
+            trailing = { if (importPreview != null) KStatusChip("PREVIEW", KTone.Blue, led = true) }
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                listOf("Merge", "Verified only", "Replace").forEach { m ->
+                    KChip(
+                        selectableLabel = m,
+                        selected = mode == m,
+                        onClick = { mode = m }
+                    )
+                }
+            }
+            Spacer(Modifier.height(6.dp))
             Text(
                 when (mode) {
                     "Merge" -> "Adds new facts only — duplicates are skipped by id."
@@ -874,8 +1465,58 @@ fun MemoryTransferScreen(onOpenDrawer: () -> Unit = {}, onNavigateToHome: () -> 
                     else -> "Clears current memory, then imports the package. Requires confirmation."
                 },
                 color = colors.textMuted,
-                fontSize = 12.sp
+                fontSize = 11.5.sp,
+                lineHeight = 16.sp
             )
+            Spacer(Modifier.height(12.dp))
+            KHairline()
+            Spacer(Modifier.height(10.dp))
+
+            if (importPickedName != null && importPreview != null) {
+                val pkg = importPreview!!
+                ManagerFileRow(
+                    icon = Icons.Default.Archive,
+                    title = importPickedName!!,
+                    meta = "${pkg.facts.size} facts · schema v${pkg.schemaVersion} · " +
+                        java.text.SimpleDateFormat("dd MMM, HH:mm", java.util.Locale.getDefault())
+                            .format(java.util.Date(pkg.exportedAt)),
+                    trailing = "JSON",
+                    tone = KTone.Blue
+                )
+                Spacer(Modifier.height(8.dp))
+                val pool = if (mode == "Verified only") pkg.facts.filter { it.verified } else pkg.facts
+                val newCount = pool.count { f -> allFacts.none { it.id == f.id } }
+                val dupCount = pool.size - newCount
+                KTelemetryRow(
+                    "New facts",
+                    if (mode == "Replace") "${pkg.facts.size} (all — memory is cleared first)" else "$newCount",
+                    valueColor = colors.accentGreen
+                )
+                KTelemetryRow("Duplicates", "$dupCount — skipped")
+                Spacer(Modifier.height(10.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    KPrimaryButton(
+                        label = "Import ($mode)",
+                        onClick = { if (mode == "Replace") confirmReplace = true else applyImport(replace = false) },
+                        modifier = Modifier.weight(1f)
+                    )
+                    KSecondaryButton(
+                        label = "Cancel",
+                        onClick = {
+                            importPickedName = null
+                            importPreview = null
+                        },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            } else {
+                ManagerEmptyState(
+                    icon = Icons.Default.Download,
+                    title = "No package selected",
+                    body = "Pick a memory backup .json from your device.",
+                    actionLabel = "Browse files…"
+                ) { importPicker.launch(arrayOf("application/json")) }
+            }
         }
     }
 
@@ -1149,97 +1790,192 @@ fun BackupPackageScreen(onOpenDrawer: () -> Unit = {}, onNavigateToHome: () -> U
 
     KScreen(
         title = "Portable Karen Backup",
-        subtitle = "Real data · offline · no cloud",
+        subtitle = "One offline JSON package · checksums · explicit restore",
         onOpenDrawer = onOpenDrawer,
         onBackClick = onNavigateToHome
     ) {
-        // -- Summary --
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            KpiCard("Chats", "${conversations.size}", modifier = Modifier.weight(1f), tone = KTone.Neutral)
-            KpiCard("Memory", "${memoryFacts.size + pendingFacts.size}", modifier = Modifier.weight(1f), tone = KTone.Primary)
-            KpiCard("Size", fmtBytes(totalPackageBytes), modifier = Modifier.weight(1f), tone = KTone.Muted)
-        }
+        ManagerHero(
+            kicker = "Backup",
+            title = "A portable copy of Karen",
+            subtitle = "Bundle memory, conversations and model metadata into one verified file. Restore only when you choose — nothing syncs in the background.",
+            icon = Icons.Default.Archive,
+            status = "OFFLINE",
+            statusTone = KTone.Success,
+            metrics = listOf(
+                HeroMetric("Chats", "${conversations.size}", KTone.Neutral, "threads"),
+                HeroMetric("Memory", "${memoryFacts.size + pendingFacts.size}", KTone.Primary, "facts"),
+                HeroMetric("Size", fmtBytes(totalPackageBytes), KTone.Muted, "estimated")
+            )
+        )
+        Spacer(Modifier.height(14.dp))
 
-        // -- Backup mode --
-        Section(title = "Backup mode") {
+        KPanel(
+            title = "Backup mode",
+            subtitle = "choose what to include",
+            icon = { PanelIcon(Icons.Default.Save) }
+        ) {
             listOf(
                 "Quick" to "Settings · memory · routines · metadata",
                 "Full" to "+ conversations · indexes · model metadata",
                 "Complete Offline Copy" to "+ selected model binaries · checksums"
             ).forEach { (m, desc) ->
-                val selected = selectedMode == m
+                SelectableTile(
+                    selected = selectedMode == m,
+                    title = m,
+                    subtitle = desc,
+                    onClick = { selectedMode = m },
+                    badge = if (m == "Full") "DEFAULT" else null
+                )
+            }
+            ManagerNote(
+                "Quick keeps the package small. Complete Offline Copy adds model binaries and checksums.",
+                Icons.Default.Info
+            )
+        }
+
+        Spacer(Modifier.height(14.dp))
+        KPanel(
+            title = "Package contents",
+            subtitle = "${packageItems.count { it.included }} of ${packageItems.size} included",
+            icon = { PanelIcon(Icons.Default.Archive, KTone.Blue) }
+        ) {
+            packageItems.forEachIndexed { index, item ->
+                if (index > 0) KHairline()
                 Row(
-                    modifier = Modifier
+                    Modifier
                         .fillMaxWidth()
-                        .padding(vertical = 3.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                        .padding(vertical = 8.dp),
+                    verticalAlignment = Alignment.Top
                 ) {
-                    androidx.compose.material3.RadioButton(selected = selected, onClick = { selectedMode = m })
-                    Column {
-                        Text(m, color = if (selected) colors.accentGreen else colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
-                        Text(desc, color = colors.textMuted, fontSize = 11.5.sp)
+                    Icon(
+                        if (item.included) Icons.Default.CheckCircle else Icons.Default.Info,
+                        contentDescription = null,
+                        tint = if (item.included) colors.accentGreen else colors.textMuted,
+                        modifier = Modifier.size(15.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            item.label,
+                            color = colors.textPrimary,
+                            fontSize = 12.5.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Text(
+                            item.detail,
+                            color = colors.textMuted,
+                            fontSize = 11.sp,
+                            lineHeight = 15.sp
+                        )
                     }
+                    Spacer(Modifier.width(8.dp))
+                    KStatusChip(
+                        if (item.included) "IN" else "SKIP",
+                        if (item.included) KTone.Success else KTone.Muted
+                    )
                 }
             }
         }
 
-        // -- Package contents --
-        Section(title = "Package contents") {
-            packageItems.forEach { item ->
-                KV(item.label, item.detail, hl = item.included && item.label.startsWith("Conversations"))
-            }
-        }
-
-        // -- Actions --
-        Section(title = "Actions") {
+        Spacer(Modifier.height(14.dp))
+        KPanel(
+            title = "Create & restore",
+            subtitle = if (creating) "writing package" else "local only",
+            icon = { PanelIcon(Icons.Default.CloudUpload, KTone.Blue) },
+            trailing = { if (creating) KStatusChip("${(progress * 100).toInt()}%", KTone.Blue) }
+        ) {
             if (creating) {
-                LinearProgressIndicator(
-                    progress = { progress },
-                    modifier = Modifier.fillMaxWidth(),
-                    color = colors.accentGreen,
-                    trackColor = colors.surfaceHover
+                KProgressBar(progress)
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    when {
+                        progress < 0.2f -> "Collecting memory facts…"
+                        progress < 0.8f -> "Writing conversations…"
+                        progress < 1f -> "Hashing & saving…"
+                        else -> "Done"
+                    },
+                    color = colors.accentBlue,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium
                 )
-                Spacer(Modifier.height(4.dp))
-                KV("Status", when {
-                    progress < 0.2f -> "Collecting memory facts…"
-                    progress < 0.8f -> "Writing conversations…"
-                    progress < 1f -> "Hashing & saving…"
-                    else -> "Done"
-                }, hl = true)
             } else {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(
+                    KPrimaryButton(
+                        label = "Create backup",
                         onClick = { createBackup() },
-                        colors = ButtonDefaults.buttonColors(containerColor = colors.accentGreen)
-                    ) { Text("Create backup", fontSize = 13.sp) }
-                    OutlinedButton(onClick = { restorePicker.launch(arrayOf("application/json")) }) {
-                        Text("Restore…", fontSize = 13.sp)
+                        modifier = Modifier.weight(1f)
+                    )
+                    KSecondaryButton(
+                        label = "Restore…",
+                        onClick = { restorePicker.launch(arrayOf("application/json")) },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                ManagerNote(
+                    "Backups are written to Android/data/com.karen/files/backups and never leave the device on their own.",
+                    Icons.Default.Lock
+                )
+            }
+            if (backupResult != null) {
+                Spacer(Modifier.height(10.dp))
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(colors.surfaceHover)
+                        .border(1.dp, colors.border, RoundedCornerShape(12.dp))
+                        .padding(12.dp),
+                    verticalAlignment = Alignment.Top
+                ) {
+                    Icon(
+                        if (backupResult!!.startsWith("Backup created") || backupResult!!.startsWith("Restored"))
+                            Icons.Default.CheckCircle else Icons.Default.Warning,
+                        contentDescription = null,
+                        tint = if (backupResult!!.startsWith("Backup created") || backupResult!!.startsWith("Restored"))
+                            colors.accentGreen else colors.accentAmber,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Column {
+                        Text(backupResult!!, color = colors.textPrimary, fontSize = 12.5.sp, lineHeight = 17.sp)
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            "Package is offline and portable — no cloud account needed",
+                            color = colors.textMuted,
+                            fontSize = 11.sp
+                        )
                     }
                 }
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "Backups are written to Android/data/com.karen/files/backups and never leave the device on their own.",
-                    color = colors.textMuted,
-                    fontSize = 11.5.sp
-                )
             }
         }
 
-        // -- Restore preview --
         val preview = restorePreview
         if (preview != null) {
-            Section(title = "Restore preview — ${preview.fileName}") {
-                KV("Memory facts", "${preview.facts.size} (restored as pending)")
-                KV("Conversations", "${preview.conversations.size}")
-                KV("Model entries", "${preview.models.size} (manifest only)")
-                KV(
+            Spacer(Modifier.height(14.dp))
+            KPanel(
+                title = "Restore preview",
+                subtitle = preview.fileName,
+                icon = { PanelIcon(Icons.Default.Download, KTone.Blue) },
+                trailing = {
+                    KStatusChip(
+                        if (preview.shaOk) "VERIFIED" else "UNVERIFIED",
+                        if (preview.shaOk) KTone.Success else KTone.Amber,
+                        led = true
+                    )
+                }
+            ) {
+                KTelemetryRow("Memory facts", "${preview.facts.size} (restored as pending)")
+                KTelemetryRow("Conversations", "${preview.conversations.size}")
+                KTelemetryRow("Model entries", "${preview.models.size} (manifest only)")
+                KTelemetryRow(
                     "Checksum",
                     if (preview.shaOk) "sha256 verified" else "not verified — older or edited file",
-                    hl = true
+                    valueColor = if (preview.shaOk) colors.accentGreen else colors.accentAmber
                 )
-                Spacer(Modifier.height(6.dp))
+                Spacer(Modifier.height(10.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(
+                    KPrimaryButton(
+                        label = if (restoring) "Restoring…" else "Apply restore",
                         onClick = {
                             val p = preview
                             restoring = true
@@ -1266,30 +2002,21 @@ fun BackupPackageScreen(onOpenDrawer: () -> Unit = {}, onNavigateToHome: () -> U
                                 refreshKey++
                             }
                         },
-                        enabled = !restoring,
-                        colors = ButtonDefaults.buttonColors(containerColor = colors.accentGreen)
-                    ) { Text(if (restoring) "Restoring…" else "Apply restore", fontSize = 13.sp) }
-                    OutlinedButton(onClick = { restorePreview = null }, enabled = !restoring) {
-                        Text("Cancel", fontSize = 13.sp)
-                    }
+                        modifier = Modifier.weight(1f),
+                        enabled = !restoring
+                    )
+                    KSecondaryButton(
+                        label = "Cancel",
+                        onClick = { restorePreview = null },
+                        modifier = Modifier.weight(1f),
+                        enabled = !restoring
+                    )
                 }
             }
         }
 
-        // -- Result --
-        if (backupResult != null) {
-            Section(title = "Result") {
-                KCard(backupResult!!, "Package is offline and portable — no cloud account needed")
-            }
-        }
-
-        // -- Privacy --
-        Section(title = "Privacy rules") {
-            KCard("Explicit action required", "Export, import and deletion each need a tap — nothing silent.")
-            KCard("No silent uploads", "Models and memory never leave the device on their own.")
-            KCard("Import shows diff first", "What will change is previewed before it is applied.")
-            KCard("Checksums everywhere", "Corrupt or partial transfers are rejected.")
-        }
+        Spacer(Modifier.height(14.dp))
+        PrivacyRulesPanel()
     }
 }
 
@@ -1367,94 +2094,145 @@ fun StorageManagerScreen(onOpenDrawer: () -> Unit = {}, onNavigateToHome: () -> 
         onOpenDrawer = onOpenDrawer,
         onBackClick = onNavigateToHome
     ) {
-        // -- Summary cards --
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            KpiCard("Device", fmtBytes(deviceTotal), modifier = Modifier.weight(1f), tone = KTone.Neutral)
-            KpiCard("Karen", fmtBytes(karenTotal), modifier = Modifier.weight(1f), tone = KTone.Primary)
-            KpiCard("Free", fmtBytes(deviceFree), modifier = Modifier.weight(1f), tone = KTone.Muted)
-        }
+        ManagerHero(
+            kicker = "Storage",
+            title = "Karen storage",
+            subtitle = "Every byte is counted live from the app's own folders. Categories update when you return to this screen.",
+            icon = Icons.Default.Storage,
+            status = "SCANNED",
+            statusTone = KTone.Blue,
+            metrics = listOf(
+                HeroMetric("Device", fmtBytes(deviceTotal), KTone.Neutral, "total"),
+                HeroMetric("Karen", fmtBytes(karenTotal), KTone.Primary, "in use"),
+                HeroMetric("Free", fmtBytes(deviceFree), KTone.Success, "available")
+            )
+        )
 
-        // -- Donut --
         if (cats.isNotEmpty()) {
-            Section(title = "Usage breakdown") {
-                val palette = listOf(
-                    colors.accentGreen, colors.accentBlue, colors.accentAmber,
-                    androidx.compose.ui.graphics.Color(0xFF8B5CF6),
-                    androidx.compose.ui.graphics.Color(0xFFEC4899),
-                    androidx.compose.ui.graphics.Color(0xFF06B6D4),
-                    androidx.compose.ui.graphics.Color(0xFFF97316),
-                )
-                val slices = cats.mapIndexed { i, c ->
-                    Triple(c.label, c.bytes.toFloat(), palette[i % palette.size])
-                }
-                KPieChart(slices)
-            }
-        }
-
-        // -- Category bars --
-        Section(title = "Categories") {
-            val maxBytes = cats.maxOfOrNull { it.bytes }?.takeIf { it > 0L } ?: 1L
-            cats.forEach { cat ->
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text(cat.label, color = colors.textPrimary, fontSize = 13.sp)
-                            Text(fmtBytes(cat.bytes), color = colors.textMuted, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
-                        }
-                        LinearProgressIndicator(
-                            progress = { (cat.bytes.toFloat() / maxBytes).coerceIn(0f, 1f) },
-                            modifier = Modifier.fillMaxWidth().height(5.dp),
-                            color = colors.accentBlue,
-                            trackColor = colors.surfaceHover,
-                        )
-                    }
-                    Spacer(Modifier.width(10.dp))
-                    Text(
-                        "${cat.files}",
-                        color = colors.textMuted,
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 11.sp,
-                        modifier = Modifier.width(28.dp),
-                        textAlign = TextAlign.End
-                    )
-                }
-            }
-        }
-
-        // -- Maintenance --
-        Section(title = "Maintenance") {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = {
-                    ctx.cacheDir.deleteRecursively()
-                    toast(ctx, "Cache cleared (${fmtBytes(cacheSize)})")
-                    refreshKey++
-                }) {
-                    Text("Clear cache${if (cacheSize > 0) " (${fmtBytes(cacheSize)})" else ""}", fontSize = 12.sp)
-                }
-                OutlinedButton(onClick = {
-                    val d = java.io.File(ctx.getExternalFilesDir(null), "updates")
-                    val freed = walkSize(d).first
-                    d.listFiles()?.forEach { it.delete() }
-                    toast(ctx, "Downloads cleared (${fmtBytes(freed)})")
-                    refreshKey++
-                }) { Text("Clear downloads", fontSize = 12.sp) }
-            }
-            Spacer(Modifier.height(4.dp))
+            Spacer(Modifier.height(14.dp))
             Text(
-                "User documents are never deleted automatically. Large operations warn first.",
+                "USAGE BREAKDOWN",
                 color = colors.textMuted,
-                fontSize = 12.sp
+                fontFamily = FontFamily.Monospace,
+                fontSize = 10.5.sp,
+                letterSpacing = 0.6.sp,
+                modifier = Modifier.padding(bottom = 8.dp)
+            )
+            val palette = listOf(
+                colors.accentGreen, colors.accentBlue, colors.accentAmber,
+                Color(0xFF8B5CF6),
+                Color(0xFFEC4899),
+                Color(0xFF06B6D4),
+                Color(0xFFF97316),
+            )
+            val slices = cats.mapIndexed { i, c ->
+                Triple(c.label, c.bytes.toFloat(), palette[i % palette.size])
+            }
+            KPieChart(
+                slices,
+                size = 108.dp,
+                centerLabel = fmtBytes(karenTotal),
+                valueFormatter = { fmtBytes(it.toLong()) }
             )
         }
 
-        // -- Largest files --
+        Spacer(Modifier.height(14.dp))
+        KPanel(
+            title = "Categories",
+            subtitle = "${cats.size} active folders",
+            icon = { PanelIcon(Icons.Default.Storage) }
+        ) {
+            if (cats.isEmpty()) {
+                Text(
+                    "No Karen data found yet. Chat, import a model or add a document to see it here.",
+                    color = colors.textMuted,
+                    fontSize = 12.sp,
+                    lineHeight = 17.sp
+                )
+            }
+            val maxBytes = cats.maxOfOrNull { it.bytes }?.takeIf { it > 0L } ?: 1L
+            cats.forEachIndexed { index, cat ->
+                if (index > 0) Spacer(Modifier.height(10.dp))
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(cat.label, color = colors.textPrimary, fontSize = 12.5.sp)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            fmtBytes(cat.bytes),
+                            color = colors.textMuted,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.sp
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "${cat.files} files",
+                            color = colors.textMuted,
+                            fontSize = 10.sp
+                        )
+                    }
+                }
+                Spacer(Modifier.height(5.dp))
+                KProgressBar(
+                    fraction = (cat.bytes.toFloat() / maxBytes).coerceIn(0f, 1f),
+                    height = 4.dp,
+                    tone = KTone.Blue
+                )
+            }
+        }
+
+        Spacer(Modifier.height(14.dp))
+        KPanel(
+            title = "Maintenance",
+            subtitle = "safe cleanup",
+            icon = { PanelIcon(Icons.Default.Sync, KTone.Amber) }
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                KSecondaryButton(
+                    label = "Clear cache${if (cacheSize > 0) " (${fmtBytes(cacheSize)})" else ""}",
+                    onClick = {
+                        ctx.cacheDir.deleteRecursively()
+                        toast(ctx, "Cache cleared (${fmtBytes(cacheSize)})")
+                        refreshKey++
+                    },
+                    modifier = Modifier.weight(1f)
+                )
+                KSecondaryButton(
+                    label = "Clear downloads",
+                    onClick = {
+                        val d = java.io.File(ctx.getExternalFilesDir(null), "updates")
+                        val freed = walkSize(d).first
+                        d.listFiles()?.forEach { it.delete() }
+                        toast(ctx, "Downloads cleared (${fmtBytes(freed)})")
+                        refreshKey++
+                    },
+                    modifier = Modifier.weight(1f)
+                )
+            }
+            ManagerNote(
+                "User documents are never deleted automatically. Large operations warn first.",
+                Icons.Default.Shield
+            )
+        }
+
         if (largestFiles.isNotEmpty()) {
-            Section(title = "Largest files") {
-                largestFiles.forEach { f ->
-                    KV(f.name, "${fmtBytes(f.length())}  ·  ${f.parentFile?.name ?: ""}")
+            Spacer(Modifier.height(14.dp))
+            KPanel(
+                title = "Largest files",
+                subtitle = "top 5 by size",
+                icon = { PanelIcon(Icons.Default.FolderOpen) }
+            ) {
+                largestFiles.forEachIndexed { index, f ->
+                    if (index > 0) KHairline()
+                    ManagerFileRow(
+                        icon = Icons.Default.FolderOpen,
+                        title = f.name,
+                        meta = f.parentFile?.name ?: "Karen",
+                        trailing = fmtBytes(f.length()),
+                        tone = KTone.Muted
+                    )
                 }
             }
         }
@@ -1503,134 +2281,208 @@ fun MigrationScreen(onOpenDrawer: () -> Unit = {}, onNavigateToHome: () -> Unit 
 
     KScreen(
         title = "Offline Migration",
-        subtitle = "Real data · no cloud account needed",
+        subtitle = "Phone-to-phone · no cloud account · verified files",
         onOpenDrawer = onOpenDrawer,
         onBackClick = onNavigateToHome
     ) {
-        // -- Summary --
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            KpiCard("Chats", "${conversations.size}", modifier = Modifier.weight(1f), tone = KTone.Neutral)
-            KpiCard("Memory", "${memoryFacts.size}", modifier = Modifier.weight(1f), tone = KTone.Primary)
-            KpiCard("Models", "${modelFiles.size}", modifier = Modifier.weight(1f), tone = KTone.Muted)
-        }
+        val complete = step >= steps.size
+        ManagerHero(
+            kicker = "Device migration",
+            title = "Move to a new phone",
+            subtitle = "Follow the checklist, copy the backup folder with USB, SD card or a PC, then verify the checksums on the new device.",
+            icon = Icons.Default.PhoneAndroid,
+            status = if (complete) "COMPLETE" else "STEP ${step + 1}/${steps.size}",
+            statusTone = if (complete) KTone.Success else KTone.Blue,
+            metrics = listOf(
+                HeroMetric("Chats", "${conversations.size}", KTone.Neutral, "threads"),
+                HeroMetric("Memory", "${memoryFacts.size}", KTone.Primary, "facts"),
+                HeroMetric("Models", "${modelFiles.size}", KTone.Success, "GGUF")
+            )
+        )
 
-        // -- Transfer size --
-        Section(title = "Transfer size") {
-            KV("Conversations", fmtBytes(chatBytes))
-            KV("Memory facts", fmtBytes(memoryBytes))
-            KV("Model binaries", fmtBytes(modelBytes), hl = true)
-            KV("Total", fmtBytes(totalMigrationBytes), hl = true)
-        }
-
-        // -- Transfer method --
-        Section(title = "Transfer method") {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf("USB", "SD Card", "PC Folder").forEach { m ->
-                    OutlinedButton(onClick = { transferMethod = m }) {
-                        Text(
-                            m,
-                            fontSize = 12.sp,
-                            color = if (transferMethod == m) colors.accentGreen else colors.textSecondary
-                        )
-                    }
-                }
-            }
+        Spacer(Modifier.height(14.dp))
+        KPanel(
+            title = "Transfer size",
+            subtitle = "what will move",
+            icon = { PanelIcon(Icons.Default.SwapHoriz) }
+        ) {
+            KTelemetryRow("Conversations", fmtBytes(chatBytes))
+            KTelemetryRow("Memory facts", fmtBytes(memoryBytes))
+            KTelemetryRow("Model binaries", fmtBytes(modelBytes), valueColor = colors.accentBlue)
+            Spacer(Modifier.height(6.dp))
+            KHairline()
             Spacer(Modifier.height(4.dp))
-            KCard(
-                when (transferMethod) {
-                    "USB" -> "USB drive"
-                    "SD Card" -> "SD card"
-                    else -> "PC folder"
-                },
-                "Insert $transferMethod and copy the backup folder — no internet required"
+            KTelemetryRow("Total", fmtBytes(totalMigrationBytes), valueColor = colors.accentGreen)
+            ManagerNote(
+                "Model binaries dominate the transfer. A Quick backup moves the rest without the weights.",
+                Icons.Default.Info
             )
         }
 
-        // -- Checklist --
-        Section(title = "Migration checklist") {
+        Spacer(Modifier.height(14.dp))
+        KPanel(
+            title = "Transfer method",
+            subtitle = "offline media",
+            icon = { PanelIcon(Icons.Default.PhoneAndroid) }
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                listOf("USB", "SD Card", "PC Folder").forEach { m ->
+                    KChip(
+                        selectableLabel = m,
+                        selected = transferMethod == m,
+                        onClick = { transferMethod = m }
+                    )
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+            val methodLabel = when (transferMethod) {
+                "USB" -> "USB drive"
+                "SD Card" -> "SD card"
+                else -> "PC folder"
+            }
+            val instruction = when (transferMethod) {
+                "USB" -> "Insert the USB drive and copy the backup folder — no internet required."
+                "SD Card" -> "Insert the SD card and copy the backup folder — no internet required."
+                else -> "Connect to a PC and copy the backup folder — no internet required."
+            }
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(colors.surfaceHover)
+                    .border(1.dp, colors.border, RoundedCornerShape(12.dp))
+                    .padding(12.dp),
+                verticalAlignment = Alignment.Top
+            ) {
+                Icon(
+                    Icons.Default.PhoneAndroid,
+                    contentDescription = null,
+                    tint = colors.accentBlue,
+                    modifier = Modifier.size(17.dp)
+                )
+                Spacer(Modifier.width(9.dp))
+                Column {
+                    Text(
+                        methodLabel,
+                        color = colors.textPrimary,
+                        fontSize = 12.5.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    Text(instruction, color = colors.textMuted, fontSize = 11.5.sp, lineHeight = 15.sp)
+                }
+            }
+        }
+
+        Spacer(Modifier.height(14.dp))
+        KPanel(
+            title = "Migration checklist",
+            subtitle = "$step of ${steps.size} complete",
+            icon = { PanelIcon(Icons.Default.CheckCircle) },
+            trailing = {
+                KStatusChip(
+                    "$step/${steps.size}",
+                    if (complete) KTone.Success else KTone.Blue,
+                    led = true
+                )
+            }
+        ) {
             steps.forEachIndexed { i, s ->
                 val isDone = step > i
                 val isCurrent = step == i
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 4.dp),
-                    verticalAlignment = Alignment.Top
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(24.dp)
-                            .clip(CircleShape)
-                            .background(
-                                when {
-                                    isDone -> colors.accentGreen
-                                    isCurrent -> colors.accentBlue
-                                    else -> colors.surfaceHover
-                                }
-                            ),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        if (isDone) {
-                            Icon(
-                                Icons.Default.Check,
-                                contentDescription = null,
-                                tint = Color.White,
-                                modifier = Modifier.size(14.dp)
-                            )
-                        } else {
-                            Text(
-                                "${i + 1}",
-                                color = if (isCurrent) Color.White else colors.textMuted,
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Box(
+                            modifier = Modifier
+                                .size(24.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    when {
+                                        isDone -> colors.accentGreen
+                                        isCurrent -> colors.accentBlue
+                                        else -> colors.surfaceHover
+                                    }
+                                )
+                                .border(
+                                    1.dp,
+                                    when {
+                                        isDone -> colors.accentGreen
+                                        isCurrent -> colors.accentBlue
+                                        else -> colors.border
+                                    },
+                                    CircleShape
+                                ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (isDone) {
+                                Icon(
+                                    Icons.Default.Check,
+                                    contentDescription = null,
+                                    tint = Color.White,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                            } else {
+                                Text(
+                                    "${i + 1}",
+                                    color = if (isCurrent) Color.White else colors.textMuted,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                        if (i < steps.lastIndex) {
+                            Box(
+                                Modifier
+                                    .width(1.dp)
+                                    .height(22.dp)
+                                    .background(if (isDone) colors.accentGreen.copy(alpha = 0.40f) else colors.border)
                             )
                         }
                     }
                     Spacer(Modifier.width(10.dp))
-                    Column(Modifier.weight(1f)) {
+                    Column(
+                        Modifier
+                            .weight(1f)
+                            .padding(top = 2.dp, bottom = if (i < steps.lastIndex) 8.dp else 0.dp)
+                    ) {
                         Text(
                             s.title,
                             color = if (isDone) colors.accentGreen else colors.textPrimary,
                             fontSize = 13.sp,
-                            fontWeight = FontWeight.Medium
+                            fontWeight = FontWeight.Medium,
+                            lineHeight = 18.sp
                         )
                         Text(
                             s.description,
                             color = colors.textMuted,
-                            fontSize = 11.5.sp
+                            fontSize = 11.5.sp,
+                            lineHeight = 15.sp
                         )
                     }
                 }
             }
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(12.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(
+                KSecondaryButton(
+                    label = "Back",
                     onClick = { step = (step - 1).coerceAtLeast(0) },
+                    modifier = Modifier.weight(1f),
                     enabled = step > 0
-                ) { Text("Back", fontSize = 12.sp) }
-                Button(
+                )
+                KPrimaryButton(
+                    label = if (step >= steps.size - 1) "Finish" else "Next step",
                     onClick = {
                         step = (step + 1).coerceAtMost(steps.size)
                         if (step >= steps.size) {
                             toast(ctx, "Checklist complete — verify the files on the new phone before deleting the old copy")
                         }
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = colors.accentGreen)
-                ) {
-                    Text(
-                        if (step >= steps.size - 1) "Finish" else "Next step",
-                        fontSize = 12.sp
-                    )
-                }
+                    modifier = Modifier.weight(1f)
+                )
             }
         }
 
-        // -- Privacy --
-        Section(title = "Privacy rules") {
-            KCard("Explicit action required", "Export, import and deletion each need a tap — nothing silent.")
-            KCard("No silent uploads", "Models and memory never leave the device on their own.")
-            KCard("Import shows diff first", "What will change is previewed before it is applied.")
-            KCard("Checksums everywhere", "Corrupt or partial transfers are rejected.")
-        }
+        Spacer(Modifier.height(14.dp))
+        PrivacyRulesPanel()
     }
 }

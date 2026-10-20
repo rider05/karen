@@ -31,6 +31,7 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -142,7 +143,7 @@ fun NodesScreen(onNavigateToHome: () -> Unit = {}) {
             }
 
             if (workers.isNotEmpty()) {
-                item { KSectionLabel("SLAVE NODES · ${workers.size}") }
+                item { KSectionLabel("WORKER NODES · ${workers.size}") }
                 items(workers, key = { "worker:" + it.ip }) { node ->
                     WorkerPanel(
                         node = node,
@@ -176,7 +177,7 @@ fun NodesScreen(onNavigateToHome: () -> Unit = {}) {
             }
 
             if (clients.isNotEmpty()) {
-                item { KSectionLabel("DEVICES · ${clients.size}") }
+                item { KSectionLabel("OTHER DEVICES · ${clients.size}") }
                 items(clients, key = { "device:" + it.ip }) { node ->
                     DevicePanel(
                         node = node,
@@ -300,6 +301,52 @@ private fun restartKarenServer(context: Context) {
 }
 
 /**
+ * Quiet disclosure used by the node cards. Secondary telemetry stays one tap
+ * away, so the first screenful is status and controls instead of every reading.
+ */
+@Composable
+private fun CollapsibleDetails(
+    title: String,
+    subtitle: String? = null,
+    initiallyExpanded: Boolean = false,
+    content: @Composable () -> Unit
+) {
+    val colors = LocalKarenColors.current
+    var open by rememberSaveable { mutableStateOf(initiallyExpanded) }
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(8.dp))
+                .clickable { open = !open }
+                .padding(vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    title,
+                    color = if (open) colors.accentGreen else colors.textSecondary,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium
+                )
+                if (subtitle != null) {
+                    Text(subtitle, color = colors.textMuted, fontSize = 10.sp)
+                }
+            }
+            Icon(
+                if (open) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                contentDescription = if (open) "Hide $title" else "Show $title",
+                tint = colors.textMuted,
+                modifier = Modifier.size(18.dp)
+            )
+        }
+        if (open) {
+            Column(Modifier.padding(top = 2.dp)) { content() }
+        }
+    }
+}
+
+/**
  * The phone itself: the two addresses other devices use, live counters, and
  * the server controls — start/stop, LAN exposure, open dashboard, restart.
  * Tapping an address copies it.
@@ -336,10 +383,12 @@ private fun MasterPanel(workersOnline: Int, workersTotal: Int, nodesTotal: Int, 
         }
     ) {
         UrlRow("Worker", "$lanUrl/", highlight = running && lanOn)
-        UrlRow("Console", "$lanUrl/dashboard", highlight = running && lanOn)
-        UrlRow("Local", "$localUrl/dashboard", highlight = running)
+        CollapsibleDetails("More addresses", "console · localhost") {
+            UrlRow("Console", "$lanUrl/dashboard", highlight = running && lanOn)
+            UrlRow("Local", "$localUrl/dashboard", highlight = running)
+        }
 
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(8.dp))
         KHairline()
         Spacer(Modifier.height(12.dp))
 
@@ -375,13 +424,16 @@ private fun MasterPanel(workersOnline: Int, workersTotal: Int, nodesTotal: Int, 
             "severe", "critical", "emergency", "shutdown" -> colors.accentRed
             else -> colors.textSecondary
         }
-        KTelemetryRow("CPU", tel.cpu, valueColor = colors.textSecondary)
-        KTelemetryRow("RAM", tel.ram, valueColor = colors.textSecondary)
-        KTelemetryRow("Storage", tel.storage, valueColor = colors.textSecondary)
-        KTelemetryRow("Heat", tel.heat, valueColor = heatColor)
-        KTelemetryRow("Network", tel.network, valueColor = colors.textSecondary)
+        Spacer(Modifier.height(2.dp))
+        CollapsibleDetails("Device telemetry", "CPU · RAM · storage · heat · network") {
+            KTelemetryRow("CPU", tel.cpu, valueColor = colors.textSecondary)
+            KTelemetryRow("RAM", tel.ram, valueColor = colors.textSecondary)
+            KTelemetryRow("Storage", tel.storage, valueColor = colors.textSecondary)
+            KTelemetryRow("Heat", tel.heat, valueColor = heatColor)
+            KTelemetryRow("Network", tel.network, valueColor = colors.textSecondary)
+        }
 
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(8.dp))
         KHairline()
         Spacer(Modifier.height(8.dp))
 
@@ -509,17 +561,22 @@ private fun WorkerPanel(
         val heatText = nodeHeatText(node)
         val diskText = nodeDiskText(node)
         val netText = nodeNetText(node)
-        if (cpuText != null) KTelemetryRow("CPU", cpuText, valueColor = colors.textSecondary)
-        if (ramText != null) KTelemetryRow("RAM", ramText, valueColor = colors.textSecondary)
-        if (heatText != null) KTelemetryRow("Heat", heatText, valueColor = pressureColor(node.pressure, colors))
-        if (diskText != null) KTelemetryRow("Disk", diskText, valueColor = colors.textSecondary)
-        if (netText != null) KTelemetryRow("Network", netText, valueColor = colors.textSecondary)
         KTelemetryRow("Requests", "${node.requests}", valueColor = colors.textSecondary)
         KTelemetryRow(
             "Last seen",
             relTime(now - node.lastSeen),
             valueColor = if (online) colors.accentGreen else colors.textMuted
         )
+        if (listOfNotNull(cpuText, ramText, heatText, diskText, netText).isNotEmpty()) {
+            Spacer(Modifier.height(2.dp))
+            CollapsibleDetails("Telemetry", "CPU · RAM · heat · disk · network") {
+                if (cpuText != null) KTelemetryRow("CPU", cpuText, valueColor = colors.textSecondary)
+                if (ramText != null) KTelemetryRow("RAM", ramText, valueColor = colors.textSecondary)
+                if (heatText != null) KTelemetryRow("Heat", heatText, valueColor = pressureColor(node.pressure, colors))
+                if (diskText != null) KTelemetryRow("Disk", diskText, valueColor = colors.textSecondary)
+                if (netText != null) KTelemetryRow("Network", netText, valueColor = colors.textSecondary)
+            }
+        }
 
         // Model assignment (master side): the whole point is that it is visible
         // here and nameable from here — the worker page labels it "assigned on
@@ -653,35 +710,40 @@ private fun DevicePanel(node: NodeInfo, now: Long, onForget: () -> Unit) {
             }
         }
     ) {
-        if (hasGpu) {
-            KTelemetryRow(
-                "GPU",
-                buildString {
-                    append(node.gpu.ifBlank { "WebGPU ready" })
-                    if (node.gflops > 0.0) {
-                        append(String.format(Locale.US, " · %.0f GFLOPS", node.gflops))
-                    }
-                    if (node.maxBufferMB > 0) append(" · buf ${node.maxBufferMB} MB")
-                },
-                valueColor = colors.accentBlue
-            )
-        }
         val cpuText = nodeCpuText(node)
         val ramText = nodeRamText(node)
         val heatText = nodeHeatText(node)
         val diskText = nodeDiskText(node)
         val netText = nodeNetText(node)
-        if (cpuText != null) KTelemetryRow("CPU", cpuText, valueColor = colors.textSecondary)
-        if (ramText != null) KTelemetryRow("RAM", ramText, valueColor = colors.textSecondary)
-        if (heatText != null) KTelemetryRow("Heat", heatText, valueColor = pressureColor(node.pressure, colors))
-        if (diskText != null) KTelemetryRow("Disk", diskText, valueColor = colors.textSecondary)
-        if (netText != null) KTelemetryRow("Network", netText, valueColor = colors.textSecondary)
         KTelemetryRow("Requests", "${node.requests}", valueColor = colors.textSecondary)
         KTelemetryRow(
             "Last seen",
             relTime(now - node.lastSeen),
             valueColor = if (active) colors.accentGreen else colors.textMuted
         )
+        if (hasGpu || listOfNotNull(cpuText, ramText, heatText, diskText, netText).isNotEmpty()) {
+            Spacer(Modifier.height(2.dp))
+            CollapsibleDetails("Device details", "GPU · CPU · RAM · heat · disk · network") {
+                if (hasGpu) {
+                    KTelemetryRow(
+                        "GPU",
+                        buildString {
+                            append(node.gpu.ifBlank { "WebGPU ready" })
+                            if (node.gflops > 0.0) {
+                                append(String.format(Locale.US, " · %.0f GFLOPS", node.gflops))
+                            }
+                            if (node.maxBufferMB > 0) append(" · buf ${node.maxBufferMB} MB")
+                        },
+                        valueColor = colors.accentBlue
+                    )
+                }
+                if (cpuText != null) KTelemetryRow("CPU", cpuText, valueColor = colors.textSecondary)
+                if (ramText != null) KTelemetryRow("RAM", ramText, valueColor = colors.textSecondary)
+                if (heatText != null) KTelemetryRow("Heat", heatText, valueColor = pressureColor(node.pressure, colors))
+                if (diskText != null) KTelemetryRow("Disk", diskText, valueColor = colors.textSecondary)
+                if (netText != null) KTelemetryRow("Network", netText, valueColor = colors.textSecondary)
+            }
+        }
     }
 }
 
@@ -702,33 +764,56 @@ private fun EmptyPanel() {
     ) {
         Text(
             "Start the local server, then open its address from another device on the same Wi-Fi. " +
-                "Other devices work as slave nodes automatically: open the worker page (LAN address + /) " +
-                "in Chrome/Edge with WebGPU and save the token once — the phone itself always stays master. " +
-                "The control dashboard lives at LAN address + /dashboard. " +
-                "On a plain http:// address every browser hides WebGPU — the page's GPU panel then prints " +
-                "the exact fix: on the laptop run tools\\karen-tunnel.ps1 -Phone <this phone's IP> and use " +
-                "the 127.0.0.1 address it opens.",
-            color = colors.textMuted,
+                "Other devices work as slave nodes automatically.",
+            color = colors.textSecondary,
             fontSize = 12.sp,
             lineHeight = 17.sp
         )
+        Spacer(Modifier.height(4.dp))
+        CollapsibleDetails("Setup guide", "worker page · dashboard · WebGPU fix") {
+            Text(
+                "Open the worker page (LAN address + /) in Chrome/Edge with WebGPU and save the token once — " +
+                    "the phone itself always stays master. The control dashboard lives at LAN address + /dashboard. " +
+                    "On a plain http:// address every browser hides WebGPU — the page's GPU panel then prints " +
+                    "the exact fix: on the laptop run tools\\karen-tunnel.ps1 -Phone <this phone's IP> and use " +
+                    "the 127.0.0.1 address it opens.",
+                color = colors.textMuted,
+                fontSize = 12.sp,
+                lineHeight = 17.sp
+            )
+        }
     }
 }
 
 @Composable
 private fun FooterNote() {
-    Text(
-        "Names come from each device or its network host name. A slave node runs prompts on its own GPU — " +
-            "Cancel task stops its current prompt, Disconnect stops the node for good. It shows offline " +
-            "after 90 s without a call. CPU, RAM, disk and network are reported by each device itself: " +
-            "browsers expose no temperature sensor, so a slave node's heat shows as its CPU pressure state, " +
-            "while this phone's card shows the real battery °C and thermal status. RAM is the browser's own " +
-            "estimate (capped at 8 GB), disk is the storage quota (~free space).",
-        color = LocalKarenColors.current.textMuted,
-        fontSize = 11.sp,
-        lineHeight = 15.sp,
-        modifier = Modifier.padding(top = 4.dp, bottom = 4.dp)
-    )
+    val colors = LocalKarenColors.current
+    KPanel(
+        title = "About these readings",
+        subtitle = "names · heartbeat · sensors",
+        icon = { Icon(Icons.Default.Info, contentDescription = null, tint = colors.textMuted, modifier = Modifier.size(18.dp)) }
+    ) {
+        Text(
+            "Offline window 90 s · browser readings are estimates · this phone's heat is a real sensor.",
+            color = colors.textMuted,
+            fontSize = 11.5.sp,
+            lineHeight = 16.sp
+        )
+        Spacer(Modifier.height(2.dp))
+        CollapsibleDetails("What each field means", "names · cancellation · telemetry") {
+            Text(
+                "Names come from each device or its network host name. A slave node runs prompts on its own GPU — " +
+                    "Cancel task stops its current prompt, Disconnect stops the node for good. It shows offline " +
+                    "after 90 s without a call. CPU, RAM, disk and network are reported by each device itself: " +
+                    "browsers expose no temperature sensor, so a slave node's heat shows as its CPU pressure state, " +
+                    "while this phone's card shows the real battery °C and thermal status. RAM is the browser's own " +
+                    "estimate (capped at 8 GB), disk is the storage quota (~free space).",
+                color = colors.textMuted,
+                fontSize = 11.5.sp,
+                lineHeight = 16.sp
+            )
+        }
+    }
 }
 
 /** Labeled switch row used by the master controls. */

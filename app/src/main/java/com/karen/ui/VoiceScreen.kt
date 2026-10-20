@@ -107,12 +107,21 @@ fun VoiceScreen(
     var fishVoice by remember { mutableStateOf(UserPrefs.fishVoiceId(personaCtx)) }
     var fishVoiceName by remember { mutableStateOf(UserPrefs.fishVoiceName(personaCtx)) }
     var showVoicePicker by remember { mutableStateOf(false) }
+    // Chat model used by Live mode. Picking a specific model disables auto
+    // routing for voice turns, exactly like the chat model sheet.
+    var showModelSheet by remember { mutableStateOf(false) }
+    var selectedModel by remember { mutableStateOf(UserPrefs.selectedModel(personaCtx)) }
+    var autoRoute by remember { mutableStateOf(UserPrefs.autoRoute(personaCtx)) }
     val selectedVoiceLabel = fishVoiceDisplayName(fishVoice, fishVoiceName)
     val activeVoiceLabel = if (CloudTts.available(personaCtx)) selectedVoiceLabel else voicePersona
 
-    // System back closes the voice picker first, then Live mode.
+    // System back closes the voice picker first, then the model sheet, then Live mode.
     androidx.activity.compose.BackHandler {
-        if (showVoicePicker) showVoicePicker = false else onClose()
+        when {
+            showVoicePicker -> showVoicePicker = false
+            showModelSheet -> showModelSheet = false
+            else -> onClose()
+        }
     }
 
     // Voice chat loop: STT transcript → model API → human-spoken TTS reply.
@@ -727,19 +736,51 @@ fun VoiceScreen(
             }
         }
 
-        // Live status card: centered, rounded on all four corners.
+        // Live control strip: model selection + transparent status, moved
+        // below the top bar so it no longer crowds the close/voice controls.
         Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.Center
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .fillMaxWidth()
+                .padding(top = 72.dp),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically
         ) {
             Row(
                 modifier = Modifier
-                    .clip(RoundedCornerShape(16.dp))
+                    .clip(RoundedCornerShape(20.dp))
                     .background(colors.surface)
-                    .border(1.dp, colors.border, RoundedCornerShape(16.dp))
-                    .padding(horizontal = 18.dp, vertical = 10.dp),
+                    .border(1.dp, colors.border, RoundedCornerShape(20.dp))
+                    .clickable { showModelSheet = true }
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                Icon(
+                    imageVector = Icons.Default.AutoAwesome,
+                    contentDescription = null,
+                    tint = colors.accentBlue,
+                    modifier = Modifier.size(14.dp)
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    text = if (autoRoute) "Auto model" else selectedModel.ifBlank { "Choose model" },
+                    color = colors.textPrimary,
+                    fontSize = 12.5.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    modifier = Modifier.widthIn(max = 96.dp)
+                )
+                Spacer(Modifier.width(4.dp))
+                Icon(
+                    imageVector = Icons.Default.KeyboardArrowDown,
+                    contentDescription = "Change chat model",
+                    tint = colors.textMuted,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+            Spacer(Modifier.width(10.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
                     modifier = Modifier
                         .size(8.dp)
@@ -753,7 +794,7 @@ fun VoiceScreen(
                             }
                         )
                 )
-                Spacer(Modifier.width(8.dp))
+                Spacer(Modifier.width(7.dp))
                 Text(
                     text = when {
                         voiceStt.state.isListening -> "Listening..."
@@ -763,8 +804,11 @@ fun VoiceScreen(
                         else -> "Ready · Tap to Speak"
                     },
                     color = colors.textSecondary,
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Medium
+                    fontSize = 12.5.sp,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    modifier = Modifier.widthIn(max = 140.dp)
                 )
             }
         }
@@ -1078,6 +1122,29 @@ fun VoiceScreen(
                     UserPrefs.setFishVoiceId(personaCtx, id)
                     UserPrefs.setFishVoiceName(personaCtx, name)
                     showVoicePicker = false
+                }
+            )
+        }
+
+        if (showModelSheet) {
+            ModelSelectorSheet(
+                selectedModel = selectedModel,
+                onSelectModel = { name ->
+                    selectedModel = name
+                    UserPrefs.setSelectedModel(personaCtx, name)
+                    UserPrefs.pushRecentModel(personaCtx, name)
+                    if (autoRoute) {
+                        autoRoute = false
+                        UserPrefs.setAutoRoute(personaCtx, false)
+                    }
+                    voiceNeedsModel = false
+                },
+                onDismiss = { showModelSheet = false },
+                onOpenModelManager = onOpenModelManager,
+                autoRoute = autoRoute,
+                onSelectAuto = {
+                    autoRoute = true
+                    UserPrefs.setAutoRoute(personaCtx, true)
                 }
             )
         }

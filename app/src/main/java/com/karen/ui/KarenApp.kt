@@ -66,7 +66,7 @@ fun KarenSplashScreen() {
 }
 
 @Composable
-fun KarenApp(startScreen: String = "Home") {
+fun KarenApp(startScreen: String = "Home", shakeSignal: Int = 0) {
     var showSplash by remember { mutableStateOf(true) }
     LaunchedEffect(Unit) {
         delay(1800)
@@ -91,6 +91,15 @@ fun KarenApp(startScreen: String = "Home") {
         var historyVersion by remember { mutableStateOf(0) }
         var openChatId by remember { mutableStateOf<String?>(null) }
         var newChatSignal by remember { mutableStateOf(0) }
+
+        // Shake gesture from MainActivity: close any drawer and land on Karen
+        // Settings. The activity debounces the sensor, so one shake = one jump.
+        LaunchedEffect(shakeSignal) {
+            if (shakeSignal > 0 && currentScreen != "Settings") {
+                coroutineScope.launch { drawerState.close() }
+                currentScreen = "Settings"
+            }
+        }
 
         // Recently-opened feed (Home card). Chat and Canvas carry their own
         // entries — only other screens are recorded here.

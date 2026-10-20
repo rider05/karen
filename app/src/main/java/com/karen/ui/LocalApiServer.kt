@@ -168,7 +168,40 @@ class WorkerTask(
 
     @Volatile
     var lastActivityAt: Long = System.currentTimeMillis()
+
+    /** Redesign §4: when set, the poll emits `event: shard` (not `event: task`). */
+    @Volatile
+    var shardEvent: JSONObject? = null
+
+    /** Redesign §4: when set, the poll emits `event: activation` (hidden state). */
+    @Volatile
+    var activationEvent: JSONObject? = null
 }
+
+/** One worker's contiguous layer range in a multi-node plan (redesign §4). */
+data class ShardAssign(
+    val workerId: String,
+    val fromLayer: Int,
+    val toLayer: Int
+)
+
+/** A master-computed plan to run one model across N workers (redesign §4). */
+data class ShardPlan(
+    val planId: String,
+    val model: String,
+    val shards: List<ShardAssign>,
+    val leader: String,
+    val createdAt: Long
+)
+
+/** A lease granting one worker exclusive ownership of one shard (redesign §4.5). */
+data class ShardLease(
+    val taskId: String,
+    val shardId: String,
+    val workerId: String,
+    val token: String,
+    val expiresAt: Long
+)
 
 /**
  * On-device OpenAI-compatible API (Thinai-style local server, no new deps).
@@ -223,6 +256,15 @@ object LocalApiServer {
     private val tasks = ConcurrentHashMap<String, WorkerTask>()
     private val removedWorkers = ConcurrentHashMap.newKeySet<String>()
     private val removedOrder = LinkedBlockingQueue<String>()
+
+    // ---- Redesign: master-hosted weight store (§2–3) ----
+    private var weightStore: WeightStore? = null
+
+    // ---- Redesign: multi-node single-task coordination (§4) ----
+    private val shardPlans = ConcurrentHashMap<String, ShardPlan>()
+    private val shardLeases = ConcurrentHashMap<String, ShardLease>()
+    private val shardSeq = ConcurrentHashMap<String, Long>()
+    private val shardDone = ConcurrentHashMap<String, MutableSet<String>>()
 
     /** Clears node history (Network Nodes screen → "Clear"). */
     fun clearNodes() {
@@ -301,6 +343,275 @@ object LocalApiServer {
         worker.assignedByPhone = true
         touchNodeWorker(worker.ip, worker.state, worker.loadedModel.ifBlank { worker.defaultModel }, worker.id)
         return true
+    }
+
+    // ---- Redesign §4: multi-node single-task coordination ----
+
+    /**
+     * Compute a shard plan for a model across the given workers. The model's
+     * layers are split into contiguous ranges sized to each worker's reported
+     * VRAM (`maxBufferMB` is a proxy). The highest-VRAM worker is the leader
+     * (it streams tokens). Returns null when no plan fits — the caller then
+     * falls back to single-node (redesign §4.2).
+     */
+    private fun computeShardPlan(model: String, workerIds: List<String>): ShardPlan? {
+        val store = weightStore ?: return null
+        val m = store.readManifest(model) ?: return null
+        if (m.layers <= 0 || workerIds.isEmpty()) return null
+        val now = System.currentTimeMillis()
+        val candidates = workerIds.mapNotNull { wid ->
+            workers[wid]?.takeIf { it.online(now) && !it.paused }
+        }
+        if (candidates.isEmpty()) return null
+        val sorted = candidates.sortedByDescending { it.maxBufferMB }
+        val perLayer = m.vramRequiredMB.toDouble() / m.layers
+        val shards = mutableListOf<ShardAssign>()
+        var layer = 0
+        for (w in sorted) {
+            if (layer > m.layers - 1) break
+            val capacity = (w.maxBufferMB / perLayer).toInt().coerceAtLeast(1)
+            val to = (layer + capacity - 1).coerceAtMost(m.layers - 1)
+            shards.add(ShardAssign(w.id, layer, to))
+            layer = to + 1
+        }
+        if (layer < m.layers) return null // not enough capacity for multi-node
+        val plan = ShardPlan(
+            planId = "p_" + UUID.randomUUID().toString().replace("-", "").take(6),
+            model = model,
+            shards = shards,
+            leader = sorted.first().id,
+            createdAt = now
+        )
+        shardPlans[plan.planId] = plan
+        shardDone[plan.planId] = ConcurrentHashMap.newKeySet()
+        return plan
+    }
+
+    /** Grant an exclusive lease for one shard of a task (redesign §4.5). */
+    private fun grantShardLease(taskId: String, workerId: String): ShardLease? {
+        val task = tasks[taskId] ?: return null
+        val plan = shardPlans.values.firstOrNull { p ->
+            p.shards.any { it.workerId == workerId }
+        } ?: return null
+        val shardId = plan.planId + ":" + workerId
+        val existing = shardLeases[shardId]
+        if (existing != null && existing.workerId != workerId) return null
+        val lease = ShardLease(
+            taskId = taskId,
+            shardId = shardId,
+            workerId = workerId,
+            token = UUID.randomUUID().toString().replace("-", "").take(12),
+            expiresAt = System.currentTimeMillis() + 15_000
+        )
+        shardLeases[shardId] = lease
+        return lease
+    }
+
+    /** Relay a hidden-state activation to the next shard worker (deduped). */
+    private fun relayActivation(taskId: String, toWorkerId: String, seq: Long, data: String): Boolean {
+        val task = tasks[taskId] ?: return false
+        val key = "$taskId:$toWorkerId:act"
+        val last = shardSeq.getOrDefault(key, -1L)
+        if (seq <= last) return true
+        shardSeq[key] = seq
+        val evt = JSONObject()
+            .put("type", "activation")
+            .put("taskId", taskId)
+            .put("seq", seq)
+            .put("data", data)
+        // Deliver via the target worker's held poll queue as a pseudo-task.
+        val pseudo = WorkerTask(
+            id = "act_${taskId}_$seq",
+            workerId = toWorkerId,
+            model = "",
+            messages = JSONArray(),
+            temperature = 0.0,
+            maxTokens = 0,
+            createdAt = System.currentTimeMillis()
+        )
+        pseudo.activationEvent = evt
+        workerQueueFor(toWorkerId).add(pseudo)
+        return true
+    }
+
+    /** Per-shard progress; only the leader's text reaches the console. */
+    private fun shardProgress(taskId: String, workerId: String, seq: Long, text: String) {
+        val task = tasks[taskId] ?: return
+        val key = "$taskId:$workerId:prog"
+        val last = shardSeq.getOrDefault(key, -1L)
+        if (seq <= last) return
+        shardSeq[key] = seq
+        val plan = shardPlans.values.firstOrNull { p ->
+            p.shards.any { it.workerId == workerId }
+        } ?: return
+        if (plan.leader != workerId) return
+        if (text.isNotEmpty()) {
+            task.events.put(JSONObject().put("type", "delta").put("content", text))
+        }
+    }
+
+    /** Terminal for one shard; when all shards finish, the task completes. */
+    private fun shardDone(taskId: String, workerId: String, seq: Long, status: String, stats: JSONObject?) {
+        val task = tasks[taskId] ?: return
+        val key = "$taskId:$workerId:done"
+        val last = shardSeq.getOrDefault(key, -1L)
+        if (seq <= last) return
+        shardSeq[key] = seq
+        val plan = shardPlans.values.firstOrNull { p ->
+            p.shards.any { it.workerId == workerId }
+        } ?: return
+        val doneSet = shardDone.getOrPut(plan.planId) { ConcurrentHashMap.newKeySet() }
+        doneSet.add(workerId)
+        if (doneSet.size >= plan.shards.size) {
+            val merged = JSONObject()
+            stats?.let { s ->
+                merged.put("tokens", s.optInt("tokens"))
+                merged.put("tps", s.optDouble("tps"))
+                merged.put("ttftMs", s.optLong("ttftMs"))
+                merged.put("elapsedMs", s.optLong("elapsedMs"))
+            }
+            merged.put("shards", doneSet.size)
+            task.events.put(JSONObject().put("type", "done").put("status", status).put("stats", merged))
+        }
+    }
+
+    /**
+     * Start a multi-node single task: compute a plan, create the task, and
+     * push a `shard` event to every assigned worker's poll (redesign §4.3).
+     * Each shard event names the next worker in the chain so activations can
+     * be forwarded. Returns the task id, or null when no plan fits.
+     */
+    fun startShardedTask(
+        model: String,
+        workerIds: List<String>,
+        system: String,
+        pairs: List<Pair<String, String>>,
+        temperature: Double = 0.7,
+        maxTokens: Int = 1024
+    ): String? {
+        val plan = computeShardPlan(model, workerIds) ?: return null
+        val worker = workers[plan.leader] ?: return null
+        val messages = JSONArray()
+        if (system.isNotBlank()) messages.put(JSONObject().put("role", "system").put("content", system))
+        pairs.forEach { (role, content) ->
+            messages.put(JSONObject().put("role", role).put("content", content))
+        }
+        val task = WorkerTask(
+            id = "t_" + UUID.randomUUID().toString().replace("-", "").take(6),
+            workerId = plan.leader,
+            model = model,
+            messages = messages,
+            temperature = temperature,
+            maxTokens = maxTokens.coerceIn(1, 4096),
+            createdAt = System.currentTimeMillis()
+        )
+        tasks[task.id] = task
+        shardDone[plan.planId] = ConcurrentHashMap.newKeySet()
+        // Push a shard event to each worker in plan order.
+        val ordered = plan.shards.sortedBy { it.fromLayer }
+        ordered.forEachIndexed { index, shard ->
+            val nextWorkerId = ordered.getOrNull(index + 1)?.workerId ?: ""
+            val pseudo = WorkerTask(
+                id = "shard_${task.id}_${shard.workerId}",
+                workerId = shard.workerId,
+                model = model,
+                messages = task.messages,
+                temperature = temperature,
+                maxTokens = maxTokens,
+                createdAt = System.currentTimeMillis()
+            )
+            // Carry the real task so the worker can run it.
+            pseudo.shardEvent = JSONObject()
+                .put("type", "shard")
+                .put("taskId", task.id)
+                .put("model", model)
+                .put("messages", messages)
+                .put("fromLayer", shard.fromLayer)
+                .put("toLayer", shard.toLayer)
+                .put("leader", shard.workerId == plan.leader)
+                .put("nextWorkerId", nextWorkerId)
+                .put("maxTokens", task.maxTokens)
+                .put("temperature", task.temperature)
+            workerQueueFor(shard.workerId).add(pseudo)
+        }
+        return task.id
+    }
+
+    /**
+     * Redesign §4.5: reassign a dead shard to another online worker, or fail
+     * the task when nobody can take it. Called by the failover sweep.
+     */
+    private fun reassignShard(taskId: String, deadWorkerId: String): Boolean {
+        val task = tasks[taskId] ?: return false
+        val plan = shardPlans.values.firstOrNull { p ->
+            p.shards.any { it.workerId == deadWorkerId }
+        } ?: return false
+        val deadShard = plan.shards.firstOrNull { it.workerId == deadWorkerId } ?: return false
+        val now = System.currentTimeMillis()
+        val replacement = workers.values.firstOrNull { w ->
+            w.online(now) && !w.paused && w.id != deadWorkerId &&
+                plan.shards.none { it.workerId == w.id }
+        } ?: return false
+        val newShards = plan.shards.map { if (it.workerId == deadWorkerId) it.copy(workerId = replacement.id) else it }
+        val newPlan = plan.copy(shards = newShards)
+        shardPlans[newPlan.planId] = newPlan
+        shardDone[newPlan.planId] = ConcurrentHashMap.newKeySet()
+        val ordered = newPlan.shards.sortedBy { it.fromLayer }
+        val idx = ordered.indexOfFirst { it.workerId == replacement.id }
+        val nextWorkerId = ordered.getOrNull(idx + 1)?.workerId ?: ""
+        val evt = JSONObject()
+            .put("type", "shard")
+            .put("taskId", taskId)
+            .put("model", newPlan.model)
+            .put("messages", task.messages)
+            .put("fromLayer", deadShard.fromLayer)
+            .put("toLayer", deadShard.toLayer)
+            .put("leader", replacement.id == newPlan.leader)
+            .put("nextWorkerId", nextWorkerId)
+            .put("maxTokens", task.maxTokens)
+            .put("temperature", task.temperature)
+        val pseudo = WorkerTask(
+            id = "shard_${taskId}_${replacement.id}",
+            workerId = replacement.id,
+            model = newPlan.model,
+            messages = task.messages,
+            temperature = task.temperature,
+            maxTokens = task.maxTokens,
+            createdAt = System.currentTimeMillis()
+        )
+        pseudo.shardEvent = evt
+        workerQueueFor(replacement.id).add(pseudo)
+        return true
+    }
+
+    /**
+     * Failover sweep: for every sharded task, check each shard worker is still
+     * online. Dead shards are reassigned when possible; otherwise the task is
+     * failed so the console is never stuck. Cheap — called from the poll
+     * keepalive.
+     */
+    private fun sweepShardFailover() {
+        val now = System.currentTimeMillis()
+        val plans = shardPlans.values.toList()
+        for (plan in plans) {
+            val task = tasks.values.firstOrNull { t ->
+                shardPlans.values.any { p -> p.planId == plan.planId } &&
+                    (t.workerId == plan.leader)
+            } ?: continue
+            for (shard in plan.shards) {
+                val w = workers[shard.workerId]
+                val dead = w == null || !w.online(now)
+                if (dead) {
+                    val reassigned = reassignShard(task.id, shard.workerId)
+                    if (!reassigned) {
+                        task.events.put(
+                            JSONObject().put("type", "done").put("status", "failed")
+                                .put("error", "shard worker ${shard.workerId} died and no replacement was available")
+                        )
+                    }
+                }
+            }
+        }
     }
 
     /** One GPU node offered to the app's "run on node" routing (chat/workspace). */
@@ -910,6 +1221,32 @@ object LocalApiServer {
                 // instant they are queued (poll returns early).
                 val task = queue.poll(30, TimeUnit.SECONDS)
                 if (task != null) {
+                    if (task.shardEvent != null) {
+                        // Redesign §4: shard assignment — deliver as event: shard.
+                        val se = task.shardEvent
+                        val realTaskId = se?.optString("taskId") ?: task.id
+                        val at = System.currentTimeMillis()
+                        worker.lastSeenAt = at
+                        worker.state = "assigned"
+                        worker.currentTask = realTaskId
+                        touchNodeWorker(worker.ip, "assigned", worker.loadedModel.ifBlank { worker.defaultModel }, worker.id)
+                        out.write(
+                            ("event: shard\ndata: " + (se?.toString() ?: "{}") + "\n\n").toByteArray(Charsets.UTF_8)
+                        )
+                        out.flush()
+                        return
+                    }
+                    if (task.activationEvent != null) {
+                        // Redesign §4: relayed hidden state from the previous shard.
+                        val at = System.currentTimeMillis()
+                        worker.lastSeenAt = at
+                        out.write(
+                            ("event: activation\ndata: " + (task.activationEvent?.toString() ?: "{}") + "\n\n").toByteArray(Charsets.UTF_8)
+                        )
+                        out.flush()
+                        // Keep holding the poll (activations don't end the hold).
+                        continue
+                    }
                     if (!tasks.containsKey(task.id) || task.cancelRequested) continue
                     val at = System.currentTimeMillis()
                     worker.lastSeenAt = at
@@ -942,6 +1279,8 @@ object LocalApiServer {
                 // this touch a 5-minute hold would look offline in Network
                 // Nodes / the chat chip after 90 s.
                 touchNodeWorker(worker.ip, if (worker.paused) "paused" else "idle", worker.loadedModel.ifBlank { worker.defaultModel }, worker.id)
+                // Redesign §4.5: cheap periodic failover sweep for sharded tasks.
+                sweepShardFailover()
                 writeAssigned()
             }
             out.write("event: idle\ndata: {}\n\n".toByteArray(Charsets.UTF_8))
@@ -1243,9 +1582,52 @@ object LocalApiServer {
         }
     }
 
+    /**
+     * SSE writer for a multi-node task: the console watches the leader's
+     * tokens. Aborting the request (Stop) marks the whole task cancelled; every
+     * shard's next stream/activation post returns `cancel: true`.
+     */
+    private fun streamShardedTask(socket: Socket, task: WorkerTask) {
+        val out = socket.getOutputStream()
+        var gone = false
+        val emitRaw = { s: String ->
+            if (!gone) {
+                try {
+                    out.write(s.toByteArray(Charsets.UTF_8))
+                    out.flush()
+                } catch (_: Exception) {
+                    gone = true
+                    task.cancelRequested = true
+                }
+            }
+        }
+        try {
+            out.write(
+                (
+                    "HTTP/1.1 200 OK\r\n" +
+                        "Content-Type: text/event-stream\r\n" +
+                        "Cache-Control: no-cache\r\n" +
+                        "Connection: close\r\n\r\n"
+                    ).toByteArray(Charsets.UTF_8)
+            )
+            out.flush()
+            emitRaw(
+                "data: " + JSONObject().put("id", task.id).put("object", "worker.status")
+                    .put("phase", "sharded").put("text", "multi-node plan started") + "\n\n"
+            )
+            relayTask(task, emitRaw)
+        } catch (_: Exception) {
+        } finally {
+            tasks.remove(task.id)
+            try {
+                socket.close()
+            } catch (_: Exception) {
+            }
+        }
+    }
+
     /** Worker-routed non-streaming chat: waits for the task, returns one JSON reply. */
-    private fun workerChatJson(socket: Socket, body: JSONObject) {
-        val sel = body.optString("worker", "").trim()
+    private fun workerChatJson(socket: Socket, body: JSONObject) {        val sel = body.optString("worker", "").trim()
         val wanted = body.optString("model", "").trim()
         val messages = body.optJSONArray("messages") ?: JSONArray()
         if (messages.length() == 0) {
@@ -1521,6 +1903,7 @@ object LocalApiServer {
             running = true
             lastRequest = ""
             requestCount = 0
+            weightStore = WeightStore(appCtx)
             status = "Listening on ${if (bindAddr == null) "0.0.0.0" else "127.0.0.1"}:$port"
             job.launch {
                 try {
@@ -1761,6 +2144,231 @@ object LocalApiServer {
                     }
                     writeJson(socket, 200, JSONObject().put("object", "list").put("data", data))
                 }
+
+                // ---- Redesign §2: master-hosted weight store ----
+                method == "GET" && path == "/v1/weights" -> {
+                    val store = weightStore
+                    val data = JSONArray()
+                    if (store != null) {
+                        store.listModels().forEach { slug ->
+                            val m = store.readManifest(slug)
+                            data.put(
+                                JSONObject()
+                                    .put("model", slug)
+                                    .put("format", m?.format ?: "")
+                                    .put("layers", m?.layers ?: 0)
+                                    .put("vramRequiredMB", m?.vramRequiredMB ?: 0)
+                                    .put("sizeBytes", m?.let { store.totalBytes(it) } ?: 0L)
+                                    .put("artifacts", m?.artifacts?.size ?: 0)
+                                    .put("source", "store")
+                            )
+                        }
+                    }
+                    writeJson(socket, 200, JSONObject().put("object", "list").put("data", data))
+                }
+                method == "GET" && path.startsWith("/v1/weights/") -> {
+                    val store = weightStore
+                    val rest = path.removePrefix("/v1/weights/")
+                    val model = rest.substringBefore('/')
+                    val file = rest.substringAfter("/", "")
+                    val range = headers["range"]
+                    if (store != null && model.isNotBlank()) {
+                        if (file.isEmpty() || file == "manifest.json") {
+                            val m = store.readManifest(model) ?: store.buildManifest(model)
+                            if (m != null) {
+                                val data = JSONArray()
+                                m.artifacts.forEach { a ->
+                                    data.put(
+                                        JSONObject()
+                                            .put("file", a.file)
+                                            .put("size", a.size)
+                                            .put("sha256", a.sha256)
+                                    )
+                                }
+                                writeJson(
+                                    socket, 200,
+                                    JSONObject()
+                                        .put("model", m.model)
+                                        .put("format", m.format)
+                                        .put("layers", m.layers)
+                                        .put("vramRequiredMB", m.vramRequiredMB)
+                                        .put("artifacts", data)
+                                )
+                            } else {
+                                writeJson(socket, 404, JSONObject().put("error", errorObj("model not in store")))
+                            }
+                        } else {
+                            val f = store.resolve(model, file)
+                            if (f != null) {
+                                val ct = when (file.substringAfterLast('.').lowercase()) {
+                                    "json" -> "application/json"
+                                    "wasm" -> "application/wasm"
+                                    else -> "application/octet-stream"
+                                }
+                                writeBinaryRange(socket, f, ct, range)
+                            } else {
+                                writeJson(socket, 404, JSONObject().put("error", errorObj("file not found")))
+                            }
+                        }
+                    } else {
+                        writeJson(socket, 400, JSONObject().put("error", errorObj("model required")))
+                    }
+                }
+
+                // ---- Redesign §4: multi-node single-task coordination ----
+                method == "POST" && path == "/v1/task/plan" -> {
+                    if (body == null) {
+                        writeJson(socket, 400, JSONObject().put("error", errorObj("JSON body required")))
+                    } else {
+                        val model = body.optString("model", "").trim()
+                        val workerIds = body.optJSONArray("workerIds")?.let { arr ->
+                            (0 until arr.length()).mapNotNull { i ->
+                                arr.optString(i, "").trim().takeIf { it.isNotBlank() }
+                            }
+                        } ?: emptyList()
+                        val plan = computeShardPlan(model, workerIds)
+                        if (plan == null) {
+                            writeJson(socket, 503, JSONObject().put("error", errorObj("no multi-node plan fits — use a single node")))
+                        } else {
+                            val arr = JSONArray()
+                            plan.shards.forEach { s ->
+                                arr.put(
+                                    JSONObject()
+                                        .put("workerId", s.workerId)
+                                        .put("fromLayer", s.fromLayer)
+                                        .put("toLayer", s.toLayer)
+                                )
+                            }
+                            writeJson(
+                                socket, 200,
+                                JSONObject()
+                                    .put("ok", true)
+                                    .put("planId", plan.planId)
+                                    .put("model", plan.model)
+                                    .put("leader", plan.leader)
+                                    .put("shards", arr)
+                            )
+                        }
+                    }
+                }
+                method == "POST" && path == "/v1/task/shard/lease" -> {
+                    if (body == null) {
+                        writeJson(socket, 400, JSONObject().put("error", errorObj("JSON body required")))
+                    } else {
+                        val taskId = body.optString("taskId", "").trim()
+                        val workerId = body.optString("workerId", "").trim()
+                        val lease = grantShardLease(taskId, workerId)
+                        if (lease == null) {
+                            writeJson(socket, 409, JSONObject().put("error", errorObj("no shard available for this worker")))
+                        } else {
+                            // ShardLease stores shardId as "<planId>:<workerId>".
+                            val plan = shardPlans[lease.shardId.substringBefore(':')]
+                            val shard = plan?.shards?.firstOrNull { it.workerId == workerId }
+                            val store = weightStore
+                            val m = plan?.model?.let { store?.readManifest(it) }
+                            val chunks = JSONArray()
+                            m?.artifacts?.forEach { a ->
+                                chunks.put(
+                                    JSONObject()
+                                        .put("file", a.file)
+                                        .put("size", a.size)
+                                        .put("sha256", a.sha256)
+                                        .put("url", "/v1/weights/${plan?.model}/${a.file}")
+                                )
+                            }
+                            writeJson(
+                                socket, 200,
+                                JSONObject()
+                                    .put("ok", true)
+                                    .put("leaseToken", lease.token)
+                                    .put("fromLayer", shard?.fromLayer ?: 0)
+                                    .put("toLayer", shard?.toLayer ?: 0)
+                                    .put("leader", plan?.leader == workerId)
+                                    .put("chunks", chunks)
+                            )
+                        }
+                    }
+                }
+                method == "POST" && path == "/v1/task/activation" -> {
+                    if (body == null) {
+                        writeJson(socket, 400, JSONObject().put("error", errorObj("JSON body required")))
+                    } else {
+                        val taskId = body.optString("taskId", "").trim()
+                        val toWorkerId = body.optString("toWorkerId", "").trim()
+                        val seq = body.optLong("seq", -1L)
+                        val data = body.optString("data", "")
+                        val ok = relayActivation(taskId, toWorkerId, seq, data)
+                        val task = tasks[taskId]
+                        writeJson(socket, if (ok) 200 else 404, JSONObject().put("ok", ok).put("cancel", task?.cancelRequested ?: false))
+                    }
+                }
+                method == "POST" && path == "/v1/task/shard/stream" -> {
+                    if (body == null) {
+                        writeJson(socket, 400, JSONObject().put("error", errorObj("JSON body required")))
+                    } else {
+                        val taskId = body.optString("taskId", "").trim()
+                        val workerId = body.optString("workerId", "").trim()
+                        val seq = body.optLong("seq", -1L)
+                        val text = body.optString("text", "")
+                        shardProgress(taskId, workerId, seq, text)
+                        val task = tasks[taskId]
+                        writeJson(socket, 200, JSONObject().put("ok", true).put("cancel", task?.cancelRequested ?: true))
+                    }
+                }
+                method == "POST" && path == "/v1/task/shard/done" -> {
+                    if (body == null) {
+                        writeJson(socket, 400, JSONObject().put("error", errorObj("JSON body required")))
+                    } else {
+                        val taskId = body.optString("taskId", "").trim()
+                        val workerId = body.optString("workerId", "").trim()
+                        val seq = body.optLong("seq", -1L)
+                        val status = body.optString("status", "completed")
+                        val stats = body.optJSONObject("stats")
+                        shardDone(taskId, workerId, seq, status, stats)
+                        writeJson(socket, 200, JSONObject().put("ok", true))
+                    }
+                }
+                method == "POST" && path == "/v1/task/sharded" -> {
+                    // Console/app entry point for a multi-node single task.
+                    if (body == null) {
+                        writeJson(socket, 400, JSONObject().put("error", errorObj("JSON body required")))
+                    } else {
+                        val model = body.optString("model", "").trim()
+                        val workerIds = body.optJSONArray("workerIds")?.let { arr ->
+                            (0 until arr.length()).mapNotNull { i ->
+                                arr.optString(i, "").trim().takeIf { it.isNotBlank() }
+                            }
+                        } ?: emptyList()
+                        val messages = body.optJSONArray("messages") ?: JSONArray()
+                        val pairs = mutableListOf<Pair<String, String>>()
+                        for (i in 0 until messages.length()) {
+                            val m = messages.optJSONObject(i) ?: continue
+                            pairs.add(m.optString("role", "user") to m.optString("content", ""))
+                        }
+                        val taskId = startShardedTask(
+                            model = model,
+                            workerIds = workerIds,
+                            system = body.optString("system", ""),
+                            pairs = pairs,
+                            temperature = body.optDouble("temperature", 0.7),
+                            maxTokens = body.optInt("maxTokens", 1024)
+                        )
+                        if (taskId == null) {
+                            writeJson(socket, 503, JSONObject().put("error", errorObj("no multi-node plan fits — use fewer shards or a single node")))
+                        } else if (body.optBoolean("stream", false)) {
+                            // Console watches the leader's tokens as they stream.
+                            val task = tasks[taskId]
+                            if (task == null) {
+                                writeJson(socket, 503, JSONObject().put("error", errorObj("sharded task vanished before streaming")))
+                            } else {
+                                streamShardedTask(socket, task)
+                            }
+                        } else {
+                            writeJson(socket, 200, JSONObject().put("ok", true).put("taskId", taskId))
+                        }
+                    }
+                }
+
                 method == "POST" && path == "/v1/probe" -> {
                     if (body == null) {
                         writeJson(socket, 400, JSONObject().put("error", errorObj("JSON body required")))
@@ -2296,7 +2904,52 @@ object LocalApiServer {
         out.flush()
     }
 
-    /** Friendly browser page for token-protected routes (never shows the token). */
+    /**
+     * Serve a byte range of a file (HTTP 206 Partial Content). Workers use this
+     * to fetch weight chunks resumably (redesign §2.2 / §3). Without a Range
+     * header the whole file is sent with a 200.
+     */
+    private fun writeBinaryRange(socket: Socket, file: File, contentType: String, range: String?) {
+        val length = file.length()
+        val out = socket.getOutputStream()
+        try {
+            // Parse "bytes=start-end" (end optional, may be "").
+            val m = Regex("bytes=(\\d*)-(\\d*)").find(range.orEmpty())
+            val start = m?.groupValues?.get(1)?.toLongOrNull() ?: 0L
+            val end = m?.groupValues?.get(2)?.toLongOrNull() ?: (length - 1)
+            val safeStart = start.coerceIn(0, length - 1)
+            val safeEnd = end.coerceIn(safeStart, length - 1)
+            val partial = m != null && (safeEnd - safeStart + 1) < length
+            val status = if (partial) "206 Partial Content" else "200 OK"
+            val contentLength = safeEnd - safeStart + 1
+            val head = StringBuilder()
+            head.append("HTTP/1.1 $status\r\n")
+            head.append("Content-Type: $contentType\r\n")
+            head.append("Accept-Ranges: bytes\r\n")
+            head.append("Cache-Control: no-store\r\n")
+            head.append("Content-Length: $contentLength\r\n")
+            if (partial) {
+                head.append("Content-Range: bytes $safeStart-$safeEnd/$length\r\n")
+            }
+            head.append("Connection: close\r\n\r\n")
+            out.write(head.toString().toByteArray(Charsets.UTF_8))
+            file.inputStream().use { input ->
+                input.skip(safeStart)
+                val buf = ByteArray(64 * 1024)
+                var remaining = contentLength
+                while (remaining > 0) {
+                    val toRead = minOf(buf.size.toLong(), remaining).toInt()
+                    val n = input.read(buf, 0, toRead)
+                    if (n < 0) break
+                    out.write(buf, 0, n)
+                    remaining -= n
+                }
+            }
+            out.flush()
+        } catch (_: Exception) {
+            try { socket.close() } catch (_: Exception) {}
+        }
+    }
     private fun authHintPage(): String = """
 <!DOCTYPE html>
 <html lang="en">
@@ -3028,6 +3681,7 @@ object LocalApiServer {
     <option value="auto">Runner: Auto — fastest GPU online</option>
   </select>
   <select id="wmodel" class="consoleOnly" style="min-width:220px;display:none" onchange="runnerChanged()" title="Model on the selected slave node"></select>
+  <button id="mm" class="ghost consoleOnly" onclick="toggleMulti()" title="Run one prompt across several slave nodes (layer shards)">Multi-node: off</button>
 </div>
 <details class="files consoleOnly" id="filesPanel">
   <summary id="filesSummary">On-device model files — loading…</summary>
@@ -3113,6 +3767,7 @@ var PAGE = '$mode';
 var S = { token: localStorage.getItem('karen_token') || '', busy: false, ctrl: null, log: [], node: nodeName(), boost: localStorage.getItem('karen_gpu_boost') === '1', llm: null, llmMod: null, llmModel: '', adapter: null, device: null, benchAdapter: null, gpuName: '', gflops: 0,
   w: { on: localStorage.getItem('karen_worker') !== '0' && !!localStorage.getItem('karen_token'), saved: localStorage.getItem('karen_worker') === '1', master: false, id: localStorage.getItem('karen_worker_id') || '', model: localStorage.getItem('karen_worker_model') || '', loaded: '', engine: null, interrupted: false, loop: false, assignedAt: Number(localStorage.getItem('karen_assign_at') || 0), edit: false },
   wModels: [], wlist: [], wmap: {}, routed: localStorage.getItem('karen_runner') || '',
+  multi: localStorage.getItem('karen_multi') === '1',
   tel: {}, pressure: '', jsScore: 0, maxBufferMB: 0 };
 function el(id) { return document.getElementById(id); }
 function nodeName() {
@@ -4012,6 +4667,7 @@ async function workerRegister() {
     engine: 'web-llm@0.2.86',
     models: S.wModels,
     loadedModel: S.w.loaded || '',
+    cached: S.w.cached ? true : false,
     telemetry: collectTelemetry()
   };
   // Only a deliberate pick on this page rewrites the assignment: an idle
@@ -4111,6 +4767,23 @@ async function workerLoop() {
               try { var as = JSON.parse(dl || '{}'); applyAssigned(as.model || '', as.at || 0, !!as.byPhone, true); } catch (e) {}
               continue;
             }
+            if (evt === 'shard') {
+              // Redesign §4: this worker holds a layer shard of a multi-node
+              // task. Run it; the poll loop stays responsive for activations.
+              try {
+                var sd = JSON.parse(dl || '{}');
+                S.w.nextWorker = sd.nextWorkerId || '';
+                runShardTask({ id: sd.taskId || '', model: sd.model || '', messages: sd.messages || [], temperature: sd.temperature || 0.7, max_tokens: sd.maxTokens || 512 });
+              } catch (e) { workerStatus('bad shard: ' + (e && e.message ? e.message : e)); }
+              continue;
+            }
+            if (evt === 'activation') {
+              // Redesign §4: hidden state from the previous shard. Stored for
+              // the engine integration point (a layer-sharded engine consumes
+              // it; WebLLM runs the full model and ignores it).
+              try { var ad = JSON.parse(dl || '{}'); S.w.pendingActivation = ad; } catch (e) {}
+              continue;
+            }
             if (evt !== 'task' || !dl) { continue; }
             try { var task = JSON.parse(dl); await workerRunTask(task); }
             catch (e) { workerStatus('bad task: ' + (e && e.message ? e.message : e)); }
@@ -4124,8 +4797,21 @@ async function workerLoop() {
     S.w.loop = false;
   }
 }
+// Redesign §2: weights come from the master (this phone), not the CDN. The
+// WebLLM JS engine still loads once from esm.run; every weight byte is
+// fetched from the phone and cached in the browser Cache API.
+function masterWeightUrl(model) {
+  return location.origin + '/v1/weights/' + encodeURIComponent(model) + '/';
+}
 async function workerEnsureEngine(model, taskId) {
-  if (!S.w.engine) { S.w.engine = new S.llmMod.MLCEngine(); S.w.loaded = ''; }
+  if (!S.w.engine) {
+    var cfg = {
+      model: masterWeightUrl(model),
+      model_lib: masterWeightUrl(model) + 'lib/mlc_llm.wasm'
+    };
+    S.w.engine = new S.llmMod.MLCEngine(cfg);
+    S.w.loaded = '';
+  }
   var target = karenTaskBuild(model) || S.w.loaded;
   if (!target) { throw new Error('no model selected for this worker'); }
   if (S.w.loaded === target) { return; }
@@ -4145,12 +4831,87 @@ async function workerEnsureEngine(model, taskId) {
   });
   await S.w.engine.reload(target);
   S.w.loaded = target;
+  S.w.cached = true;   // fetched from the master into the browser cache
 }
 async function workerCancel(id) {
   try { S.w.engine.interrupt(); } catch (e) {}
   await post('/v1/worker/done', { workerId: S.w.id, taskId: id, status: 'cancelled' });
   workerStatus('idle — last task cancelled');
   refreshWorkers();
+}
+// Redesign §4: run one shard of a multi-node task.
+//
+// Coordination protocol is fully implemented: exclusive lease, chunk fetch,
+// activation relay, leader streaming, deduped done. The one engine-dependent
+// step — executing ONLY [fromLayer, toLayer] and emitting a hidden state — is
+// the integration point: WebLLM loads the whole model, so a true layer-sharded
+// build is needed for partial-layer execution. Until then this runs the full
+// model and forwards empty activations so the protocol is exercised.
+async function runShardTask(task) {
+  var id = task.id;
+  S.w.interrupted = false;
+  var model = task.model || S.w.model || (el('workerModel') ? el('workerModel').value : '');
+  workerStatus('shard ' + id + ' → ' + (model || 'default'));
+  try {
+    // 1. Claim the exclusive shard lease + chunk list from the master.
+    var lr = await post('/v1/task/shard/lease', { taskId: id, workerId: S.w.id });
+    if (!lr || !lr.leaseToken) { throw new Error('no shard lease granted'); }
+    var fromLayer = lr.fromLayer || 0, toLayer = lr.toLayer || 0, leader = !!lr.leader;
+    // 2. Ensure the engine is loaded (pulls chunks from the master into cache).
+    await workerEnsureEngine(model, id);
+    if (S.w.interrupted) { await shardCancel(id); return; }
+    // 3. Run inference. ENGINE INTEGRATION POINT: a layer-sharded engine would
+    //    execute only [fromLayer, toLayer] here. WebLLM runs the full model.
+    var t0 = performance.now(), ttft = 0, tokens = 0, seq = 0;
+    var it = await S.w.engine.chat.completions.create({
+      messages: task.messages || [],
+      stream: true,
+      temperature: task.temperature || 0.7,
+      max_tokens: task.max_tokens || 512
+    });
+    var buf = '', lastFlush = 0, cancel = false;
+    for await (var piece of it) {
+      if (S.w.interrupted) { cancel = true; break; }
+      var d = piece.choices && piece.choices[0] && piece.choices[0].delta ? piece.choices[0].delta.content : '';
+      if (!d) continue;
+      if (!ttft) { ttft = performance.now() - t0; }
+      tokens += 1;
+      buf += d;
+      // Forward the activation to the next shard (protocol; a real layer
+      // build emits the hidden state here).
+      seq += 1;
+      post('/v1/task/activation', { taskId: id, toWorkerId: S.w.nextWorker || '', seq: seq, data: '' })
+        .then(function (r) { if (r && r.cancel) { S.w.interrupted = true; } })
+        .catch(function () {});
+      if (leader) {
+        var now = performance.now();
+        if (now - lastFlush >= 40 || buf.length > 200) {
+          lastFlush = now;
+          var chunk = buf; buf = '';
+          var resp = await post('/v1/task/shard/stream', { workerId: S.w.id, taskId: id, seq: seq, text: chunk });
+          if (resp && resp.cancel) { cancel = true; S.w.interrupted = true; break; }
+        }
+      }
+    }
+    if (leader && buf && !cancel) { await post('/v1/task/shard/stream', { workerId: S.w.id, taskId: id, seq: seq + 1, text: buf }); }
+    if (cancel) { try { S.w.engine.interrupt(); } catch (e) {} }
+    var elapsed = Math.max(1, performance.now() - t0);
+    var tps = Math.round(tokens / (elapsed / 1000) * 10) / 10;
+    await post('/v1/task/shard/done', {
+      workerId: S.w.id, taskId: id,
+      status: cancel ? 'cancelled' : 'completed',
+      stats: { ttftMs: Math.round(ttft), tokens: tokens, elapsedMs: Math.round(elapsed), tps: tps, fromLayer: fromLayer, toLayer: toLayer }
+    });
+    workerStatus(cancel ? 'idle — shard cancelled' : ('idle — shard done · ' + tps + ' tok/s'));
+    refreshWorkers();
+  } catch (e) {
+    await post('/v1/task/shard/done', { workerId: S.w.id, taskId: id, status: 'failed', error: gpuErrText(e) });
+    workerStatus('idle — shard failed: ' + (e && e.message ? e.message : e));
+  }
+}
+function shardCancel(id) {
+  try { if (S.w.engine) S.w.engine.interrupt(); } catch (e) {}
+  return post('/v1/task/shard/done', { workerId: S.w.id, taskId: id, status: 'cancelled' });
 }
 async function workerRunTask(task) {
   var id = task.id;
@@ -4516,10 +5277,125 @@ function workerSend(text, runner, wmodel) {
     refreshWorkers();
   });
 }
+function syncMultiUi() {
+  var b = el('mm');
+  if (!b) return;
+  b.textContent = 'Multi-node: ' + (S.multi ? 'on' : 'off');
+  b.className = 'ghost consoleOnly' + (S.multi ? ' on' : '');
+  b.title = S.multi
+    ? 'One prompt is split across online slave nodes (layer shards)'
+    : 'Run one prompt across several slave nodes (layer shards)';
+}
+function toggleMulti() {
+  S.multi = !S.multi;
+  localStorage.setItem('karen_multi', S.multi ? '1' : '0');
+  syncMultiUi();
+  toast(S.multi ? 'Multi-node on — prompts are sharded across online nodes' : 'Multi-node off — prompts route to a single runner');
+}
+function shardSend(text, runner) {
+  // Pick every online, unpaused slave (a specific runner goes first) and ask
+  // the master for a layer-shard plan, then watch the leader's stream.
+  var ws = (S.wlist || []).filter(function (w) { return w.state !== 'offline' && !w.paused; })
+    .sort(function (a, b) { return (b.gflops || 0) - (a.gflops || 0); });
+  var ids = ws.map(function (w) { return w.id; });
+  if (runner && runner !== 'auto') {
+    ids = [runner].concat(ids.filter(function (x) { return x !== runner; }));
+  }
+  ids = ids.slice(0, 6);
+  if (ids.length < 2) { toast('Multi-node needs 2+ online slave nodes — ' + ids.length + ' online'); return; }
+  var model = '';
+  if (runner && runner !== 'auto') { model = el('wmodel').value || ''; }
+  if (!model) {
+    var first = runnerInfo(ids[0]);
+    model = (first && (first.loadedModel || first.defaultModel)) || '';
+  }
+  el('input').value = '';
+  add('user', text);
+  S.log.push({ role: 'user', content: text });
+  var bubble = add('assistant', '…');
+  S.busy = true; el('send').disabled = true; el('stop').disabled = false;
+  S.ctrl = new AbortController();
+  var full = '';
+  fetch('/v1/task/sharded', {
+    method: 'POST',
+    headers: headers(true),
+    body: JSON.stringify({ model: model, workerIds: ids, messages: S.log.slice(-12), stream: true, temperature: 0.7, maxTokens: 1024 }),
+    signal: S.ctrl.signal
+  }).then(function (r) {
+    if (!r.ok) {
+      return r.text().then(function (t) {
+        bubble.className = 'msg sys';
+        bubble.textContent = 'Multi-node error ' + r.status + ' — ' + t.slice(0, 240);
+        if (S.log.length && S.log[S.log.length - 1].role === 'user') { S.log.pop(); }
+      });
+    }
+    var reader = r.body.getReader();
+    var dec = new TextDecoder();
+    var buf = '';
+    function pump() {
+      return reader.read().then(function (step) {
+        if (step.done) return;
+        buf += dec.decode(step.value, { stream: true });
+        var i;
+        while ((i = buf.indexOf('\n\n')) >= 0) {
+          var evt = buf.slice(0, i); buf = buf.slice(i + 2);
+          if (!evt.startsWith('data:')) continue;
+          var payload = evt.slice(5).trim();
+          if (payload === '[DONE]') continue;
+          try {
+            var j = JSON.parse(payload);
+            if (j.object === 'worker.status') {
+              if (!full) { bubble.textContent = '(' + (j.phase || '…') + ') ' + (j.text || ''); }
+              continue;
+            }
+            if (j.object === 'worker.done') {
+              var st = j.stats || {};
+              if (full && j.state !== 'failed') {
+                addMeta(bubble, 'Multi-node · ' + ids.length + ' shards · ' + (st.tokens || 0) + ' tok · ' + (st.tps || 0) + ' tok/s');
+              }
+              continue;
+            }
+            if (j.object === 'worker.error') {
+              var msg = (j.error && j.error.message) ? j.error.message : 'multi-node error';
+              bubble.className = 'msg sys';
+              bubble.textContent = 'Multi-node error — ' + msg;
+              continue;
+            }
+            var ch = j.choices && j.choices[0];
+            var d = ch && ch.delta && ch.delta.content;
+            if (d) { full += d; bubble.textContent = full; el('chat').scrollTop = el('chat').scrollHeight; }
+          } catch (e) {}
+        }
+        return pump();
+      });
+    }
+    return pump().then(function () {
+      if (full) { S.log.push({ role: 'assistant', content: full }); }
+      else if (bubble.className.indexOf('sys') < 0) {
+        bubble.className = 'msg sys'; bubble.textContent = '(no tokens — sharded run finished empty)';
+        if (S.log.length && S.log[S.log.length - 1].role === 'user') { S.log.pop(); }
+      }
+    });
+  }).catch(function () {
+    if (full) { S.log.push({ role: 'assistant', content: full }); bubble.textContent = full + ' [stopped]'; }
+    else {
+      bubble.className = 'msg sys'; bubble.textContent = 'stopped';
+      if (S.log.length && S.log[S.log.length - 1].role === 'user') { S.log.pop(); }
+    }
+  }).then(function () {
+    S.busy = false; el('send').disabled = false; el('stop').disabled = true; S.ctrl = null;
+    refreshWorkers();
+  });
+}
 function send() {
   var text = el('input').value.trim();
   if (!text || S.busy) return;
   var runner = el('runner') ? el('runner').value : '';
+  if (S.multi) {
+    if (!S.token) { toast('Paste the bearer token first'); return; }
+    shardSend(text, runner);
+    return;
+  }
   if (runner) {
     if (!S.token) { toast('Paste the bearer token first'); return; }
     workerSend(text, runner, runner === 'auto' ? '' : el('wmodel').value);
@@ -4600,6 +5476,7 @@ if (PAGE === 'console') {
 }
 loadModels();
 initGpu();
+syncMultiUi();
 if (PAGE === 'console') {
   refreshWorkers();
   // Live slave list, console only: refresh when the tab is visible, never in

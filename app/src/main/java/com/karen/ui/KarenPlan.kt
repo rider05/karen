@@ -67,9 +67,12 @@ private const val PLAN_MARK = "///PLAN"
 fun planGuide(): String = buildString {
     append("For multi-step work (3 or more distinct actions), write the plan before acting. ")
     append("Start the reply with exactly one line:\n")
-    append("""///PLAN {"steps":[{"t":"short step","s":"doing"},{"t":"next step","s":"todo"}]}""")
+    append("""///PLAN {"steps":[{"t":"<real step 1>","s":"doing"},{"t":"<real step 2>","s":"todo"}]}""")
+    append("\nReplace the angle-bracket text with the request's real actions; never output it literally. ")
     append("\nAfter each step finishes, emit the same line again with every step's current status ")
     append("(doing/done/todo) — the last line wins and the app redraws the checklist. ")
+    append("When the current step needs the phone, pair it with the matching ///TOOL call and stop; ")
+    append("the app runs the tool and advances the checklist for you. Never claim an action succeeded. ")
     append("One action per step, at most 8 steps, 60 characters each. ")
     append("The line is machine syntax and is never shown; keep commentary out of it. ")
     append("Skip the plan for simple questions, single lookups, and chit-chat.")
@@ -111,8 +114,17 @@ private fun parsePlanJson(line: String): List<PlanStep>? {
         if (text.isBlank()) continue
         out.add(PlanStep(text.take(120), statusOf(item.optString("s").ifBlank { item.optString("status") })))
     }
-    return out.take(12).ifEmpty { null }
+    // A model that echoes the schema sample is not a plan. Drop placeholder
+    // rows; if nothing real is left there is no checklist to show or run.
+    val real = out.take(12).filterNot { it.text.lowercase().trim() in PLAN_PLACEHOLDERS }
+    return real.ifEmpty { null }
 }
+
+/** Schema sample text (old and new wording) that must never become a step. */
+private val PLAN_PLACEHOLDERS = setOf(
+    "short step", "next step", "<real step 1>", "<real step 2>",
+    "real step 1", "real step 2", "<action>", "your step", "step 1", "step 2"
+)
 
 private fun statusOf(raw: String): PlanStatus = when (raw.trim().lowercase()) {
     "done", "complete", "completed", "finished", "ok" -> PlanStatus.Done

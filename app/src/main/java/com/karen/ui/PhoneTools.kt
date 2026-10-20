@@ -7,6 +7,8 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.pdf.PdfRenderer
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraManager
 import android.media.AudioManager
 import android.net.Uri
 import android.os.ParcelFileDescriptor
@@ -57,7 +59,15 @@ data class ToolSpec(
 data class ParsedTool(val name: String, val args: JSONObject, val start: Int, val end: Int)
 
 /** settleTools outcome: display text plus optional document context to answer from. */
-data class ToolSettle(val visible: String, val docText: String? = null, val docName: String? = null)
+data class ToolSettle(
+    val visible: String,
+    val docText: String? = null,
+    val docName: String? = null,
+    /** Executed calls, in order, so the plan agent can continue from them. */
+    val observations: List<AgentObservation> = emptyList(),
+    /** How many calls actually ran (parks and validation failures excluded). */
+    val ran: Int = 0
+)
 
 /** A T2 call awaiting user confirmation in the chat bubble. */
 data class PendingTool(
@@ -70,6 +80,12 @@ data class PendingTool(
 
 /** Honest executor outcome. */
 data class ExecResult(val ok: Boolean, val text: String)
+
+/** CameraManager has no torch getter, so remember the last state we wrote. */
+private object FlashlightState {
+    @Volatile
+    var on: Boolean = false
+}
 
 /**
  * True when a call runs without a confirmation card: T0/T1 always, plus
@@ -274,42 +290,9 @@ object ToolSpecs {
         load(ctx).find { it.name == name }
 
     // Keyword routing: only relevant schemas reach the prompt (plan §12).
-    private val triggers: Map<String, List<String>> = mapOf(
-        "open_app" to listOf("open", "launch", "start", "app"),
-        "open_url" to listOf("url", "website", "site", "link", "browse", "http"),
-        "open_settings_page" to listOf("settings", "wifi", "wi-fi", "bluetooth"),
-        "find_contact" to listOf("contact", "phone number", "number for", "whose number"),
-        "place_call" to listOf("call", "dial", "ring ", "phone me", "phone "),
-        "compose_message" to listOf("message", "text ", "sms", "whatsapp", "send", "tell "),
-        "create_reminder" to listOf("remind", "reminder"),
-        "create_calendar_event" to listOf("calendar", "event", "schedul", "meeting", "appointment"),
-        "get_time" to listOf("time", "date", "today", "clock", "day is"),
-        "get_device_info" to listOf("battery", "storage", "memory", "ram", "network"),
-        "search_local_files" to listOf("file", "document", "pdf", "find "),
-        "open_document" to listOf("open", "document", "pdf"),
-        "read_document" to listOf("read", "document", "contents", "summar"),
-        "set_timer" to listOf("timer", "countdown"),
-        "set_alarm" to listOf("alarm", "wake"),
-        "media_control" to listOf("music", "play", "pause", "volume", "mute", "song"),
-        "calculator" to listOf("calculat", "math", "plus", "minus", "times", "divided", "percent"),
-        "clipboard_read" to listOf("clipboard", "copied"),
-        "clipboard_write" to listOf("clipboard", "copy"),
-        "remember_fact" to listOf("remember", "my name", "birthday", "prefer", "i like", "i live"),
-        "forget_fact" to listOf("forget")
-    )
-
     /** Specs relevant to [prompt], capped so the prompt stays short. */
-    fun relevant(ctx: Context, prompt: String): List<ToolSpec> {
-        val all = load(ctx)
-        if (all.isEmpty()) return emptyList()
-        val t = " $prompt ".lowercase()
-        val hit = all.filter { spec ->
-            triggers[spec.name].orEmpty().any { t.contains(it) }
-        }
-        if (hit.isNotEmpty()) return hit.take(6)
-        // No signal: offer the four cheapest read-only tools only.
-        return all.filter { it.name in setOf("get_time", "calculator", "search_local_files", "get_device_info") }
-    }
+    fun relevant(ctx: Context, prompt: String): List<ToolSpec> =
+        ToolRouting.route(ctx, prompt, 6)
 
     /** Compact catalog + protocol block appended to the prompt. */
     fun promptBlock(ctx: Context, prompt: String): String {
@@ -1154,6 +1137,66 @@ suspend fun executePhoneTool(ctx: Context, spec: ToolSpec, args: JSONObject): Ex
         "forget_fact" -> {
             val n = FactStore.forget(ctx, argStr(args, "fact"))
             ExecResult(true, if (n > 0) "forgot $n fact${if (n == 1) "" else "s"}" else "no stored fact matched")
+        }
+        "web_search" -> {
+            val q = argStr(args, "query").trim()
+            if (!UserPrefs.webSearchEnabled(ctx)) {
+                ExecResult(false, "web search is off in Settings > Privacy")
+            } else if (q.isBlank()) {
+                ExecResult(false, "empty search query")
+            } else {
+                val n = args.optInt("max_results", 4).coerceIn(1, 6)
+                val hits = WebSearch.searchWithKey(ctx, q).take(n)
+                if (hits.isEmpty()) ExecResult(false, "no web results for \"$q\"")
+                else ExecResult(true, WebSearch.formatForModel(hits).take(3000))
+            }
+        }
+        "open_map" -> {
+            val q = argStr(args, "query").trim()
+            if (q.isBlank()) {
+                ExecResult(false, "empty map query")
+            } else {
+                val uri = Uri.parse("geo:0,0?q=" + Uri.encode(q))
+                val ok = startIntent(ctx, Intent(Intent.ACTION_VIEW, uri))
+                ExecResult(ok, if (ok) "opened map for \"$q\"" else "no maps app is installed")
+            }
+        }
+        "share_text" -> {
+            val body = argStr(args, "text").trim()
+            if (body.isBlank()) {
+                ExecResult(false, "nothing to share")
+            } else {
+                val send = Intent(Intent.ACTION_SEND)
+                    .setType("text/plain")
+                    .putExtra(Intent.EXTRA_TEXT, body)
+                val title = argStr(args, "title").trim()
+                if (title.isNotBlank()) send.putExtra(Intent.EXTRA_SUBJECT, title)
+                val ok = startIntent(ctx, Intent.createChooser(send, "Share with"))
+                ExecResult(ok, if (ok) "share sheet opened" else "no app can share text")
+            }
+        }
+        "toggle_flashlight" -> {
+            val want = when (argStr(args, "state").lowercase()) {
+                "on" -> true
+                "off" -> false
+                else -> !FlashlightState.on
+            }
+            try {
+                val cm = ctx.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+                val id = cm.cameraIdList.firstOrNull { cid ->
+                    cm.getCameraCharacteristics(cid)
+                        .get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+                }
+                if (id == null) {
+                    ExecResult(false, "this device has no flashlight")
+                } else {
+                    cm.setTorchMode(id, want)
+                    FlashlightState.on = want
+                    ExecResult(true, if (want) "flashlight on" else "flashlight off")
+                }
+            } catch (e: Exception) {
+                ExecResult(false, "flashlight unavailable (${e.message})")
+            }
         }
         else -> ExecResult(false, "unknown tool \"${spec.name}\"")
     }

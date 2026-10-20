@@ -586,6 +586,8 @@ fun ChatScreen(
         var visible = stripToolCalls(reply, calls)
         val notes = mutableListOf<String>()
         val pills = mutableListOf<String>()
+        val observations = mutableListOf<AgentObservation>()
+        var ran = 0
         var docText: String? = null
         var docName: String? = null
         for (call in calls.take(2)) {
@@ -652,6 +654,8 @@ fun ChatScreen(
             } catch (e: Exception) {
                 ExecResult(false, "failed (${e.message})")
             }
+            ran++
+            observations.add(AgentObservation(spec.name, res.ok, res.text.take(600)))
             val ms = System.currentTimeMillis() - t0
             pills.add("${spec.name} · ${ms}ms")
             notes.add((if (res.ok) "✓ " else "⚠ ") + "${spec.name}: ${res.text}")
@@ -672,7 +676,7 @@ fun ChatScreen(
             }
         }
         persist()
-        return ToolSettle(visible, docText, docName)
+        return ToolSettle(visible, docText, docName, observations, ran)
     }
 
     /** T2 confirm: runs the parked call and appends its honest result. */
@@ -816,6 +820,58 @@ fun ChatScreen(
             if (custom.isNotBlank()) "User instructions: $custom" else ""
         ).filter { it.isNotBlank() }
         return if (parts.isEmpty()) "" else " " + parts.joinToString("\n\n")
+    }
+
+    /**
+     * Runs the open steps of a plan with real phone tools. Each step asks the
+     * model for one action, executes it, feeds the result back, and advances
+     * the checklist. The bubble is rewritten through setStreamingText so the
+     * PlanCard moves while the work happens — not after a fake delay.
+     */
+    suspend fun runAgentLoop(
+        aid: String,
+        userText: String,
+        visible: String,
+        steps: List<PlanStep>,
+        seed: List<AgentObservation>,
+        provider: CloudProvider,
+        key: String
+    ): String {
+        var last = visible
+        val outcome = AgentRunner.executePlan(
+            ctx = context,
+            goal = userText,
+            visible = visible,
+            stepsIn = steps,
+            seed = seed,
+            isCancelled = { cancelGeneration },
+            callModel = { prompt ->
+                try {
+                    provider.withModelFallback(
+                        context,
+                        UserPrefs.apiModel(context, provider.id)
+                    ) { useModel ->
+                        provider.completeResult(
+                            key,
+                            listOf("user" to prompt),
+                            maxTokens = 700,
+                            thinkingBudget = null,
+                            historyLimit = 4,
+                            model = useModel,
+                            effort = "Low"
+                        )
+                    }.text
+                } catch (_: Exception) {
+                    null
+                }
+            },
+            onProgress = { text, _ ->
+                last = text
+                setStreamingText(aid, text)
+                coroutineScope.launch { scrollToBottomIfNear() }
+            }
+        )
+        return outcome.visible.ifBlank { last }
     }
 
     /** Top-scoring keyed cloud outside [exclude], with its key. */
@@ -983,12 +1039,45 @@ fun ChatScreen(
                 }
             }
             // Realtime tools: validate + run ///TOOL calls before showing.
-            val settled = settleTools(aid, reply)
+            var settled = settleTools(aid, reply)
             if (cancelGeneration) {
                 cancelSettle(aid)
                 return
             }
             var withTools = settled.visible
+            // A model can echo the plan schema sample ("real step 1") instead
+            // of planning. That leaves an empty body and no checklist; ask
+            // once for the actual plan + first action instead of showing it.
+            if (!cancelGeneration && settled.ran == 0 &&
+                withTools.contains("///PLAN") && splitPlan(withTools).steps.isEmpty()
+            ) {
+                setStreamingText(aid, "Planning the real steps…")
+                try {
+                    val repair = provider.withModelFallback(
+                        context,
+                        UserPrefs.apiModel(context, provider.id)
+                    ) { useModel ->
+                        provider.completeResult(
+                            key,
+                            (styled + ("user" to
+                                "Your previous reply only repeated the plan sample, so it was discarded. " +
+                                "Redo the request for real: start with one ///PLAN line using the actual " +
+                                "steps, then emit the ///TOOL call for the first step and stop. " +
+                                "Never reuse the sample text.")).takeLast(limit),
+                            maxTokens = 800,
+                            thinkingBudget = null,
+                            historyLimit = limit,
+                            model = useModel,
+                            effort = effort
+                        )
+                    }.text
+                    if (repair.isNotBlank() && !cancelGeneration) {
+                        settled = settleTools(aid, repair)
+                        withTools = settled.visible
+                    }
+                } catch (_: Exception) {
+                }
+            }
             // Document reads: answer from the extracted text in the same turn.
             if (settled.docText != null && !cancelGeneration) {
                 setStreamingText(aid, (withTools.trimEnd() + "\n\nReading ${settled.docName}…").trim())
@@ -1015,6 +1104,23 @@ fun ChatScreen(
                     }
                 } catch (_: Exception) {
                 }
+            }
+            // Plan execution: finish the checklist with real device tools.
+            // A plan is a promise to act (the guide says "plan before acting"),
+            // so open steps run unless the user asked for a draft only.
+            val planNow = splitPlan(withTools)
+            if (!cancelGeneration && AgentRunner.hasOpenSteps(planNow.steps) &&
+                !AgentRunner.planOnly(userText)
+            ) {
+                withTools = runAgentLoop(
+                    aid = aid,
+                    userText = userText,
+                    visible = withTools,
+                    steps = planNow.steps,
+                    seed = settled.observations,
+                    provider = provider,
+                    key = key
+                )
             }
             if (hasVisibleContent(withTools)) {
                 // Already streamed live: sync the final text (tool lines

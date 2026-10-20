@@ -346,5 +346,66 @@
         "description": "Which fact to forget."
       }
     }
+  },
+  "web_search": {
+    "description": "Search the web (DuckDuckGo + Wikipedia, no key) and return snippets.",
+    "risk_tier": "T0",
+    "arguments": {
+      "query": {
+        "type": "string",
+        "required": true,
+        "description": "What to search for."
+      },
+      "max_results": {
+        "type": "integer",
+        "required": false,
+        "description": "How many results, 1-6.",
+        "min": 1,
+        "max": 6
+      }
+    }
+  },
+  "open_map": {
+    "description": "Open a map search or directions for a place or address.",
+    "risk_tier": "T1",
+    "arguments": {
+      "query": {
+        "type": "string",
+        "required": true,
+        "description": "Place, address, or search such as coffee near me."
+      }
+    }
+  },
+  "share_text": {
+    "description": "Open the Android share sheet with text for another app.",
+    "risk_tier": "T1",
+    "arguments": {
+      "text": {
+        "type": "string",
+        "required": true,
+        "description": "Text to share."
+      },
+      "title": {
+        "type": "string",
+        "required": false,
+        "description": "Optional subject or title."
+      }
+    }
+  },
+  "toggle_flashlight": {
+    "description": "Turn the camera flashlight on or off, or toggle it.",
+    "risk_tier": "T1",
+    "arguments": {
+      "state": {
+        "type": "string",
+        "required": true,
+        "description": "Desired flashlight state.",
+        "enum": [
+          "on",
+          "off",
+          "toggle"
+        ]
+      }
+    }
   }
 }

@@ -42,7 +42,10 @@ object RecentActivity {
     fun list(ctx: Context): List<Item> =
         prefs(ctx).getString(KEY, "").orEmpty().lineSequence().mapNotNull { line ->
             val p = line.split(SEP)
-            if (p.size < 4) null
-            else Item(p[0], p[1], p[2], p[3].toLongOrNull() ?: 0L)
+            if (p.size < 4) return@mapNotNull null
+            // Older builds called this screen "Voice Chat"; show the new name
+            // even before the entry is refreshed by another visit.
+            val title = if (p[0] == TYPE_SCREEN && p[1] == "Voice") "Live Mode" else p[2]
+            Item(p[0], p[1], title, p[3].toLongOrNull() ?: 0L)
         }.toList()
 }

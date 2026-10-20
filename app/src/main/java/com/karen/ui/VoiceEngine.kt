@@ -60,7 +60,7 @@ object VoiceEngine {
         if (entry.fileName == "silero_vad.onnx") {
             if (!OrtEngine.ortAvailable) return "Downloaded · ORT missing on this device"
             return if (OrtEngine.isVadLoaded()) "Ready · on-device voice detection"
-            else "Downloaded · activates in Voice mode"
+            else "Downloaded · activates in Live mode"
         }
         if (!needleSupportedAbi() && entry.engine.startsWith("Cactus")) {
             return "Downloaded · needs Needle engine (arm64 device)"

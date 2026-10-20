@@ -23,9 +23,10 @@ import java.util.UUID
 /**
  * Speech output for Karen.
  *
- * Preferred engine: Fish Audio S2.1 Pro Free through the stored OpenRouter key
- * ([CloudTts]) — cloud voice, MediaPlayer playback, sentence-by-sentence
- * pipeline for voice mode. Fallback: Android's system TTS (zero MB, offline),
+ * Preferred engine: Fish Audio through the direct API when a Fish Audio key is
+ * saved, otherwise OpenRouter ([CloudTts]) — cloud voice, MediaPlayer playback,
+ * sentence-by-sentence pipeline for Live mode. Fallback: Android's system TTS
+ * (zero MB, offline),
  * with personas mapped to pitch/rate variants. STT input stays on the system
  * SpeechRecognizer (VoiceSttManager).
  */
@@ -323,7 +324,7 @@ object TtsManager {
     /**
      * Synthesizes sentences on IO while the main coroutine plays them in
      * order. The unbounded clip channel lets the next sentence render during
-     * playback, so voice mode keeps a natural cadence instead of a network
+     * playback, so Live mode keeps a natural cadence instead of a network
      * pause per sentence.
      */
     private fun startCloudPipeline(ctx: Context, sentences: Channel<String>) {

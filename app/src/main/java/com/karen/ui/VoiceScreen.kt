@@ -28,7 +28,7 @@ import kotlinx.coroutines.launch
 import com.karen.rememberDeviceTelemetry
 import com.karen.rememberVoiceStt
 
-/** Spoken-reply instruction: short, human, TTS-safe answers for voice mode. */
+/** Spoken-reply instruction: short, human, TTS-safe answers for Live mode. */
 const val VOICE_REPLY_STYLE =
     "Reply as natural human speech for text-to-speech: 1-3 short spoken sentences, " +
         "warm and conversational, plain words only — no markdown, no lists, no tables, " +
@@ -38,14 +38,12 @@ const val VOICE_REPLY_STYLE =
 fun VoiceScreen(
     onClose: () -> Unit = {}
 ) {
-    // System back returns to Chat (same as the close button).
-    androidx.activity.compose.BackHandler { onClose() }
     val device = rememberDeviceTelemetry()
     var isMuted by remember { mutableStateOf(false) }
     var userSpokenText by remember { mutableStateOf("") }
     var isVisionActive by remember { mutableStateOf(false) }
 
-    // Real speech output state; stop it when leaving voice mode.
+    // Real speech output state; stop it when leaving Live mode.
     val isSpeaking = TtsManager.speaking
     androidx.compose.runtime.DisposableEffect(Unit) {
         onDispose { TtsManager.stop() }
@@ -55,6 +53,21 @@ fun VoiceScreen(
     val personaCtx = androidx.compose.ui.platform.LocalContext.current
     var voicePersona by remember { mutableStateOf(UserPrefs.voicePersona(personaCtx)) }
     var personaMenu by remember { mutableStateOf(false) }
+
+    // Fish Audio voice is editable here, not only in Settings. The persona
+    // remains the Android TTS fallback when no cloud key is configured.
+    val fishReady = UserPrefs.fishAudioKey(personaCtx).isNotBlank() ||
+        UserPrefs.apiKey(personaCtx, "openrouter").isNotBlank()
+    var fishVoice by remember { mutableStateOf(UserPrefs.fishVoiceId(personaCtx)) }
+    var fishVoiceName by remember { mutableStateOf(UserPrefs.fishVoiceName(personaCtx)) }
+    var showVoicePicker by remember { mutableStateOf(false) }
+    val selectedVoiceLabel = fishVoiceDisplayName(fishVoice, fishVoiceName)
+    val activeVoiceLabel = if (CloudTts.available(personaCtx)) selectedVoiceLabel else voicePersona
+
+    // System back closes the voice picker first, then Live mode.
+    androidx.activity.compose.BackHandler {
+        if (showVoicePicker) showVoicePicker = false else onClose()
+    }
 
     // Voice chat loop: STT transcript → model API → human-spoken TTS reply.
     var voiceBusy by remember { mutableStateOf(false) }
@@ -390,55 +403,114 @@ fun VoiceScreen(
             ) {
                 Icon(
                     imageVector = Icons.Default.Close,
-                    contentDescription = "Close Voice",
+                    contentDescription = "Close Live mode",
                     tint = colors.textPrimary
                 )
             }
 
-            // TTS voice persona picker (Juniper/Sol/Cove/Breeze/Ember), persisted.
-            Row(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(20.dp))
-                    .background(colors.surface)
-                    .border(1.dp, colors.border, RoundedCornerShape(20.dp))
-                    .clickable { personaMenu = true }
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(
-                    imageVector = Icons.Default.RecordVoiceOver,
-                    contentDescription = null,
-                    tint = colors.accentGreen,
-                    modifier = Modifier.size(14.dp)
-                )
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    text = voicePersona,
-                    color = colors.textPrimary,
-                    fontSize = 12.5.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
-                Spacer(Modifier.width(4.dp))
-                Icon(
-                    imageVector = Icons.Default.KeyboardArrowDown,
-                    contentDescription = "Select voice",
-                    tint = colors.textMuted,
-                    modifier = Modifier.size(16.dp)
-                )
-            }
-            KDropdownMenu(
-                expanded = personaMenu,
-                onDismissRequest = { personaMenu = false }
-            ) {
-                UserPrefs.voicePersonas.forEach { v ->
-                    DropdownMenuItem(
-                        text = { Text(v, color = if (v == voicePersona) colors.accentGreen else colors.textPrimary) },
-                        onClick = {
-                            voicePersona = v
-                            UserPrefs.setVoicePersona(personaCtx, v)
-                            personaMenu = false
+            Box {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (fishReady) {
+                        // Fish Audio voice used by cloud TTS; tap to change it.
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(20.dp))
+                                .background(colors.surface)
+                                .border(1.dp, colors.border, RoundedCornerShape(20.dp))
+                                .clickable { showVoicePicker = true }
+                                .padding(horizontal = 12.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.RecordVoiceOver,
+                                contentDescription = null,
+                                tint = colors.accentGreen,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                text = selectedVoiceLabel,
+                                color = colors.textPrimary,
+                                fontSize = 12.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                modifier = Modifier.widthIn(max = 130.dp)
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Icon(
+                                imageVector = Icons.Default.KeyboardArrowDown,
+                                contentDescription = "Change Fish Audio voice",
+                                tint = colors.textMuted,
+                                modifier = Modifier.size(16.dp)
+                            )
                         }
-                    )
+                        Spacer(Modifier.width(6.dp))
+                        // Android TTS fallback prosody, opened separately so
+                        // the primary pill always belongs to the Fish voice.
+                        IconButton(
+                            onClick = { personaMenu = true },
+                            modifier = Modifier
+                                .size(34.dp)
+                                .clip(CircleShape)
+                                .background(colors.surface)
+                                .border(1.dp, colors.border, CircleShape)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Tune,
+                                contentDescription = "System fallback voice",
+                                tint = colors.textMuted,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    } else {
+                        // No cloud key: the persona drives Android TTS.
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(20.dp))
+                                .background(colors.surface)
+                                .border(1.dp, colors.border, RoundedCornerShape(20.dp))
+                                .clickable { personaMenu = true }
+                                .padding(horizontal = 12.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.RecordVoiceOver,
+                                contentDescription = null,
+                                tint = colors.accentGreen,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                text = voicePersona,
+                                color = colors.textPrimary,
+                                fontSize = 12.5.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Icon(
+                                imageVector = Icons.Default.KeyboardArrowDown,
+                                contentDescription = "Select system voice",
+                                tint = colors.textMuted,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+                }
+                KDropdownMenu(
+                    expanded = personaMenu,
+                    onDismissRequest = { personaMenu = false }
+                ) {
+                    UserPrefs.voicePersonas.forEach { v ->
+                        DropdownMenuItem(
+                            text = { Text(v, color = if (v == voicePersona) colors.accentGreen else colors.textPrimary) },
+                            onClick = {
+                                voicePersona = v
+                                UserPrefs.setVoicePersona(personaCtx, v)
+                                personaMenu = false
+                            }
+                        )
+                    }
                 }
             }
         }
@@ -469,7 +541,7 @@ fun VoiceScreen(
                 Spacer(Modifier.width(8.dp))
                 Text(
                     text = if (voiceStt.state.isListening) "Listening..."
-                    else if (isSpeaking) "Speaking · ${if (CloudTts.available(personaCtx)) "Fish Audio" else "System TTS"}"
+                    else if (isSpeaking) "Speaking · ${if (CloudTts.available(personaCtx)) selectedVoiceLabel else "System TTS"}"
                     else "Ready · Tap to Speak",
                     color = colors.textSecondary,
                     fontSize = 13.sp,
@@ -609,7 +681,7 @@ fun VoiceScreen(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
-                    text = if (voiceStt.state.isListening) "YOU (LISTENING...)" else if (isSpeaking) "KAREN · ${voicePersona.uppercase()}" else "STANDBY",
+                    text = if (voiceStt.state.isListening) "YOU (LISTENING...)" else if (isSpeaking) "KAREN · ${activeVoiceLabel.uppercase()}" else "STANDBY",
                     color = colors.accentGreen,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
@@ -704,7 +776,7 @@ fun VoiceScreen(
             ) {
                 Icon(
                     imageVector = if (voiceStt.state.isListening) Icons.Default.Mic else if (isMuted) Icons.Default.MicOff else Icons.Default.Mic,
-                    contentDescription = "Mute",
+                    contentDescription = "Mute Live mode",
                     tint = if (voiceStt.state.isListening) colors.accentGreen else if (isMuted) colors.accentRed else colors.textPrimary,
                     modifier = Modifier.size(26.dp)
                 )
@@ -743,11 +815,28 @@ fun VoiceScreen(
             ) {
                 Icon(
                     imageVector = Icons.Default.CallEnd,
-                    contentDescription = "End call",
+                    contentDescription = "End Live mode",
                     tint = Color.White,
                     modifier = Modifier.size(26.dp)
                 )
             }
+        }
+
+        if (showVoicePicker) {
+            FishVoicePickerDialog(
+                colors = colors,
+                hasKey = UserPrefs.fishAudioKey(personaCtx).isNotBlank(),
+                selectedId = fishVoice,
+                selectedName = fishVoiceName,
+                onDismiss = { showVoicePicker = false },
+                onPick = { id, name ->
+                    fishVoice = id
+                    fishVoiceName = name
+                    UserPrefs.setFishVoiceId(personaCtx, id)
+                    UserPrefs.setFishVoiceName(personaCtx, name)
+                    showVoicePicker = false
+                }
+            )
         }
     }
 }

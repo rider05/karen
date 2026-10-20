@@ -137,7 +137,7 @@ fun HomeScreen(
                     ) { onNavigate("Chat") }
 
                     PromptShortcutCard(
-                        title = "Voice Chat",
+                        title = "Live Mode",
                         subtitle = "Hands-free AI",
                         icon = Icons.Default.GraphicEq,
                         iconTint = colors.accentGreen,

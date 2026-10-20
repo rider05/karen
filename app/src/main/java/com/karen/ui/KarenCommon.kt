@@ -1903,7 +1903,7 @@ fun ChatGPTFloatingComposer(
 
             Spacer(Modifier.width(6.dp))
 
-            // Actions row: Stop (while generating), Dictate, Advanced Voice, Send
+            // Actions row: Stop (while generating), Dictate, Live mode, Send
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (isGenerating) {
                     // Typed while busy: park it to run after this reply.
@@ -1962,14 +1962,14 @@ fun ChatGPTFloatingComposer(
 
                     Spacer(Modifier.width(2.dp))
 
-                    // ChatGPT Advanced Voice Mode button
+                    // Live mode (hands-free voice conversation) button
                     IconButton(
                         onClick = onVoiceModeClick,
                         modifier = Modifier.size(36.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.GraphicEq,
-                            contentDescription = "Advanced Voice Mode",
+                            contentDescription = "Live Mode",
                             tint = colors.textPrimary,
                             modifier = Modifier.size(20.dp)
                         )
@@ -2804,7 +2804,7 @@ fun ChatGPTDrawerContent(
                     DrawerNavItem("Home Dashboard", Icons.Default.Home, currentScreen == "Home") {
                         onNavigate("Home"); onCloseDrawer()
                     }
-                    DrawerNavItem("Advanced Voice Mode", Icons.Default.GraphicEq, currentScreen == "Voice") {
+                    DrawerNavItem("Live Mode", Icons.Default.GraphicEq, currentScreen == "Voice") {
                         onNavigate("Voice"); onCloseDrawer()
                     }
                     DrawerNavItem("Dev Workspace / Canvas", Icons.Default.Workspaces, currentScreen == "Workspace") {

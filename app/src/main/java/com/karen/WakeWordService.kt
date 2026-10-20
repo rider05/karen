@@ -34,7 +34,7 @@ import java.util.Locale
  * Background-launch limits (Android 10+) forbid startActivity from a
  * background service, so a trigger does both: a best-effort direct launch
  * (works foreground / older OS) and a high-priority full-screen
- * notification the user can tap to open Voice mode.
+ * notification the user can tap to open Live mode.
  */
 class WakeWordService : Service() {
 
@@ -281,7 +281,7 @@ class WakeWordService : Service() {
                     CHANNEL_ALERT_ID,
                     "Wake word detected",
                     NotificationManager.IMPORTANCE_HIGH
-                ).apply { description = "Tap to open Karen voice mode" }
+                ).apply { description = "Tap to open Karen Live mode" }
             )
         } catch (_: Exception) {
         }
@@ -298,7 +298,7 @@ class WakeWordService : Service() {
     private fun ongoingNotification(): Notification =
         NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Listening for \u201c$wakePhrase\u201d")
-            .setContentText("Say the wake phrase to open Karen voice mode")
+            .setContentText("Say the wake phrase to open Karen Live mode")
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .setContentIntent(openPendingIntent(2001))
             .setOngoing(true)
@@ -311,7 +311,7 @@ class WakeWordService : Service() {
             val fullScreen = openPendingIntent(2002)
             val alert = NotificationCompat.Builder(this, CHANNEL_ALERT_ID)
                 .setContentTitle("Heard \u201c$wakePhrase\u201d")
-                .setContentText("Tap to open Karen voice mode")
+                .setContentText("Tap to open Karen Live mode")
                 .setSmallIcon(android.R.drawable.ic_btn_speak_now)
                 .setContentIntent(fullScreen)
                 .setFullScreenIntent(fullScreen, true)

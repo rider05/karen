@@ -47,8 +47,15 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
     var editing by remember { mutableStateOf(false) }
     var showClearCache by remember { mutableStateOf(false) }
 
+    // Fish Audio voice selection lives at screen level so the picker dialog
+    // (rendered below the list) and the settings card stay in sync.
+    var fishVoice by remember { mutableStateOf(UserPrefs.fishVoiceId(context)) }
+    var fishVoiceName by remember { mutableStateOf(UserPrefs.fishVoiceName(context)) }
+    var showVoicePicker by remember { mutableStateOf(false) }
+
     KarenHomeBackHandler(onNavigateToHome = onBack) {
         when {
+            showVoicePicker -> { showVoicePicker = false; true }
             editing -> { editing = false; true }
             showClearCache -> { showClearCache = false; true }
             else -> false
@@ -939,7 +946,19 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                     val openRouterReady = UserPrefs.apiKey(context, "openrouter").isNotBlank()
                     val anyVoiceKey = fishKeySaved || openRouterReady
                     var fishTtsPref by remember { mutableStateOf(UserPrefs.fishTts(context)) }
-                    var fishVoice by remember { mutableStateOf(UserPrefs.fishVoiceId(context)) }
+                    var fishModel by remember { mutableStateOf(UserPrefs.fishModel(context)) }
+                    var modelMenu by remember { mutableStateOf(false) }
+                    var modelCustom by remember {
+                        mutableStateOf(CloudTts.KNOWN_MODELS.none { it.id == fishModel })
+                    }
+                    val modelInfo = CloudTts.KNOWN_MODELS.firstOrNull { it.id == fishModel }
+                    val modelLabel = modelInfo?.label ?: fishModel.ifBlank { CloudTts.FISH_MODEL }
+                    val voiceLabel = when {
+                        fishVoice.isBlank() -> "Energetic Male (default)"
+                        fishVoiceName.isNotBlank() -> fishVoiceName
+                        else -> CloudTts.KNOWN_VOICES.firstOrNull { it.id == fishVoice }?.title
+                            ?: "Custom voice"
+                    }
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -954,8 +973,8 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                             Text("Fish Audio TTS", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
                             Text(
                                 when {
-                                    fishKeySaved -> "Direct Fish Audio · S2.1 Pro Free · ${if (fishVoice.isBlank()) "Energetic Male" else "custom voice"}"
-                                    openRouterReady -> "Via OpenRouter · S2.1 Pro Free (free)"
+                                    fishKeySaved -> "Direct Fish Audio · $modelLabel · $voiceLabel"
+                                    openRouterReady -> "Via OpenRouter · ${CloudTts.openRouterModelFor(fishModel)}"
                                     else -> "Add a Fish Audio or OpenRouter key to enable the free cloud voice"
                                 },
                                 color = colors.textMuted,
@@ -977,25 +996,157 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                             )
                         )
                     }
-                    if (fishTtsPref && anyVoiceKey) {
-                        OutlinedTextField(
-                            value = fishVoice,
-                            onValueChange = {
-                                fishVoice = it.trim().take(80)
-                                UserPrefs.setFishVoiceId(context, fishVoice)
-                            },
-                            label = { Text("Fish Audio voice ID (optional)", color = colors.textMuted) },
-                            singleLine = true,
-                            textStyle = androidx.compose.ui.text.TextStyle(
-                                color = colors.textPrimary,
-                                fontFamily = FontFamily.Monospace,
-                                fontSize = 12.sp
-                            ),
-                            colors = karenFieldColors(colors),
-                            modifier = Modifier.fillMaxWidth()
-                        )
+                    if (anyVoiceKey) {
+                        Box {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(colors.surfaceHover.copy(alpha = 0.55f))
+                                    .border(1.dp, colors.border.copy(alpha = 0.6f), RoundedCornerShape(12.dp))
+                                    .clickable { modelMenu = true }
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(Modifier.weight(1f)) {
+                                    Text("Fish Audio model", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
+                                    Text(
+                                        modelInfo?.note ?: "Custom model header",
+                                        color = colors.textMuted,
+                                        fontSize = 11.5.sp
+                                    )
+                                }
+                                Text(
+                                    modelLabel,
+                                    color = colors.accentBlue,
+                                    fontSize = 12.sp,
+                                    fontFamily = FontFamily.Monospace
+                                )
+                                Icon(
+                                    Icons.Default.KeyboardArrowDown,
+                                    contentDescription = "Choose model",
+                                    tint = colors.textMuted,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                            KDropdownMenu(
+                                expanded = modelMenu,
+                                onDismissRequest = { modelMenu = false }
+                            ) {
+                                CloudTts.KNOWN_MODELS.forEach { m ->
+                                    DropdownMenuItem(
+                                        text = {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Text(
+                                                    m.id,
+                                                    color = if (m.id == fishModel) colors.accentGreen else colors.textPrimary,
+                                                    fontSize = 13.sp,
+                                                    fontFamily = FontFamily.Monospace,
+                                                    modifier = Modifier.weight(1f)
+                                                )
+                                                Box(
+                                                    modifier = Modifier
+                                                        .clip(RoundedCornerShape(6.dp))
+                                                        .background(
+                                                            if (m.free) colors.accentGreen.copy(alpha = 0.18f)
+                                                            else colors.accentAmber.copy(alpha = 0.16f)
+                                                        )
+                                                        .padding(horizontal = 7.dp, vertical = 2.dp)
+                                                ) {
+                                                    Text(
+                                                        if (m.free) "FREE" else "PAID",
+                                                        color = if (m.free) colors.accentGreen else colors.accentAmber,
+                                                        fontSize = 10.sp,
+                                                        fontWeight = FontWeight.Bold
+                                                    )
+                                                }
+                                            }
+                                        },
+                                        onClick = {
+                                            fishModel = m.id
+                                            UserPrefs.setFishModel(context, m.id)
+                                            modelCustom = false
+                                            modelMenu = false
+                                        },
+                                        modifier = Modifier
+                                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                                            .clip(RoundedCornerShape(8.dp))
+                                    )
+                                }
+                                KMenuDivider()
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            "Custom model id…",
+                                            color = if (modelCustom) colors.accentGreen else colors.textPrimary,
+                                            fontSize = 13.sp
+                                        )
+                                    },
+                                    onClick = {
+                                        modelCustom = true
+                                        modelMenu = false
+                                    },
+                                    modifier = Modifier
+                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                        .clip(RoundedCornerShape(8.dp))
+                                )
+                            }
+                        }
+                        if (modelCustom) {
+                            OutlinedTextField(
+                                value = fishModel,
+                                onValueChange = {
+                                    fishModel = it.trim().take(60)
+                                    UserPrefs.setFishModel(context, fishModel)
+                                },
+                                label = { Text("Fish Audio model id", color = colors.textMuted) },
+                                placeholder = { Text(CloudTts.FISH_MODEL, color = colors.textMuted) },
+                                singleLine = true,
+                                textStyle = androidx.compose.ui.text.TextStyle(
+                                    color = colors.textPrimary,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 12.sp
+                                ),
+                                colors = karenFieldColors(colors),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Text(
+                                "Sent as the `model` header to api.fish.audio. Blank falls back to ${CloudTts.FISH_MODEL}.",
+                                color = colors.textMuted,
+                                fontSize = 11.sp
+                            )
+                        }
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(colors.surfaceHover.copy(alpha = 0.55f))
+                                .border(1.dp, colors.border.copy(alpha = 0.6f), RoundedCornerShape(12.dp))
+                                .clickable { showVoicePicker = true }
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text("Voice", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
+                                Text(
+                                    if (fishVoice.isBlank()) "Energetic Male · default"
+                                    else "$voiceLabel · ${fishVoice.take(8)}…",
+                                    color = colors.textMuted,
+                                    fontSize = 11.5.sp
+                                )
+                            }
+                            Text("Choose", color = colors.accentBlue, fontSize = 12.sp)
+                            Icon(
+                                Icons.Default.KeyboardArrowRight,
+                                contentDescription = "Choose voice",
+                                tint = colors.textMuted,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
                         Text(
-                            "Blank uses Energetic Male on direct Fish Audio; OpenRouter uses its default voice. Paste a Fish Audio reference ID to use a cloned voice.",
+                            "Search Fish Audio's voice library or paste any reference ID. Direct TTS uses this voice; OpenRouter uses it when set.",
                             color = colors.textMuted,
                             fontSize = 11.sp
                         )
@@ -1131,8 +1282,8 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                         Column(Modifier.weight(1f)) {
                             Text("Wake Word — “Hey Jarvis”", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
                             Text(
-                                if (WakeWordService.running) "Listening in background · say “$wakePhrase” to open Voice"
-                                else "Opens Voice even when the app is closed",
+                                if (WakeWordService.running) "Listening in background · say “$wakePhrase” to open Live mode"
+                                else "Opens Live mode even when the app is closed",
                                 color = colors.textMuted,
                                 fontSize = 11.5.sp
                             )
@@ -2067,6 +2218,22 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                     }
                 }
             }
+        }
+        if (showVoicePicker) {
+            FishVoicePickerDialog(
+                colors = colors,
+                hasKey = UserPrefs.fishAudioKey(context).isNotBlank(),
+                selectedId = fishVoice,
+                selectedName = fishVoiceName,
+                onDismiss = { showVoicePicker = false },
+                onPick = { id, name ->
+                    fishVoice = id
+                    fishVoiceName = name
+                    UserPrefs.setFishVoiceId(context, id)
+                    UserPrefs.setFishVoiceName(context, name)
+                    showVoicePicker = false
+                }
+            )
         }
         if (showDobPicker) {
             DobPickerDialog(

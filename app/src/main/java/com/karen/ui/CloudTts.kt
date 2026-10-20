@@ -8,15 +8,16 @@ import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLEncoder
 
 /**
  * Cloud text-to-speech for Karen.
  *
  * Preferred route: the direct Fish Audio API (`api.fish.audio`) with the
- * S2.1 Pro Free model and a stored Fish Audio key. If no Fish Audio key is
- * present, the OpenRouter speech endpoint is used with its free Fish Audio
- * model (`fish-audio/s2.1-pro-free:free`). Both return raw MP3 bytes, played
- * by [TtsManager] with MediaPlayer. Keys live only in SharedPreferences.
+ * selected Fish Audio model and a stored Fish Audio key. If no Fish Audio key
+ * is present, the OpenRouter speech endpoint is used with the equivalent Fish
+ * Audio model. Both return raw MP3 bytes, played by [TtsManager] with
+ * MediaPlayer. Keys live only in SharedPreferences.
  */
 object CloudTts {
     /** OpenRouter's free Fish Audio model. The `:free` suffix is part of the id. */
@@ -26,11 +27,46 @@ object CloudTts {
     const val FISH_MODEL = "s2.1-pro-free"
 
     /** Fish Audio "Energetic Male" voice model used when no voice is set. */
-    const val DEFAULT_FISH_VOICE = "9a9cf47702da476aa4629e2506d4a857"
+    const val DEFAULT_FISH_VOICE = "802e3bc2b27e49c2995d23ef70e6ac89"
 
     private const val OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/audio/speech"
     private const val FISH_ENDPOINT = "https://api.fish.audio/v1/tts"
+    private const val FISH_MODELS_ENDPOINT = "https://api.fish.audio/model"
     private const val MAX_INPUT_CHARS = 4000
+
+    /** A selectable Fish Audio TTS model (the `model` request header). */
+    data class FishModel(
+        val id: String,
+        val label: String,
+        val note: String,
+        val free: Boolean
+    )
+
+    /** A Fish Audio voice model (a `reference_id` in TTS requests). */
+    data class FishVoice(
+        val id: String,
+        val title: String,
+        val author: String = ""
+    )
+
+    val KNOWN_MODELS = listOf(
+        FishModel(FISH_MODEL, "S2.1 Pro Free", "Free · same model as Pro", true),
+        FishModel("s2.1-pro", "S2.1 Pro", "Paid · production", false),
+        FishModel("s2-pro", "S2 Pro", "Paid · previous gen", false),
+        FishModel("drama-3", "Drama 3", "Paid · expressive", false),
+        FishModel("s1", "S1", "Paid · deprecated", false)
+    )
+
+    /**
+     * Titles are resolved from api.fish.audio. The voice docs used to label
+     * `9a9cf477…` as Energetic Male, but the API returns "Hannah" for it; the
+     * real Energetic Male is `802e3bc2…` (author lengyue).
+     */
+    val KNOWN_VOICES = listOf(
+        FishVoice(DEFAULT_FISH_VOICE, "Energetic Male", "lengyue"),
+        FishVoice("ca3007f96ae7499ab87d27ea3599956a", "E-girl", "twangodev"),
+        FishVoice("9a9cf47702da476aa4629e2506d4a857", "Hannah", "Fish Official")
+    )
 
     enum class Route { DIRECT, OPENROUTER, NONE }
 
@@ -54,13 +90,15 @@ object CloudTts {
             if (input.isEmpty()) throw IllegalArgumentException("empty TTS input")
             val fishKey = UserPrefs.fishAudioKey(ctx)
             val openRouterKey = UserPrefs.apiKey(ctx, "openrouter")
+            val fishModel = UserPrefs.fishModel(ctx).trim().ifBlank { FISH_MODEL }
 
             fun viaOpenRouter(): File {
                 val payload = JSONObject()
-                    .put("model", MODEL)
+                    .put("model", openRouterModelFor(fishModel))
                     .put("input", input)
                     .put("response_format", "mp3")
-                if (voiceId.isNotBlank()) payload.put("voice", voiceId.trim())
+                    // Same default as the direct route so the UI label is real.
+                    .put("voice", voiceId.trim().ifBlank { DEFAULT_FISH_VOICE })
                 return requestAudio(
                     ctx = ctx,
                     endpoint = OPENROUTER_ENDPOINT,
@@ -85,7 +123,7 @@ object CloudTts {
                             ctx = ctx,
                             endpoint = FISH_ENDPOINT,
                             apiKey = fishKey,
-                            extraHeaders = mapOf("model" to FISH_MODEL),
+                            extraHeaders = mapOf("model" to fishModel),
                             payload = payload,
                             provider = "Fish Audio"
                         )
@@ -102,6 +140,82 @@ object CloudTts {
                 else -> throw IllegalStateException("No Fish Audio or OpenRouter key")
             }
         }
+
+    /**
+     * Maps a Fish Audio model name to OpenRouter's provider-qualified id so the
+     * fallback honours the selected model instead of always using the free one.
+     */
+    fun openRouterModelFor(fishModel: String): String {
+        val model = fishModel.trim().ifBlank { FISH_MODEL }
+        return when (model) {
+            "s2.1-pro-free" -> MODEL
+            "s2.1-pro" -> "fish-audio/s2.1-pro"
+            "s2-pro" -> "fish-audio/s2-pro"
+            "s1" -> "fish-audio/s1"
+            "drama-3" -> "fish-audio/drama-3"
+            else -> if (model.contains("/")) model else "fish-audio/$model"
+        }
+    }
+
+    /** The user's own Fish Audio voice models (requires a saved key). */
+    suspend fun myVoices(ctx: Context): List<FishVoice> = listVoices(ctx, self = true, query = "")
+
+    /** Public Fish Audio voice search, newest/most relevant first. */
+    suspend fun searchVoices(ctx: Context, query: String): List<FishVoice> =
+        listVoices(ctx, self = false, query = query.trim())
+
+    private suspend fun listVoices(
+        ctx: Context,
+        self: Boolean,
+        query: String
+    ): List<FishVoice> = withContext(Dispatchers.IO) {
+        val key = UserPrefs.fishAudioKey(ctx)
+        // Public library search is anonymous; the user's own models need a key.
+        if (self && key.isBlank()) return@withContext emptyList()
+        val pageSize = if (self) 100 else 20
+        val title = if (query.isBlank()) "" else
+            "title=${URLEncoder.encode(query, "UTF-8")}&"
+        val url = URL("$FISH_MODELS_ENDPOINT?${title}self=$self&page_size=$pageSize")
+        val conn = (url.openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = 15000
+            readTimeout = 25000
+            // Public search is anonymous; own-model listing uses the key.
+            if (self && key.isNotBlank()) setRequestProperty("Authorization", "Bearer $key")
+            setRequestProperty("Accept", "application/json")
+        }
+        try {
+            val code = conn.responseCode
+            if (code !in 200..299) {
+                val body = conn.errorStream
+                    ?.bufferedReader()
+                    ?.use { it.readText() }
+                    .orEmpty()
+                throw IllegalStateException("Fish Audio voices HTTP $code: ${body.take(200)}")
+            }
+            val body = conn.inputStream.bufferedReader().use { it.readText() }
+            val items = JSONObject(body).optJSONArray("items") ?: return@withContext emptyList()
+            val voices = mutableListOf<FishVoice>()
+            for (i in 0 until items.length()) {
+                val item = items.optJSONObject(i) ?: continue
+                val type = item.optString("type")
+                if (type.isNotBlank() && type != "tts") continue
+                val state = item.optString("state")
+                if (state.isNotBlank() && state != "trained") continue
+                val id = item.optString("_id").trim()
+                if (id.isBlank()) continue
+                val author = item.optJSONObject("author")?.optString("nickname").orEmpty()
+                voices += FishVoice(
+                    id = id,
+                    title = item.optString("title").ifBlank { "Untitled voice" },
+                    author = author
+                )
+            }
+            voices.distinctBy { it.id }
+        } finally {
+            conn.disconnect()
+        }
+    }
 
     private fun requestAudio(
         ctx: Context,

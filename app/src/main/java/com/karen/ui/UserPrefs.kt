@@ -188,7 +188,7 @@ object UserPrefs {
         prefs(ctx).edit().putBoolean(KEY_CLOUD_LOCAL_FALLBACK, enabled).apply()
     }
 
-    // TTS voice persona for Voice mode (Juniper/Sol/Cove/Breeze/Ember).
+    // TTS voice persona for Live mode's system fallback (Juniper/Sol/Cove/Breeze/Ember).
     val voicePersonas = listOf("Juniper", "Sol", "Cove", "Breeze", "Ember")
     private const val KEY_VOICE_PERSONA = "voice_persona"
     fun voicePersona(ctx: Context): String =
@@ -215,12 +215,30 @@ object UserPrefs {
         prefs(ctx).edit().putBoolean(KEY_FISH_TTS, enabled).apply()
     }
 
+    // Fish Audio TTS model header (`s2.1-pro-free`, `s2.1-pro`, …).
+    private const val KEY_FISH_MODEL = "fish_model"
+    private const val DEFAULT_FISH_MODEL = "s2.1-pro-free"
+    fun fishModel(ctx: Context): String =
+        prefs(ctx).getString(KEY_FISH_MODEL, DEFAULT_FISH_MODEL) ?: DEFAULT_FISH_MODEL
+    fun setFishModel(ctx: Context, model: String) {
+        prefs(ctx).edit().putString(KEY_FISH_MODEL, model.trim()).apply()
+    }
+
     // Optional Fish Audio reference id (blank = the model's default voice).
     private const val KEY_FISH_VOICE = "fish_voice_id"
     fun fishVoiceId(ctx: Context): String =
         prefs(ctx).getString(KEY_FISH_VOICE, "") ?: ""
     fun setFishVoiceId(ctx: Context, voice: String) {
         prefs(ctx).edit().putString(KEY_FISH_VOICE, voice.trim()).apply()
+    }
+
+    // Display title for the saved reference id, so the picker can show a name
+    // before the API list is refreshed.
+    private const val KEY_FISH_VOICE_NAME = "fish_voice_name"
+    fun fishVoiceName(ctx: Context): String =
+        prefs(ctx).getString(KEY_FISH_VOICE_NAME, "") ?: ""
+    fun setFishVoiceName(ctx: Context, name: String) {
+        prefs(ctx).edit().putString(KEY_FISH_VOICE_NAME, name.trim()).apply()
     }
 
     fun projects(ctx: Context): List<Pair<String, String>> {

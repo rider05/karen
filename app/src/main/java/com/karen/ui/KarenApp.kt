@@ -104,7 +104,7 @@ fun KarenApp(startScreen: String = "Home") {
                 "Performance", "Hardware" -> "Performance"
                 "StudyBook" -> "Study Book"
                 "Flowchart" -> "Intelligent Flow"
-                "Voice" -> "Voice Chat"
+                "Voice" -> "Live Mode"
                 "Settings" -> "Settings"
                 else -> currentScreen
             }
@@ -113,7 +113,7 @@ fun KarenApp(startScreen: String = "Home") {
             }
         }
 
-        // Wake-word trigger while the app is alive: jump to Voice mode.
+        // Wake-word trigger while the app is alive: jump to Live mode.
         LaunchedEffect(Unit) {
             var first = true
             WakeWordNavigator.signal.collect { ts ->
@@ -179,7 +179,7 @@ fun KarenApp(startScreen: String = "Home") {
                 }
             }
         ) {
-            // If in Voice mode, show immersive full screen without bottom bar
+            // If in Live mode, show immersive full screen without bottom bar
             if (currentScreen == "Voice") {
                 VoiceScreen(
                     onClose = { currentScreen = "Home" }

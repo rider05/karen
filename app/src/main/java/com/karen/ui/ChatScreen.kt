@@ -74,7 +74,7 @@ MODELS
 • Settings → API Failover: failed keys auto-try the next API, optionally falling back on-device.
 
 VOICE
-• Voice mode streams replies sentence by sentence; talk over Karen to interrupt. Needs mic + a model (cloud key or local weight). Wake word ("Hey Jarvis") lives in Settings → Voice & Speech."""
+• Live mode streams replies sentence by sentence; talk over Karen to interrupt. Needs mic + a model (cloud key or local weight). Wake word ("Hey Jarvis") lives in Settings → Voice & Speech."""
 
 sealed class ChatItem {
     data class User(val id: String, val text: String, val attachments: List<Attachment> = emptyList(), val tokens: Int = 0) : ChatItem()

@@ -7,19 +7,25 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -143,9 +149,16 @@ fun splitPlan(text: String): ParsedPlan {
 fun PlanCard(plan: ParsedPlan, modifier: Modifier = Modifier) {
     if (plan.isEmpty) return
     val colors = LocalKarenColors.current
+    val active = plan.steps.firstOrNull { it.status == PlanStatus.Doing }
+    // While a step is running the card opens collapsed onto that step alone.
+    // A tap on the header (or its chevron) expands to the full list; the choice
+    // sticks for this card. When nothing is running, everything is shown.
+    var expandedOverride by rememberSaveable { mutableStateOf<Boolean?>(null) }
+    val expanded = expandedOverride ?: (active == null)
+    val visible = if (active == null || expanded) plan.steps else listOf(active)
     // Only animate while something is in flight; a finished plan keeps the
     // card in history and must not tick forever.
-    val pulse = if (plan.steps.any { it.status == PlanStatus.Doing }) {
+    val pulse = if (active != null) {
         rememberInfiniteTransition(label = "planPulse").animateFloat(
             initialValue = 0.35f,
             targetValue = 1f,
@@ -164,7 +177,17 @@ fun PlanCard(plan: ParsedPlan, modifier: Modifier = Modifier) {
             .border(1.dp, colors.border, RoundedCornerShape(12.dp))
             .padding(horizontal = 12.dp, vertical = 10.dp)
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 40.dp)
+                .then(
+                    if (active != null) Modifier.clickable(
+                        onClickLabel = if (expanded) "Collapse plan" else "Expand plan"
+                    ) { expandedOverride = !expanded } else Modifier
+                ),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
             Text(
                 text = "PLAN",
                 color = colors.textMuted,
@@ -180,9 +203,17 @@ fun PlanCard(plan: ParsedPlan, modifier: Modifier = Modifier) {
                 fontSize = 10.sp,
                 fontFamily = FontFamily.Monospace
             )
+            if (active != null) {
+                Spacer(Modifier.weight(1f))
+                Text(
+                    text = if (expanded) "▴" else "▾",
+                    color = colors.textMuted,
+                    fontSize = 12.sp
+                )
+            }
         }
-        Spacer(Modifier.height(8.dp))
-        plan.steps.forEachIndexed { i, step ->
+        Spacer(Modifier.height(2.dp))
+        visible.forEachIndexed { i, step ->
             if (i > 0) Spacer(Modifier.height(6.dp))
             Row(verticalAlignment = Alignment.Top) {
                 Box(

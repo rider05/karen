@@ -935,6 +935,157 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                         .padding(14.dp),
                     verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
+                    var fishKeySaved by remember { mutableStateOf(UserPrefs.fishAudioKey(context).isNotBlank()) }
+                    val openRouterReady = UserPrefs.apiKey(context, "openrouter").isNotBlank()
+                    val anyVoiceKey = fishKeySaved || openRouterReady
+                    var fishTtsPref by remember { mutableStateOf(UserPrefs.fishTts(context)) }
+                    var fishVoice by remember { mutableStateOf(UserPrefs.fishVoiceId(context)) }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(colors.surfaceHover.copy(alpha = 0.55f))
+                            .border(1.dp, colors.border.copy(alpha = 0.6f), RoundedCornerShape(12.dp))
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Fish Audio TTS", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
+                            Text(
+                                when {
+                                    fishKeySaved -> "Direct Fish Audio · S2.1 Pro Free · ${if (fishVoice.isBlank()) "Energetic Male" else "custom voice"}"
+                                    openRouterReady -> "Via OpenRouter · S2.1 Pro Free (free)"
+                                    else -> "Add a Fish Audio or OpenRouter key to enable the free cloud voice"
+                                },
+                                color = colors.textMuted,
+                                fontSize = 11.5.sp
+                            )
+                        }
+                        Switch(
+                            checked = fishTtsPref && anyVoiceKey,
+                            onCheckedChange = {
+                                fishTtsPref = it
+                                UserPrefs.setFishTts(context, it)
+                            },
+                            enabled = anyVoiceKey,
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color.White,
+                                checkedTrackColor = colors.accentGreen,
+                                uncheckedThumbColor = colors.textMuted,
+                                uncheckedTrackColor = colors.surfaceHover
+                            )
+                        )
+                    }
+                    if (fishTtsPref && anyVoiceKey) {
+                        OutlinedTextField(
+                            value = fishVoice,
+                            onValueChange = {
+                                fishVoice = it.trim().take(80)
+                                UserPrefs.setFishVoiceId(context, fishVoice)
+                            },
+                            label = { Text("Fish Audio voice ID (optional)", color = colors.textMuted) },
+                            singleLine = true,
+                            textStyle = androidx.compose.ui.text.TextStyle(
+                                color = colors.textPrimary,
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 12.sp
+                            ),
+                            colors = karenFieldColors(colors),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Text(
+                            "Blank uses Energetic Male on direct Fish Audio; OpenRouter uses its default voice. Paste a Fish Audio reference ID to use a cloned voice.",
+                            color = colors.textMuted,
+                            fontSize = 11.sp
+                        )
+                    }
+                    var fishKeyInput by remember { mutableStateOf("") }
+                    var fishKeyVisible by remember { mutableStateOf(false) }
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(colors.surfaceHover.copy(alpha = 0.55f))
+                            .border(1.dp, colors.border.copy(alpha = 0.6f), RoundedCornerShape(12.dp))
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text("Fish Audio API key", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
+                        if (fishKeySaved) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    "••••" + UserPrefs.fishAudioKey(context).takeLast(4),
+                                    color = colors.textMuted,
+                                    fontSize = 12.sp,
+                                    fontFamily = FontFamily.Monospace
+                                )
+                                TextButton(onClick = {
+                                    UserPrefs.clearFishAudioKey(context)
+                                    fishKeySaved = false
+                                    fishKeyInput = ""
+                                }) { Text("Remove", color = colors.accentRed, fontSize = 12.sp) }
+                            }
+                        }
+                        OutlinedTextField(
+                            value = fishKeyInput,
+                            onValueChange = { fishKeyInput = it.trim() },
+                            label = {
+                                Text(
+                                    if (fishKeySaved) "Replace key" else "Paste sk-fish-… key",
+                                    color = colors.textMuted
+                                )
+                            },
+                            singleLine = true,
+                            visualTransformation = if (fishKeyVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                            trailingIcon = {
+                                TextButton(onClick = { fishKeyVisible = !fishKeyVisible }) {
+                                    Text(
+                                        if (fishKeyVisible) "Hide" else "Show",
+                                        color = colors.accentBlue,
+                                        fontSize = 11.sp
+                                    )
+                                }
+                            },
+                            textStyle = androidx.compose.ui.text.TextStyle(
+                                color = colors.textPrimary,
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 12.sp
+                            ),
+                            colors = karenFieldColors(colors),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "fish.audio/app/api-keys · stored only on this device",
+                                color = colors.textMuted,
+                                fontSize = 11.sp
+                            )
+                            TextButton(
+                                enabled = fishKeyInput.isNotBlank(),
+                                onClick = {
+                                    UserPrefs.saveFishAudioKey(context, fishKeyInput)
+                                    fishKeyInput = ""
+                                    fishKeyVisible = false
+                                    fishKeySaved = true
+                                }
+                            ) {
+                                Text(
+                                    "Save",
+                                    color = if (fishKeyInput.isNotBlank()) colors.accentGreen else colors.textMuted,
+                                    fontSize = 12.sp
+                                )
+                            }
+                        }
+                    }
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()

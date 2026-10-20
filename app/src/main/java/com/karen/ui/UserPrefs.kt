@@ -197,6 +197,32 @@ object UserPrefs {
         prefs(ctx).edit().putString(KEY_VOICE_PERSONA, name).apply()
     }
 
+    // Direct Fish Audio API key (api.fish.audio). On-device only, masked in UI.
+    private const val KEY_FISH_AUDIO_API = "fish_audio_api_key"
+    fun fishAudioKey(ctx: Context): String =
+        prefs(ctx).getString(KEY_FISH_AUDIO_API, "") ?: ""
+    fun saveFishAudioKey(ctx: Context, key: String) {
+        prefs(ctx).edit().putString(KEY_FISH_AUDIO_API, key.trim()).apply()
+    }
+    fun clearFishAudioKey(ctx: Context) {
+        prefs(ctx).edit().remove(KEY_FISH_AUDIO_API).apply()
+    }
+
+    // Cloud TTS: direct Fish Audio key first, OpenRouter key as fallback.
+    private const val KEY_FISH_TTS = "fish_tts"
+    fun fishTts(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_FISH_TTS, true)
+    fun setFishTts(ctx: Context, enabled: Boolean) {
+        prefs(ctx).edit().putBoolean(KEY_FISH_TTS, enabled).apply()
+    }
+
+    // Optional Fish Audio reference id (blank = the model's default voice).
+    private const val KEY_FISH_VOICE = "fish_voice_id"
+    fun fishVoiceId(ctx: Context): String =
+        prefs(ctx).getString(KEY_FISH_VOICE, "") ?: ""
+    fun setFishVoiceId(ctx: Context, voice: String) {
+        prefs(ctx).edit().putString(KEY_FISH_VOICE, voice.trim()).apply()
+    }
+
     fun projects(ctx: Context): List<Pair<String, String>> {
         return (prefs(ctx).getString("projects", "") ?: "")
             .split(";;")

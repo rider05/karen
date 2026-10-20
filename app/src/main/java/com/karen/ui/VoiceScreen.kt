@@ -468,7 +468,9 @@ fun VoiceScreen(
                 )
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    text = if (voiceStt.state.isListening) "Listening..." else if (isSpeaking) "Speaking · System TTS" else "Ready · Tap to Speak",
+                    text = if (voiceStt.state.isListening) "Listening..."
+                    else if (isSpeaking) "Speaking · ${if (CloudTts.available(personaCtx)) "Fish Audio" else "System TTS"}"
+                    else "Ready · Tap to Speak",
                     color = colors.textSecondary,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.Medium

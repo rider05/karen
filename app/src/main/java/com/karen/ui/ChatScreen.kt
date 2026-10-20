@@ -809,6 +809,7 @@ fun ChatScreen(
         val memoryOn = UserPrefs.memoryEnabled(context)
         val parts = listOf(
             if (wantsExplainer(prompt, context)) EXPLAINER_STYLE_GUIDE else "",
+            if (wantsPlan(prompt)) planGuide() else "",
             if (memoryOn) StyleMemory.currentHint(context) else "",
             if (memoryOn) MemoryFacts.promptBlock(context) else "",
             ToolSpecs.promptBlock(context, prompt),
@@ -1862,6 +1863,8 @@ fun ChatScreen(
                                     val thinkSplit = remember(item.text) { splitThinkBlock(item.text) }
                                     val thoughtText = item.thought ?: thinkSplit.first
                                     val bodyText = if (item.thought != null) item.text else thinkSplit.second
+                                    // Plan lines live inside the reply text; lift them into a card.
+                                    val plan = remember(bodyText) { splitPlan(bodyText) }
                                     if (thoughtText != null) {
                                         ThoughtAccordion(
                                             thoughtDuration = "Reasoning trace",
@@ -1870,9 +1873,13 @@ fun ChatScreen(
                                         )
                                         Spacer(Modifier.height(8.dp))
                                     }
-                                    if (bodyText.isNotBlank()) {
+                                    if (!plan.isEmpty) {
+                                        PlanCard(plan)
+                                        Spacer(Modifier.height(10.dp))
+                                    }
+                                    if (plan.body.isNotBlank()) {
                                         MarkdownText(
-                                            text = bodyText,
+                                            text = plan.body,
                                             color = colors.textPrimary,
                                             fontSize = 15.sp,
                                             lineHeight = 22.sp

@@ -93,7 +93,8 @@ fun KarenApp(startScreen: String = "Home", shakeSignal: Int = 0) {
         var newChatSignal by remember { mutableStateOf(0) }
 
         // Shake gesture from MainActivity: close any drawer and land on Karen
-        // Settings. The activity debounces the sensor, so one shake = one jump.
+        // Settings. The activity only emits a signal after three deliberate
+        // shakes, so accidental bumps do nothing.
         LaunchedEffect(shakeSignal) {
             if (shakeSignal > 0 && currentScreen != "Settings") {
                 coroutineScope.launch { drawerState.close() }

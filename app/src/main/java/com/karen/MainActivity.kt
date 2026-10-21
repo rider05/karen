@@ -25,13 +25,26 @@ import kotlin.math.sqrt
 class MainActivity : ComponentActivity() {
     private var wakeStartScreen = "Home"
 
-    // Shake → Karen Settings. The counter is Compose state so KarenApp can
+    // Shake → Karen Settings. Three deliberate shakes in a row open Settings;
+    // a single bump does nothing. The counter is Compose state so KarenApp can
     // react without the activity having to reach into its navigation state.
     private var shakeSignal by mutableIntStateOf(0)
     private var sensorManager: SensorManager? = null
     private var accelerometer: Sensor? = null
     private var lastShakeAt = 0L
+    private var shakeCount = 0
     private val gravity = FloatArray(3)
+
+    private object Shake {
+        /** Linear impulse that counts as a shake (~1.1 g). */
+        const val THRESHOLD = 11f
+        /** Rebound impulses closer than this belong to the same shake. */
+        const val MIN_GAP_MS = 400L
+        /** A longer pause starts a fresh triple-shake sequence. */
+        const val SEQUENCE_GAP_MS = 1500L
+        /** Deliberate shakes required before Settings opens. */
+        const val COUNT_TO_OPEN = 3
+    }
 
     private val shakeListener = object : SensorEventListener {
         override fun onSensorChanged(event: SensorEvent) {
@@ -44,13 +57,15 @@ class MainActivity : ComponentActivity() {
                 val linear = event.values[i] - gravity[i]
                 linearSq += linear * linear
             }
-            val magnitude = sqrt(linearSq)
-            if (magnitude > 11f) {
-                val now = SystemClock.elapsedRealtime()
-                if (now - lastShakeAt > 1200L) {
-                    lastShakeAt = now
-                    shakeSignal++
-                }
+            if (sqrt(linearSq) <= Shake.THRESHOLD) return
+            val now = SystemClock.elapsedRealtime()
+            val gap = now - lastShakeAt
+            if (gap < Shake.MIN_GAP_MS) return
+            lastShakeAt = now
+            shakeCount = if (gap > Shake.SEQUENCE_GAP_MS) 1 else shakeCount + 1
+            if (shakeCount >= Shake.COUNT_TO_OPEN) {
+                shakeCount = 0
+                shakeSignal++
             }
         }
 

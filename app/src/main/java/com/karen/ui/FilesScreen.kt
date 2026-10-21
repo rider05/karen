@@ -330,53 +330,25 @@ fun FilesScreen(
             contentPadding = PaddingValues(top = 12.dp, bottom = 80.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            // Header stats card
+            // Header hero
             item {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(colors.surface)
-                        .border(1.dp, colors.border, RoundedCornerShape(16.dp))
-                        .padding(16.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("Sovereign Storage", color = colors.textPrimary, fontSize = 15.sp, fontWeight = FontWeight.Bold)
-                        Text("${String.format("%.1f", device.storageTotalGb - device.storageFreeGb)} / ${String.format("%.0f", device.storageTotalGb)} GB", color = colors.accentGreen, fontSize = 12.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.SemiBold)
-                    }
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        "${allFiles.size} file${if (allFiles.size == 1) "" else "s"} · ${formatSize(vaultBytes)} stored on this device. Nothing leaves the phone.",
-                        color = colors.textMuted,
-                        fontSize = 12.sp
-                    )
-                    Spacer(Modifier.height(12.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(
-                            onClick = { vaultPicker.launch(arrayOf("*/*")) },
-                            colors = ButtonDefaults.buttonColors(containerColor = colors.accentGreen, contentColor = Color.White),
-                            shape = RoundedCornerShape(8.dp),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-                        ) {
-                            Icon(Icons.Default.Add, contentDescription = "Add", modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text("Add File", fontSize = 12.sp)
-                        }
-                    }
-                }
+                VaultHero(
+                    vaultName = selectedVault,
+                    fileCount = allFiles.size,
+                    vaultBytes = vaultBytes,
+                    usedGb = device.storageTotalGb - device.storageFreeGb,
+                    totalGb = device.storageTotalGb,
+                    onAdd = { vaultPicker.launch(arrayOf("*/*")) }
+                )
             }
 
-            // Latest file card
+            // Search + latest file card
             item {
                 OutlinedTextField(
                     value = fileQuery,
                     onValueChange = { fileQuery = it },
                     placeholder = { Text("Search local documents…", color = colors.textMuted) },
-                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search", tint = colors.textMuted, modifier = Modifier.size(18.dp)) },
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search", tint = colors.accentBlue, modifier = Modifier.size(18.dp)) },
                     trailingIcon = {
                         if (fileQuery.isNotEmpty()) {
                             Icon(
@@ -390,61 +362,41 @@ fun FilesScreen(
                         }
                     },
                     singleLine = true,
+                    shape = RoundedCornerShape(14.dp),
                     textStyle = androidx.compose.ui.text.TextStyle(color = colors.textPrimary, fontSize = 13.5.sp),
                     colors = karenFieldColors(colors),
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(bottom = 10.dp)
                 )
-                Text("Latest file", color = colors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                Spacer(Modifier.height(4.dp))
                 val topDoc = remember(allFiles) { allFiles.firstOrNull() }
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(colors.cardBackground)
-                        .border(1.dp, colors.accentGreen.copy(alpha = 0.4f), RoundedCornerShape(14.dp))
-                        .padding(14.dp)
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.AutoMirrored.Filled.MenuBook, contentDescription = null, tint = colors.accentGreen, modifier = Modifier.size(20.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text(topDoc?.name ?: "No documents yet", color = colors.textPrimary, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                    }
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        topDoc?.let { "${formatSize(it.length())} · Modified ${java.text.DateFormat.getDateTimeInstance().format(java.util.Date(it.lastModified()))}" } ?: "Add files with Add File above.",
-                        color = colors.textSecondary,
-                        fontSize = 12.sp,
-                        lineHeight = 17.sp
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        if (topDoc != null) {
-                            OutlinedButton(
-                                onClick = { openFile(topDoc) },
-                                shape = RoundedCornerShape(8.dp),
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
-                            ) {
-                                Text("Open", fontSize = 11.5.sp)
-                            }
-                        }
-                    }
-                }
+                VaultSectionLabel(
+                    kicker = "Latest file",
+                    icon = Icons.Default.History,
+                    tint = colors.accentGreen,
+                    trailing = if (topDoc == null) "empty" else formatSize(topDoc.length())
+                )
+                Spacer(Modifier.height(6.dp))
+                LatestVaultCard(file = topDoc, onOpen = { topDoc?.let { openFile(it) } })
             }
 
             // File items list (Secure Vault view)
             if (selectedVault == "Secure Vault") item {
-                Text("Indexed Vault Items (${allFiles.size})", color = colors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                VaultSectionLabel(
+                    kicker = "Indexed vault items",
+                    icon = Icons.Default.FolderSpecial,
+                    tint = colors.accentGreen,
+                    trailing = "${allFiles.size} files"
+                )
                 Spacer(Modifier.height(6.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     val files = allFiles.filter { matchesQuery(it) }
                     if (files.isEmpty()) {
-                        Text(
-                            if (fileQuery.isBlank()) "No indexed files yet" else "No matches for “${fileQuery.trim()}”",
-                            color = colors.textMuted,
-                            fontSize = 12.sp
+                        VaultEmptyState(
+                            icon = Icons.Default.FolderOpen,
+                            title = if (fileQuery.isBlank()) "No indexed files yet" else "No matches",
+                            body = if (fileQuery.isBlank()) "Add files with Add File above." else "Nothing matches “${fileQuery.trim()}”.",
+                            tint = colors.accentGreen
                         )
                     }
                     files.forEach { f ->
@@ -472,22 +424,28 @@ fun FilesScreen(
 
             // Knowledge Vault section (mirrors Sovereign Storage, for knowledge assets)
             if (selectedVault == "Knowledge Vault") item {
-                Text("Knowledge Vault", color = colors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                VaultSectionLabel(
+                    kicker = "Knowledge vault",
+                    icon = Icons.AutoMirrored.Filled.MenuBook,
+                    tint = colors.accentBlue,
+                    trailing = "${allFiles.count { it.extension.lowercase() in listOf("pdf", "md", "txt") }} docs"
+                )
                 Spacer(Modifier.height(6.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     val kvFiles = allFiles.filter { it.extension.lowercase() in listOf("pdf", "md", "txt") && matchesQuery(it) }
                     if (kvFiles.isEmpty()) {
-                        Text(
-                            if (fileQuery.isBlank()) "Add PDFs or notes with Add File above" else "No matches for “${fileQuery.trim()}”",
-                            color = colors.textMuted,
-                            fontSize = 12.sp
+                        VaultEmptyState(
+                            icon = Icons.AutoMirrored.Filled.MenuBook,
+                            title = if (fileQuery.isBlank()) "No knowledge documents" else "No matches",
+                            body = if (fileQuery.isBlank()) "Add PDFs or notes with Add File above." else "Nothing matches “${fileQuery.trim()}”.",
+                            tint = colors.accentBlue
                         )
                     }
                     kvFiles.forEach { f ->
                         VaultFileRow(
                             f.name,
                             "${formatSize(f.length())} · ${java.text.DateFormat.getDateTimeInstance().format(java.util.Date(f.lastModified()))}",
-                            Icons.Default.MenuBook,
+                            Icons.AutoMirrored.Filled.MenuBook,
                             onOpen = { openFile(f) },
                             onShare = { shareFile(f) },
                             onRename = {
@@ -656,12 +614,34 @@ private fun VaultSelectorSheet(
                 .fillMaxWidth()
                 .padding(horizontal = 20.dp, vertical = 8.dp)
         ) {
-            Text("Vault Selector", color = colors.textPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(38.dp)
+                        .clip(RoundedCornerShape(11.dp))
+                        .background(colors.accentBlue.copy(alpha = 0.13f))
+                        .border(1.dp, colors.accentBlue.copy(alpha = 0.28f), RoundedCornerShape(11.dp)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(Icons.Default.FolderSpecial, contentDescription = null, tint = colors.accentBlue, modifier = Modifier.size(19.dp))
+                }
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "VAULT SELECTOR",
+                        color = colors.accentBlue,
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.1.sp
+                    )
+                    Text("Choose a local store", color = colors.textPrimary, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+                }
+            }
             Text(
                 "Switch between vault views — one secure screen, two logical stores",
                 color = colors.textMuted,
                 fontSize = 12.sp,
-                modifier = Modifier.padding(top = 2.dp, bottom = 16.dp)
+                modifier = Modifier.padding(top = 6.dp, bottom = 16.dp)
             )
             val vaults = listOf(
                 Triple("Knowledge Vault", "PDFs, notes and markdown stored on-device", "$knowledgeCount files"),
@@ -669,48 +649,409 @@ private fun VaultSelectorSheet(
             )
             vaults.forEach { (name, desc, badge) ->
                 val isSelected = selectedVault == name
+                val tint = if (name == "Knowledge Vault") colors.accentBlue else colors.accentGreen
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(vertical = 6.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(if (isSelected) colors.surfaceHover else Color.Transparent)
-                        .border(1.dp, if (isSelected) colors.accentGreen else colors.border, RoundedCornerShape(12.dp))
+                        .padding(vertical = 5.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(if (isSelected) tint.copy(alpha = 0.08f) else Color.Transparent)
+                        .border(1.dp, if (isSelected) tint.copy(alpha = 0.5f) else colors.border, RoundedCornerShape(14.dp))
                         .clickable {
                             onSelectVault(name)
                             onDismiss()
                         }
-                        .padding(14.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
+                        .padding(13.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    Box(
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(tint.copy(alpha = 0.13f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            if (name == "Knowledge Vault") Icons.AutoMirrored.Filled.MenuBook else Icons.Default.Lock,
+                            contentDescription = null,
+                            tint = tint,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                    Spacer(Modifier.width(10.dp))
                     Column(Modifier.weight(1f)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(name, color = colors.textPrimary, fontSize = 14.5.sp, fontWeight = FontWeight.SemiBold)
+                            Text(name, color = colors.textPrimary, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                             Spacer(Modifier.width(8.dp))
                             Box(
                                 modifier = Modifier
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .background(if (isSelected) colors.accentGreen.copy(alpha = 0.2f) else colors.border.copy(alpha = 0.4f))
-                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                                    .clip(RoundedCornerShape(999.dp))
+                                    .background(if (isSelected) tint.copy(alpha = 0.14f) else colors.border.copy(alpha = 0.35f))
+                                    .padding(horizontal = 7.dp, vertical = 2.dp)
                             ) {
-                                Text(badge, color = if (isSelected) colors.accentGreen else colors.textMuted, fontSize = 10.5.sp, fontWeight = FontWeight.Bold)
+                                Text(
+                                    badge,
+                                    color = if (isSelected) tint else colors.textMuted,
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    fontFamily = FontFamily.Monospace
+                                )
                             }
                         }
-                        Spacer(Modifier.height(4.dp))
-                        Text(desc, color = colors.textMuted, fontSize = 11.5.sp)
+                        Spacer(Modifier.height(3.dp))
+                        Text(desc, color = colors.textMuted, fontSize = 11.sp, lineHeight = 15.sp)
                     }
+                    Spacer(Modifier.width(6.dp))
                     RadioButton(
                         selected = isSelected,
                         onClick = {
                             onSelectVault(name)
                             onDismiss()
                         },
-                        colors = RadioButtonDefaults.colors(selectedColor = colors.accentGreen, unselectedColor = colors.textMuted)
+                        colors = RadioButtonDefaults.colors(selectedColor = tint, unselectedColor = colors.textMuted)
                     )
                 }
             }
+            Spacer(Modifier.height(16.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(11.dp))
+                    .background(colors.surfaceHover.copy(alpha = 0.4f))
+                    .padding(11.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Default.Shield, contentDescription = null, tint = colors.accentGreen, modifier = Modifier.size(14.dp))
+                Spacer(Modifier.width(7.dp))
+                Text(
+                    "Both stores live under app-private storage — no sync, no upload.",
+                    color = colors.textMuted,
+                    fontSize = 10.5.sp,
+                    lineHeight = 14.sp
+                )
+            }
             Spacer(Modifier.height(24.dp))
+        }
+    }
+}
+
+// ---- Vault visual primitives ----
+
+@Composable
+private fun VaultHero(
+    vaultName: String,
+    fileCount: Int,
+    vaultBytes: Long,
+    usedGb: Double,
+    totalGb: Double,
+    onAdd: () -> Unit
+) {
+    val colors = LocalKarenColors.current
+    val usedFraction = if (totalGb > 0.0) (usedGb / totalGb).toFloat().coerceIn(0f, 1f) else 0f
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(20.dp))
+            .background(
+                androidx.compose.ui.graphics.Brush.verticalGradient(
+                    listOf(colors.surface, colors.cardBackground)
+                )
+            )
+            .border(1.dp, colors.accentGreen.copy(alpha = 0.3f), RoundedCornerShape(20.dp))
+            .padding(16.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .size(42.dp)
+                    .clip(RoundedCornerShape(13.dp))
+                    .background(colors.accentGreen.copy(alpha = 0.13f))
+                    .border(1.dp, colors.accentGreen.copy(alpha = 0.28f), RoundedCornerShape(13.dp)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(Icons.Default.FolderSpecial, contentDescription = null, tint = colors.accentGreen, modifier = Modifier.size(21.dp))
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "LOCAL KNOWLEDGE // ZERO CLOUD",
+                    color = colors.accentGreen,
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.05.sp
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(vaultName, color = colors.textPrimary, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+                Text(
+                    "${allFilesLabel(fileCount)} · ${formatSize(vaultBytes)} stored on device",
+                    color = colors.textMuted,
+                    fontSize = 11.sp,
+                    maxLines = 1
+                )
+            }
+            VaultPill("SEALED", colors.accentGreen)
+        }
+        Spacer(Modifier.height(14.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            VaultHeroStat("FILES", "$fileCount", colors.accentGreen, Modifier.weight(1f))
+            VaultHeroStat("VAULT", formatSize(vaultBytes), colors.accentBlue, Modifier.weight(1f))
+            VaultHeroStat("DEVICE", "${String.format("%.0f", totalGb)} GB", colors.accentAmber, Modifier.weight(1f))
+        }
+        Spacer(Modifier.height(12.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                "DEVICE STORAGE",
+                color = colors.textMuted,
+                fontSize = 8.5.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 0.8.sp
+            )
+            Text(
+                "${String.format("%.1f", usedGb)} / ${String.format("%.0f", totalGb)} GB",
+                color = colors.textSecondary,
+                fontSize = 9.5.sp,
+                fontFamily = FontFamily.Monospace
+            )
+        }
+        Spacer(Modifier.height(5.dp))
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(5.dp)
+                .clip(RoundedCornerShape(999.dp))
+                .background(colors.border.copy(alpha = 0.7f))
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(usedFraction)
+                    .fillMaxHeight()
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(colors.accentGreen)
+            )
+        }
+        Spacer(Modifier.height(14.dp))
+        Button(
+            onClick = onAdd,
+            colors = ButtonDefaults.buttonColors(containerColor = colors.accentGreen, contentColor = Color.White),
+            shape = RoundedCornerShape(999.dp),
+            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
+        ) {
+            Icon(Icons.Default.Add, contentDescription = "Add", modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(5.dp))
+            Text("Add File", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+private fun allFilesLabel(count: Int): String = "$count file${if (count == 1) "" else "s"}"
+
+@Composable
+private fun VaultHeroStat(label: String, value: String, tint: Color, modifier: Modifier = Modifier) {
+    val colors = LocalKarenColors.current
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(11.dp))
+            .background(colors.surfaceHover.copy(alpha = 0.45f))
+            .border(1.dp, colors.border.copy(alpha = 0.7f), RoundedCornerShape(11.dp))
+            .padding(horizontal = 9.dp, vertical = 8.dp)
+    ) {
+        Text(label, color = colors.textMuted, fontSize = 8.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp)
+        Spacer(Modifier.height(3.dp))
+        Text(
+            value,
+            color = tint,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold,
+            fontFamily = FontFamily.Monospace,
+            maxLines = 1,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
+private fun VaultPill(text: String, tint: Color) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(tint.copy(alpha = 0.10f))
+            .border(1.dp, tint.copy(alpha = 0.4f), RoundedCornerShape(999.dp))
+            .padding(horizontal = 8.dp, vertical = 4.dp)
+    ) {
+        Text(
+            text,
+            color = tint,
+            fontSize = 7.5.sp,
+            fontWeight = FontWeight.Bold,
+            fontFamily = FontFamily.Monospace,
+            letterSpacing = 0.6.sp
+        )
+    }
+}
+
+@Composable
+private fun VaultSectionLabel(
+    kicker: String,
+    icon: ImageVector,
+    tint: Color,
+    trailing: String? = null
+) {
+    val colors = LocalKarenColors.current
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(26.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(tint.copy(alpha = 0.12f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(14.dp))
+        }
+        Spacer(Modifier.width(8.dp))
+        Text(
+            kicker.uppercase(),
+            color = colors.textSecondary,
+            fontSize = 10.5.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 0.9.sp,
+            modifier = Modifier.weight(1f)
+        )
+        if (!trailing.isNullOrBlank()) {
+            Text(trailing, color = colors.textMuted, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+        }
+    }
+}
+
+@Composable
+private fun VaultEmptyState(
+    icon: ImageVector,
+    title: String,
+    body: String,
+    tint: Color
+) {
+    val colors = LocalKarenColors.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(colors.surface)
+            .border(1.dp, colors.border, RoundedCornerShape(14.dp))
+            .padding(14.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(36.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(tint.copy(alpha = 0.11f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(18.dp))
+        }
+        Spacer(Modifier.width(10.dp))
+        Column {
+            Text(title, color = colors.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Text(body, color = colors.textMuted, fontSize = 11.5.sp, lineHeight = 15.sp)
+        }
+    }
+}
+
+@Composable
+private fun LatestVaultCard(file: File?, onOpen: () -> Unit) {
+    val colors = LocalKarenColors.current
+    val tint = file?.let { vaultTintFor(it.name, colors) } ?: colors.accentGreen
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(
+                androidx.compose.ui.graphics.Brush.verticalGradient(
+                    listOf(tint.copy(alpha = 0.08f), colors.cardBackground)
+                )
+            )
+            .border(1.dp, tint.copy(alpha = 0.35f), RoundedCornerShape(16.dp))
+            .padding(14.dp)
+    ) {
+        if (file == null) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(38.dp)
+                        .clip(RoundedCornerShape(11.dp))
+                        .background(tint.copy(alpha = 0.12f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(Icons.AutoMirrored.Filled.MenuBook, contentDescription = null, tint = tint, modifier = Modifier.size(19.dp))
+                }
+                Spacer(Modifier.width(10.dp))
+                Column {
+                    Text("No documents yet", color = colors.textPrimary, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                    Text("Add files with Add File above.", color = colors.textMuted, fontSize = 11.5.sp)
+                }
+            }
+            return@Column
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(11.dp))
+                    .background(tint.copy(alpha = 0.13f))
+                    .border(1.dp, tint.copy(alpha = 0.22f), RoundedCornerShape(11.dp)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(vaultIconFor(file.name), contentDescription = null, tint = tint, modifier = Modifier.size(19.dp))
+            }
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "LATEST // ${vaultKindFor(file.name)}",
+                        color = tint,
+                        fontSize = 8.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 0.8.sp
+                    )
+                }
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    file.name,
+                    color = colors.textPrimary,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                )
+            }
+            VaultPill("LOCAL", tint)
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "${formatSize(file.length())} · Modified ${java.text.DateFormat.getDateTimeInstance().format(java.util.Date(file.lastModified()))}",
+            color = colors.textSecondary,
+            fontSize = 11.sp,
+            lineHeight = 16.sp,
+            fontFamily = FontFamily.Monospace
+        )
+        Spacer(Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                onClick = onOpen,
+                colors = ButtonDefaults.buttonColors(containerColor = tint, contentColor = Color.White),
+                shape = RoundedCornerShape(999.dp),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 5.dp)
+            ) {
+                Icon(Icons.Default.OpenInNew, contentDescription = null, modifier = Modifier.size(13.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Open", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            }
         }
     }
 }
@@ -726,39 +1067,101 @@ private fun VaultFileRow(
     onDelete: (() -> Unit)? = null
 ) {
     val colors = LocalKarenColors.current
+    val tint = vaultTintFor(name, colors)
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(14.dp))
             .background(colors.surface)
-            .border(1.dp, colors.border, RoundedCornerShape(12.dp))
+            .border(1.dp, colors.border, RoundedCornerShape(14.dp))
             .clickable { onOpen() }
-            .padding(12.dp),
+            .padding(horizontal = 11.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(icon, contentDescription = name, tint = colors.textSecondary, modifier = Modifier.size(20.dp))
-        Spacer(Modifier.width(10.dp))
+        Box(
+            modifier = Modifier
+                .size(36.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(tint.copy(alpha = 0.12f))
+                .border(1.dp, tint.copy(alpha = 0.2f), RoundedCornerShape(10.dp)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(icon, contentDescription = name, tint = tint, modifier = Modifier.size(18.dp))
+        }
+        Spacer(Modifier.width(9.dp))
         Column(Modifier.weight(1f)) {
-            Text(
-                name,
-                color = colors.textPrimary,
-                fontSize = 13.5.sp,
-                fontWeight = FontWeight.Medium,
-                maxLines = 1,
-                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
-            )
-            Text(meta, color = colors.textMuted, fontSize = 11.5.sp, maxLines = 1)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    name,
+                    color = colors.textPrimary,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+                Spacer(Modifier.width(6.dp))
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(5.dp))
+                        .background(tint.copy(alpha = 0.10f))
+                        .padding(horizontal = 5.dp, vertical = 1.dp)
+                ) {
+                    Text(
+                        vaultKindFor(name),
+                        color = tint,
+                        fontSize = 7.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+            }
+            Spacer(Modifier.height(2.dp))
+            Text(meta, color = colors.textMuted, fontSize = 10.sp, fontFamily = FontFamily.Monospace, maxLines = 1)
         }
-        IconButton(onClick = onShare, modifier = Modifier.size(32.dp)) {
-            Icon(Icons.Default.Share, contentDescription = "Share $name", tint = colors.textMuted, modifier = Modifier.size(16.dp))
+        IconButton(onClick = onShare, modifier = Modifier.size(30.dp)) {
+            Icon(Icons.Default.Share, contentDescription = "Share $name", tint = colors.textMuted, modifier = Modifier.size(15.dp))
         }
-        IconButton(onClick = onRename, modifier = Modifier.size(32.dp)) {
-            Icon(Icons.Default.Edit, contentDescription = "Rename $name", tint = colors.textMuted, modifier = Modifier.size(16.dp))
+        IconButton(onClick = onRename, modifier = Modifier.size(30.dp)) {
+            Icon(Icons.Default.Edit, contentDescription = "Rename $name", tint = colors.textMuted, modifier = Modifier.size(15.dp))
         }
         if (onDelete != null) {
-            IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
-                Icon(Icons.Default.DeleteOutline, contentDescription = "Delete $name", tint = colors.textMuted, modifier = Modifier.size(16.dp))
+            IconButton(onClick = onDelete, modifier = Modifier.size(30.dp)) {
+                Icon(Icons.Default.DeleteOutline, contentDescription = "Delete $name", tint = colors.accentRed.copy(alpha = 0.8f), modifier = Modifier.size(15.dp))
             }
         }
     }
+}
+
+private fun vaultTintFor(name: String, colors: KarenColors): Color = when (name.substringAfterLast('.', "").lowercase()) {
+    "pdf" -> colors.accentRed
+    "md", "txt" -> colors.accentBlue
+    "kt", "rs", "java" -> colors.accentGreen
+    "wav", "mp3", "m4a", "ogg" -> colors.accentAmber
+    "jpg", "jpeg", "png", "webp", "gif" -> Color(0xFFA78BFA)
+    "mp4", "mkv" -> Color(0xFFF472B6)
+    "zip" -> Color(0xFF94A3B8)
+    else -> colors.accentGreen
+}
+
+private fun vaultKindFor(name: String): String {
+    val ext = name.substringAfterLast('.', "").lowercase()
+    return when (ext) {
+        "" -> "FILE"
+        "jpeg" -> "JPG"
+        "txt" -> "TXT"
+        "md" -> "MD"
+        else -> ext.uppercase().take(4)
+    }
+}
+
+private fun vaultIconFor(name: String): ImageVector = when (name.substringAfterLast('.', "").lowercase()) {
+    "kt", "rs", "java" -> Icons.Default.Code
+    "wav", "mp3", "m4a", "ogg" -> Icons.Default.Mic
+    "gguf" -> Icons.Default.Memory
+    "md", "txt", "pdf" -> Icons.Default.Description
+    "jpg", "jpeg", "png", "webp", "gif" -> Icons.Default.Image
+    "mp4", "mkv" -> Icons.Default.Movie
+    "zip" -> Icons.Default.Archive
+    else -> Icons.AutoMirrored.Filled.InsertDriveFile
 }

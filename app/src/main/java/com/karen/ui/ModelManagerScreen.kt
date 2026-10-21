@@ -505,30 +505,61 @@ private fun ManagerTabBar(
     ) {
         ModelTab.entries.forEach { t ->
             val active = t == selected
+            val tint = when (t) {
+                ModelTab.Device -> colors.accentGreen
+                ModelTab.Cloud -> colors.accentBlue
+                ModelTab.Voice -> colors.accentAmber
+            }
             Row(
                 modifier = Modifier
                     .weight(1f)
                     .clip(RoundedCornerShape(10.dp))
-                    .background(if (active) colors.accentGreen else Color.Transparent)
+                    .background(if (active) tint.copy(alpha = 0.14f) else Color.Transparent)
+                    .border(
+                        1.dp,
+                        if (active) tint.copy(alpha = 0.42f) else Color.Transparent,
+                        RoundedCornerShape(10.dp)
+                    )
                     .clickable { onSelect(t) }
                     .heightIn(min = 44.dp)
                     .padding(horizontal = 4.dp),
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                Icon(
+                    when (t) {
+                        ModelTab.Device -> Icons.Default.Memory
+                        ModelTab.Cloud -> Icons.Default.Cloud
+                        ModelTab.Voice -> Icons.Default.GraphicEq
+                    },
+                    contentDescription = null,
+                    tint = if (active) tint else colors.textMuted,
+                    modifier = Modifier.size(14.dp)
+                )
+                Spacer(Modifier.width(4.dp))
                 Text(
                     t.label,
-                    color = if (active) Color.White else colors.textSecondary,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.SemiBold
+                    color = if (active) tint else colors.textSecondary,
+                    fontSize = 11.5.sp,
+                    fontWeight = if (active) FontWeight.Bold else FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                 )
-                Spacer(Modifier.width(5.dp))
-                Text(
-                    "${counts[t] ?: 0}",
-                    color = if (active) Color.White.copy(alpha = 0.75f) else colors.textMuted,
-                    fontSize = 10.sp,
-                    fontFamily = FontFamily.Monospace
-                )
+                Spacer(Modifier.width(4.dp))
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(if (active) tint.copy(alpha = 0.16f) else colors.surfaceHover)
+                        .padding(horizontal = 5.dp, vertical = 1.dp)
+                ) {
+                    Text(
+                        "${counts[t] ?: 0}",
+                        color = if (active) tint else colors.textMuted,
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
             }
         }
     }
@@ -587,28 +618,47 @@ private fun SearchField(
 }
 
 @Composable
-private fun SectionHeader(title: String, trailing: String? = null) {
+private fun SectionHeader(
+    title: String,
+    trailing: String? = null,
+    icon: ImageVector? = null,
+    tint: Color? = null
+) {
     val colors = LocalKarenColors.current
+    val iconTint = tint ?: colors.textMuted
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(top = 4.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
+        if (icon != null) {
+            Box(
+                modifier = Modifier
+                    .size(24.dp)
+                    .clip(RoundedCornerShape(7.dp))
+                    .background(iconTint.copy(alpha = 0.12f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(icon, contentDescription = null, tint = iconTint, modifier = Modifier.size(13.dp))
+            }
+            Spacer(Modifier.width(7.dp))
+        }
         Text(
             title.uppercase(),
-            color = colors.textMuted,
+            color = if (icon != null) colors.textSecondary else colors.textMuted,
             fontSize = 10.5.sp,
             fontWeight = FontWeight.Bold,
-            letterSpacing = 0.8.sp
+            letterSpacing = 0.8.sp,
+            modifier = Modifier.weight(1f)
         )
         if (!trailing.isNullOrBlank()) {
             Text(
                 trailing,
                 color = colors.textMuted,
                 fontSize = 10.5.sp,
-                fontFamily = FontFamily.Monospace
+                fontFamily = FontFamily.Monospace,
+                maxLines = 1
             )
         }
     }
@@ -1030,43 +1080,62 @@ private fun CloudProviderCard(
     onClick: () -> Unit
 ) {
     val colors = LocalKarenColors.current
+    val tint = providerTintOf(title, colors)
+    val stateTint = if (connected) colors.accentGreen else tint
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(14.dp))
             .background(colors.surface)
-            .border(1.dp, colors.border, RoundedCornerShape(12.dp))
+            .border(
+                1.dp,
+                if (connected) colors.accentGreen.copy(alpha = 0.3f) else colors.border,
+                RoundedCornerShape(14.dp)
+            )
             .clickable(onClick = onClick)
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
             modifier = Modifier
-                .size(32.dp)
-                .clip(RoundedCornerShape(8.dp))
+                .size(34.dp)
+                .clip(RoundedCornerShape(10.dp))
                 .background(
-                    if (connected) colors.accentGreen.copy(alpha = 0.12f)
-                    else colors.accentBlue.copy(alpha = 0.12f)
-                ),
+                    androidx.compose.ui.graphics.Brush.linearGradient(
+                        listOf(tint.copy(alpha = 0.24f), tint.copy(alpha = 0.08f))
+                    )
+                )
+                .border(1.dp, tint.copy(alpha = 0.28f), RoundedCornerShape(10.dp)),
             contentAlignment = Alignment.Center
         ) {
-            Icon(
-                if (connected) Icons.Default.CheckCircle else Icons.Default.Cloud,
-                contentDescription = null,
-                tint = if (connected) colors.accentGreen else colors.accentBlue,
-                modifier = Modifier.size(16.dp)
+            Text(
+                providerMonogramOf(title),
+                color = tint,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                fontFamily = FontFamily.Monospace
             )
         }
         Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f)) {
-            Text(
-                title,
-                color = colors.textPrimary,
-                fontSize = 12.5.sp,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(6.dp)
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(if (connected) colors.accentGreen else tint.copy(alpha = 0.6f))
+                )
+                Spacer(Modifier.width(5.dp))
+                Text(
+                    title,
+                    color = colors.textPrimary,
+                    fontSize = 12.5.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                )
+            }
+            Spacer(Modifier.height(1.dp))
             Text(
                 subtitle,
                 color = if (connected) colors.accentGreen else colors.textMuted,
@@ -1076,19 +1145,55 @@ private fun CloudProviderCard(
                 overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
             )
         }
-        Text(
-            if (connected) "Configure" else "Connect",
-            color = if (connected) colors.accentGreen else colors.accentBlue,
-            fontSize = 10.5.sp,
-            fontWeight = FontWeight.Medium
-        )
-        Spacer(Modifier.width(2.dp))
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(999.dp))
+                .background(stateTint.copy(alpha = 0.10f))
+                .border(1.dp, stateTint.copy(alpha = 0.36f), RoundedCornerShape(999.dp))
+                .padding(horizontal = 7.dp, vertical = 3.dp)
+        ) {
+            Text(
+                if (connected) "CONFIG" else "CONNECT",
+                color = stateTint,
+                fontSize = 8.sp,
+                fontWeight = FontWeight.Bold,
+                fontFamily = FontFamily.Monospace
+            )
+        }
+        Spacer(Modifier.width(3.dp))
         Icon(
             Icons.Default.ChevronRight,
             contentDescription = null,
             tint = colors.textMuted,
             modifier = Modifier.size(15.dp)
         )
+    }
+}
+
+private fun providerMonogramOf(name: String): String {
+    val words = name.split(" ", "-", "_").filter { it.isNotBlank() }
+    return if (words.size >= 2) {
+        words.take(2).joinToString("") { it.take(1) }.uppercase()
+    } else {
+        name.filter { it.isLetterOrDigit() }.take(2).uppercase().ifBlank { "AI" }
+    }
+}
+
+private fun providerTintOf(name: String, colors: KarenColors): Color {
+    val n = name.lowercase()
+    return when {
+        "openai" in n -> colors.accentGreen
+        "anthropic" in n || "claude" in n -> colors.accentAmber
+        "google" in n || "gemini" in n -> colors.accentBlue
+        "groq" in n -> Color(0xFFF97316)
+        "xai" in n || "grok" in n -> Color(0xFFA78BFA)
+        "deepseek" in n -> Color(0xFF38BDF8)
+        "openrouter" in n -> Color(0xFFA78BFA)
+        "mistral" in n -> colors.accentAmber
+        "together" in n -> colors.accentGreen
+        "fireworks" in n -> colors.accentRed
+        "perplexity" in n -> Color(0xFF22D3EE)
+        else -> colors.accentBlue
     }
 }
 
@@ -1108,13 +1213,22 @@ private fun KeyBackupCard(
             .padding(13.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(
-                Icons.Default.Lock,
-                contentDescription = null,
-                tint = colors.accentAmber,
-                modifier = Modifier.size(16.dp)
-            )
-            Spacer(Modifier.width(7.dp))
+            Box(
+                modifier = Modifier
+                    .size(30.dp)
+                    .clip(RoundedCornerShape(9.dp))
+                    .background(colors.accentAmber.copy(alpha = 0.13f))
+                    .border(1.dp, colors.accentAmber.copy(alpha = 0.25f), RoundedCornerShape(9.dp)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Default.Lock,
+                    contentDescription = null,
+                    tint = colors.accentAmber,
+                    modifier = Modifier.size(15.dp)
+                )
+            }
+            Spacer(Modifier.width(8.dp))
             Text(
                 "Key backup",
                 color = colors.textPrimary,
@@ -1122,12 +1236,21 @@ private fun KeyBackupCard(
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.weight(1f)
             )
-            Text(
-                "$keyCount stored",
-                color = colors.textMuted,
-                fontSize = 10.5.sp,
-                fontFamily = FontFamily.Monospace
-            )
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(colors.accentAmber.copy(alpha = 0.10f))
+                    .border(1.dp, colors.accentAmber.copy(alpha = 0.32f), RoundedCornerShape(999.dp))
+                    .padding(horizontal = 7.dp, vertical = 2.dp)
+            ) {
+                Text(
+                    "ENCRYPTED",
+                    color = colors.accentAmber,
+                    fontSize = 7.5.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace
+                )
+            }
         }
         Spacer(Modifier.height(5.dp))
         Text(
@@ -1138,13 +1261,31 @@ private fun KeyBackupCard(
         )
         Spacer(Modifier.height(9.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = onExport, shape = RoundedCornerShape(10.dp)) {
-                Text("Export keys", fontSize = 12.sp)
+            OutlinedButton(onClick = onExport, shape = RoundedCornerShape(999.dp)) {
+                Text("Export keys", fontSize = 11.5.sp)
             }
-            OutlinedButton(onClick = onImport, shape = RoundedCornerShape(10.dp)) {
-                Text("Import keys", fontSize = 12.sp)
+            OutlinedButton(onClick = onImport, shape = RoundedCornerShape(999.dp)) {
+                Text("Import keys", fontSize = 11.5.sp)
             }
         }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "$keyCount keys stored",
+            color = colors.textMuted,
+            fontSize = 9.5.sp,
+            fontFamily = FontFamily.Monospace
+        )
+    }
+}
+
+private fun voiceTintOf(model: ModelDownloader.VoiceModel, colors: KarenColors): Color {
+    val n = "${model.name} ${model.engine}".lowercase()
+    return when {
+        "piper" in n -> colors.accentBlue
+        "sherpa" in n -> colors.accentGreen
+        "whisper" in n -> colors.accentAmber
+        "tts" in n -> Color(0xFFA78BFA)
+        else -> colors.accentAmber
     }
 }
 
@@ -1161,26 +1302,32 @@ private fun VoiceWeightCard(
     onDelete: () -> Unit
 ) {
     val colors = LocalKarenColors.current
+    val tint = voiceTintOf(model, colors)
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
             .background(colors.surface)
-            .border(1.dp, colors.border, RoundedCornerShape(14.dp))
+            .border(
+                1.dp,
+                if (installed) colors.accentGreen.copy(alpha = 0.28f) else colors.border,
+                RoundedCornerShape(14.dp)
+            )
             .padding(13.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
                 modifier = Modifier
                     .size(38.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(colors.accentAmber.copy(alpha = 0.12f)),
+                    .clip(RoundedCornerShape(11.dp))
+                    .background(tint.copy(alpha = 0.13f))
+                    .border(1.dp, tint.copy(alpha = 0.24f), RoundedCornerShape(11.dp)),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
                     Icons.Default.RecordVoiceOver,
                     contentDescription = null,
-                    tint = colors.accentAmber,
+                    tint = tint,
                     modifier = Modifier.size(18.dp)
                 )
             }
@@ -1197,7 +1344,7 @@ private fun VoiceWeightCard(
                 Spacer(Modifier.height(3.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                     MetaChip(model.sizeLabel, colors.accentBlue)
-                    MetaChip(model.engine, colors.textMuted)
+                    MetaChip(model.engine, tint)
                 }
             }
             when {
@@ -1209,11 +1356,11 @@ private fun VoiceWeightCard(
                         modifier = Modifier.size(16.dp)
                     )
                 }
-                downloading -> OutlinedButton(onClick = onCancel) {
-                    Text("Cancel", fontSize = 12.sp)
+                downloading -> OutlinedButton(onClick = onCancel, shape = RoundedCornerShape(999.dp)) {
+                    Text("Cancel", fontSize = 11.sp)
                 }
                 else -> TextButton(onClick = onDownload) {
-                    Text("Download", color = colors.accentGreen, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                    Text("Download", color = tint, fontSize = 11.5.sp, fontWeight = FontWeight.Medium)
                 }
             }
         }
@@ -1231,7 +1378,21 @@ private fun VoiceWeightCard(
                 overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
             )
             if (installed) {
-                Text("Installed", color = colors.accentGreen, fontSize = 10.5.sp, fontWeight = FontWeight.Medium)
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(colors.accentGreen.copy(alpha = 0.10f))
+                        .border(1.dp, colors.accentGreen.copy(alpha = 0.34f), RoundedCornerShape(999.dp))
+                        .padding(horizontal = 7.dp, vertical = 2.dp)
+                ) {
+                    Text(
+                        "INSTALLED",
+                        color = colors.accentGreen,
+                        fontSize = 7.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
             }
         }
         if (downloading) {
@@ -1923,7 +2084,14 @@ fun ModelManagerScreen(
                         q.isEmpty() || it.name.lowercase().contains(q) ||
                             it.quant.lowercase().contains(q) || it.fileName.lowercase().contains(q)
                     }
-                    item { SectionHeader("Installed weights", "${models.size} on device") }
+                    item {
+                        SectionHeader(
+                            "Installed weights",
+                            "${models.size} on device",
+                            Icons.Default.Memory,
+                            colors.accentGreen
+                        )
+                    }
                     when {
                         models.isEmpty() -> item {
                             EmptyState(
@@ -1958,7 +2126,9 @@ fun ModelManagerScreen(
                             "Catalog",
                             "${allCatalog.count { !it.embedding && !it.projector }} chat · " +
                                 "${allCatalog.count { it.embedding }} embed · " +
-                                "${allCatalog.count { it.projector }} projector"
+                                "${allCatalog.count { it.projector }} projector",
+                            Icons.Default.Storefront,
+                            colors.accentBlue
                         )
                     }
                     if (catalog.isEmpty()) {
@@ -2054,7 +2224,14 @@ fun ModelManagerScreen(
                     if (apiError != null) {
                         item { ErrorBanner(apiError!!) }
                     }
-                    item { SectionHeader("Connected", "${connectedNames.size} of ${providers.size}") }
+                    item {
+                        SectionHeader(
+                            "Connected",
+                            "${connectedNames.size} of ${providers.size}",
+                            Icons.Default.CloudDone,
+                            colors.accentGreen
+                        )
+                    }
                     if (connectedNames.isEmpty()) {
                         item {
                             EmptyState(
@@ -2085,7 +2262,14 @@ fun ModelManagerScreen(
                         }
                     }
                     if (available.isNotEmpty()) {
-                        item { SectionHeader("Available providers", "${available.size}") }
+                        item {
+                            SectionHeader(
+                                "Available providers",
+                                "${available.size}",
+                                Icons.Default.CloudQueue,
+                                colors.accentBlue
+                            )
+                        }
                         items(available, key = { "provider:${it.id}" }) { p ->
                             CloudProviderCard(
                                 title = p.name,
@@ -2125,7 +2309,14 @@ fun ModelManagerScreen(
                 }
 
                 ModelTab.Voice -> {
-                    item { SectionHeader("System engines", "0 MB") }
+                    item {
+                        SectionHeader(
+                            "System engines",
+                            "0 MB",
+                            Icons.Default.GraphicEq,
+                            colors.accentGreen
+                        )
+                    }
                     item {
                         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             ModelSourceRow(
@@ -2155,7 +2346,14 @@ fun ModelManagerScreen(
                             )
                         }
                     }
-                    item { SectionHeader("Downloadable weights", "${ModelDownloader.voiceCatalog.size}") }
+                    item {
+                        SectionHeader(
+                            "Downloadable weights",
+                            "${ModelDownloader.voiceCatalog.size}",
+                            Icons.Default.RecordVoiceOver,
+                            colors.accentAmber
+                        )
+                    }
                     items(ModelDownloader.voiceCatalog, key = { "voice:${it.fileName}" }) { v ->
                         VoiceWeightCard(
                             model = v,

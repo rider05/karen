@@ -14,7 +14,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
@@ -136,6 +138,7 @@ fun MemoryScreen(
                     messages = totalMessages,
                     windowUsed = stats.windowUsed,
                     windowDaysLeft = stats.windowDaysLeft,
+                    memoryOn = memoryOn,
                     onExport = { exportJson() },
                     onReset = { showReset = true }
                 )
@@ -174,7 +177,12 @@ fun MemoryScreen(
                 )
             }
             item {
-                Text("Preferences", color = colors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                MemorySectionLabel(
+                    kicker = "Preferences",
+                    icon = Icons.Default.Tune,
+                    tint = colors.accentBlue,
+                    trailing = if (memoryOn) "memory on" else "memory off"
+                )
                 Spacer(Modifier.height(6.dp))
                 MemoryPreferenceCard(
                     memoryOn = memoryOn,
@@ -236,6 +244,7 @@ private fun MemoryHeroCard(
     messages: Int,
     windowUsed: Int,
     windowDaysLeft: Int,
+    memoryOn: Boolean,
     onExport: () -> Unit,
     onReset: () -> Unit
 ) {
@@ -243,92 +252,144 @@ private fun MemoryHeroCard(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
-            .background(colors.surface)
-            .border(1.dp, colors.border, RoundedCornerShape(16.dp))
+            .clip(RoundedCornerShape(20.dp))
+            .background(
+                Brush.verticalGradient(
+                    listOf(colors.surface, colors.cardBackground)
+                )
+            )
+            .border(1.dp, colors.accentGreen.copy(alpha = 0.3f), RoundedCornerShape(20.dp))
             .padding(16.dp)
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text("On-device memory", color = colors.textPrimary, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+        Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
                 modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(colors.accentGreen.copy(alpha = 0.2f))
-                    .padding(horizontal = 8.dp, vertical = 2.dp)
+                    .size(42.dp)
+                    .clip(RoundedCornerShape(13.dp))
+                    .background(colors.accentGreen.copy(alpha = 0.13f))
+                    .border(1.dp, colors.accentGreen.copy(alpha = 0.28f), RoundedCornerShape(13.dp)),
+                contentAlignment = Alignment.Center
             ) {
-                Text("100% on-device", color = colors.accentGreen, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                Icon(Icons.Default.Psychology, contentDescription = null, tint = colors.accentGreen, modifier = Modifier.size(21.dp))
             }
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "ON-DEVICE MEMORY // PRIVATE",
+                    color = colors.accentGreen,
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.05.sp
+                )
+                Spacer(Modifier.height(2.dp))
+                Text("Memory & Preferences", color = colors.textPrimary, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+                Text("Learned style, confirmed facts, local only", color = colors.textMuted, fontSize = 11.sp, maxLines = 1)
+            }
+            MemoryPill(
+                text = if (memoryOn) "ACTIVE" else "PAUSED",
+                tint = if (memoryOn) colors.accentGreen else colors.accentAmber
+            )
         }
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(12.dp))
         Text(
             "Karen personalizes replies from the signals you give in Chat and the facts you confirm here. Nothing is uploaded — memory lives only in this app.",
             color = colors.textMuted,
-            fontSize = 12.sp,
-            lineHeight = 17.sp
+            fontSize = 11.5.sp,
+            lineHeight = 16.sp
         )
         Spacer(Modifier.height(12.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            StatTile(signals.toString(), "Style signals", Modifier.weight(1f))
-            StatTile(facts.toString(), "Saved facts", Modifier.weight(1f))
-            StatTile(messages.toString(), "Messages", Modifier.weight(1f))
+            StatTile(signals.toString(), "Style signals", Icons.Default.AutoAwesome, colors.accentGreen, Modifier.weight(1f))
+            StatTile(facts.toString(), "Saved facts", Icons.Default.Bookmark, colors.accentBlue, Modifier.weight(1f))
+            StatTile(messages.toString(), "Messages", Icons.Default.Chat, colors.accentAmber, Modifier.weight(1f))
         }
         Spacer(Modifier.height(10.dp))
-        Text(
-            if (signals == 0) {
-                "Signals expire 30 days or 300 messages after the first one."
-            } else {
-                "Style window · $windowUsed/300 messages · resets in ${
-                    if (windowDaysLeft == 1) "1 day" else "$windowDaysLeft days"
-                }"
-            },
-            color = colors.textMuted,
-            fontSize = 11.sp,
-            fontFamily = FontFamily.Monospace
-        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .background(colors.surfaceHover.copy(alpha = 0.4f))
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(Icons.Default.Timer, contentDescription = null, tint = colors.accentBlue, modifier = Modifier.size(14.dp))
+            Spacer(Modifier.width(7.dp))
+            Text(
+                if (signals == 0) {
+                    "Signals expire 30 days or 300 messages after the first one."
+                } else {
+                    "Style window · $windowUsed/300 messages · resets in ${
+                        if (windowDaysLeft == 1) "1 day" else "$windowDaysLeft days"
+                    }"
+                },
+                color = colors.textMuted,
+                fontSize = 10.5.sp,
+                fontFamily = FontFamily.Monospace,
+                lineHeight = 14.sp
+            )
+        }
         Spacer(Modifier.height(12.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(
                 onClick = onExport,
                 colors = ButtonDefaults.buttonColors(containerColor = colors.accentGreen, contentColor = Color.White),
-                shape = RoundedCornerShape(10.dp)
+                shape = RoundedCornerShape(999.dp),
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 7.dp)
             ) {
-                Text("Export JSON", fontSize = 12.sp)
+                Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(14.dp))
+                Spacer(Modifier.width(5.dp))
+                Text("Export JSON", fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
             }
             OutlinedButton(
                 onClick = onReset,
                 colors = ButtonDefaults.outlinedButtonColors(contentColor = colors.accentRed),
-                shape = RoundedCornerShape(10.dp)
+                shape = RoundedCornerShape(999.dp),
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 7.dp)
             ) {
-                Text("Reset memory", fontSize = 12.sp)
+                Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(14.dp))
+                Spacer(Modifier.width(5.dp))
+                Text("Reset memory", fontSize = 11.5.sp)
             }
         }
     }
 }
 
 @Composable
-private fun StatTile(value: String, label: String, modifier: Modifier = Modifier) {
+private fun StatTile(
+    value: String,
+    label: String,
+    icon: ImageVector,
+    tint: Color,
+    modifier: Modifier = Modifier
+) {
     val colors = LocalKarenColors.current
     Column(
         modifier = modifier
             .clip(RoundedCornerShape(12.dp))
-            .background(colors.surfaceHover.copy(alpha = 0.55f))
-            .border(1.dp, colors.border.copy(alpha = 0.6f), RoundedCornerShape(12.dp))
-            .padding(vertical = 10.dp, horizontal = 6.dp),
+            .background(colors.surfaceHover.copy(alpha = 0.45f))
+            .border(1.dp, colors.border.copy(alpha = 0.7f), RoundedCornerShape(12.dp))
+            .padding(vertical = 9.dp, horizontal = 7.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
+        Box(
+            modifier = Modifier
+                .size(22.dp)
+                .clip(RoundedCornerShape(7.dp))
+                .background(tint.copy(alpha = 0.13f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(12.dp))
+        }
+        Spacer(Modifier.height(5.dp))
         Text(
             value,
-            color = colors.accentGreen,
-            fontSize = 18.sp,
+            color = tint,
+            fontSize = 17.sp,
             fontWeight = FontWeight.Bold,
             fontFamily = FontFamily.Monospace
         )
-        Spacer(Modifier.height(2.dp))
-        Text(label, color = colors.textMuted, fontSize = 10.5.sp)
+        Spacer(Modifier.height(1.dp))
+        Text(label, color = colors.textMuted, fontSize = 9.5.sp, maxLines = 1)
     }
 }
 
@@ -347,29 +408,41 @@ private fun StyleSignalsCard(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
+            .clip(RoundedCornerShape(18.dp))
             .background(colors.surface)
-            .border(1.dp, colors.border, RoundedCornerShape(16.dp))
+            .border(1.dp, colors.border, RoundedCornerShape(18.dp))
             .padding(16.dp)
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text("How Karen answers", color = colors.textPrimary, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-            if (hasSignals) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            MemoryIconTile(Icons.Default.AutoAwesome, colors.accentGreen)
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
                 Text(
-                    "$likes liked · $dislikes notes",
-                    color = colors.textMuted,
-                    fontSize = 10.5.sp,
-                    fontFamily = FontFamily.Monospace
+                    "LEARNED STYLE",
+                    color = colors.accentGreen,
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.sp
                 )
+                Text("How Karen answers", color = colors.textPrimary, fontSize = 14.5.sp, fontWeight = FontWeight.SemiBold)
+            }
+            if (hasSignals) {
+                MemoryPill("$likes liked · $dislikes notes", colors.accentGreen)
+            } else {
+                MemoryPill("NO SIGNALS", colors.textMuted)
             }
         }
         Spacer(Modifier.height(10.dp))
         if (!hasSignals) {
-            Row(verticalAlignment = Alignment.Top) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(colors.surfaceHover.copy(alpha = 0.35f))
+                    .border(1.dp, colors.border.copy(alpha = 0.7f), RoundedCornerShape(12.dp))
+                    .padding(12.dp),
+                verticalAlignment = Alignment.Top
+            ) {
                 Icon(
                     Icons.Default.AutoAwesome,
                     contentDescription = null,
@@ -382,47 +455,63 @@ private fun StyleSignalsCard(
                 Text(
                     "No signals yet. Like or dislike a reply in Chat and Karen learns its shape — length, structure, and what to avoid.",
                     color = colors.textMuted,
-                    fontSize = 12.sp,
-                    lineHeight = 17.sp
+                    fontSize = 11.5.sp,
+                    lineHeight = 16.sp
                 )
             }
         } else {
-            summary.forEach { line ->
-                Row(modifier = Modifier.padding(vertical = 3.dp), verticalAlignment = Alignment.Top) {
-                    Box(
-                        modifier = Modifier
-                            .padding(top = 5.dp)
-                            .size(6.dp)
-                            .clip(CircleShape)
-                            .background(colors.accentGreen)
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text(line, color = colors.textPrimary, fontSize = 12.5.sp, lineHeight = 17.sp)
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(colors.surfaceHover.copy(alpha = 0.25f))
+                    .padding(horizontal = 11.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                summary.forEach { line ->
+                    Row(modifier = Modifier.padding(vertical = 3.dp), verticalAlignment = Alignment.Top) {
+                        Box(
+                            modifier = Modifier
+                                .padding(top = 5.dp)
+                                .size(6.dp)
+                                .clip(CircleShape)
+                                .background(colors.accentGreen)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(line, color = colors.textPrimary, fontSize = 12.5.sp, lineHeight = 17.sp)
+                    }
                 }
-            }
-            feedback.takeLast(3).forEach { note ->
-                Row(modifier = Modifier.padding(vertical = 3.dp), verticalAlignment = Alignment.Top) {
-                    Box(
-                        modifier = Modifier
-                            .padding(top = 5.dp)
-                            .size(6.dp)
-                            .clip(CircleShape)
-                            .background(colors.accentAmber)
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        "“${note.trim()}”",
-                        color = colors.textSecondary,
-                        fontSize = 12.sp,
-                        lineHeight = 17.sp,
-                        fontStyle = FontStyle.Italic
-                    )
+                feedback.takeLast(3).forEach { note ->
+                    Row(modifier = Modifier.padding(vertical = 3.dp), verticalAlignment = Alignment.Top) {
+                        Box(
+                            modifier = Modifier
+                                .padding(top = 5.dp)
+                                .size(6.dp)
+                                .clip(CircleShape)
+                                .background(colors.accentAmber)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "“${note.trim()}”",
+                            color = colors.textSecondary,
+                            fontSize = 12.sp,
+                            lineHeight = 17.sp,
+                            fontStyle = FontStyle.Italic
+                        )
+                    }
                 }
             }
             Spacer(Modifier.height(4.dp))
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                TextButton(onClick = onForget) {
-                    Text("Forget style signals", color = colors.accentRed, fontSize = 12.sp)
+                OutlinedButton(
+                    onClick = onForget,
+                    shape = RoundedCornerShape(999.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = colors.accentRed),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                ) {
+                    Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(13.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Forget style signals", color = colors.accentRed, fontSize = 11.sp)
                 }
             }
         }
@@ -444,17 +533,37 @@ private fun FactsSection(
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("Saved facts", color = colors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-            TextButton(onClick = onAdd) {
-                Icon(Icons.Default.Add, contentDescription = null, tint = colors.accentGreen, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("Add fact", color = colors.accentGreen, fontSize = 12.sp)
+            MemoryIconTile(Icons.Default.Bookmark, colors.accentGreen, 30)
+            Spacer(Modifier.width(9.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "SAVED FACTS",
+                    color = colors.accentGreen,
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.sp
+                )
+                Text(
+                    "${pending.size + verified.size} remembered · ${pending.size} awaiting",
+                    color = colors.textPrimary,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+            Button(
+                onClick = onAdd,
+                colors = ButtonDefaults.buttonColors(containerColor = colors.accentGreen, contentColor = Color.White),
+                shape = RoundedCornerShape(999.dp),
+                contentPadding = PaddingValues(horizontal = 11.dp, vertical = 6.dp)
+            ) {
+                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(14.dp))
+                Spacer(Modifier.width(3.dp))
+                Text("Add fact", fontSize = 10.5.sp, fontWeight = FontWeight.Bold)
             }
         }
-        Spacer(Modifier.height(2.dp))
+        Spacer(Modifier.height(8.dp))
         if (pending.isEmpty() && verified.isEmpty()) {
             Row(
                 modifier = Modifier
@@ -465,64 +574,78 @@ private fun FactsSection(
                     .padding(14.dp),
                 verticalAlignment = Alignment.Top
             ) {
-                Icon(
-                    Icons.Default.Lightbulb,
-                    contentDescription = null,
-                    tint = colors.accentGreen.copy(alpha = 0.85f),
+                Box(
                     modifier = Modifier
-                        .padding(top = 1.dp)
-                        .size(16.dp)
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    "Nothing saved yet. Tap Add fact to remember something — Karen only uses facts you confirm.",
-                    color = colors.textMuted,
-                    fontSize = 12.sp,
-                    lineHeight = 17.sp
-                )
+                        .size(34.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(colors.accentAmber.copy(alpha = 0.12f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(Icons.Default.Lightbulb, contentDescription = null, tint = colors.accentAmber, modifier = Modifier.size(17.dp))
+                }
+                Spacer(Modifier.width(9.dp))
+                Column {
+                    Text("Nothing saved yet", color = colors.textPrimary, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        "Tap Add fact to remember something — Karen only uses facts you confirm.",
+                        color = colors.textMuted,
+                        fontSize = 11.5.sp,
+                        lineHeight = 16.sp
+                    )
+                }
             }
-            return
+            return@Column
         }
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             pending.forEach { fact ->
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(colors.cardBackground)
-                        .border(1.dp, colors.accentAmber.copy(alpha = 0.4f), RoundedCornerShape(14.dp))
-                        .padding(14.dp)
+                        .clip(RoundedCornerShape(15.dp))
+                        .background(
+                            Brush.verticalGradient(
+                                listOf(colors.accentAmber.copy(alpha = 0.08f), colors.cardBackground)
+                            )
+                        )
+                        .border(1.dp, colors.accentAmber.copy(alpha = 0.42f), RoundedCornerShape(15.dp))
+                        .padding(13.dp)
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Box(
                             modifier = Modifier
-                                .clip(RoundedCornerShape(6.dp))
-                                .background(colors.accentAmber.copy(alpha = 0.18f))
-                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                                .size(30.dp)
+                                .clip(RoundedCornerShape(9.dp))
+                                .background(colors.accentAmber.copy(alpha = 0.14f)),
+                            contentAlignment = Alignment.Center
                         ) {
-                            Text(fact.category, color = colors.accentAmber, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                            Icon(Icons.Default.HourglassTop, contentDescription = null, tint = colors.accentAmber, modifier = Modifier.size(15.dp))
                         }
                         Spacer(Modifier.width(8.dp))
-                        Text("Awaiting confirmation", color = colors.textMuted, fontSize = 10.5.sp, fontFamily = FontFamily.Monospace)
+                        MemoryFactCategory(fact.category, colors.accentAmber)
+                        Spacer(Modifier.weight(1f))
+                        MemoryPill("PENDING", colors.accentAmber)
                     }
-                    Spacer(Modifier.height(6.dp))
-                    Text(fact.text, color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium, lineHeight = 18.sp)
+                    Spacer(Modifier.height(8.dp))
+                    Text(fact.text, color = colors.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium, lineHeight = 18.sp)
                     Spacer(Modifier.height(10.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(
                             onClick = { onConfirm(fact) },
                             colors = ButtonDefaults.buttonColors(containerColor = colors.accentGreen, contentColor = Color.White),
-                            shape = RoundedCornerShape(8.dp),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                            shape = RoundedCornerShape(999.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 5.dp)
                         ) {
-                            Text("Confirm & remember", fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold)
+                            Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(13.dp))
+                            Spacer(Modifier.width(3.dp))
+                            Text("Confirm & remember", fontSize = 10.5.sp, fontWeight = FontWeight.SemiBold)
                         }
                         OutlinedButton(
                             onClick = { onDiscard(fact) },
-                            shape = RoundedCornerShape(8.dp),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                            shape = RoundedCornerShape(999.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 5.dp)
                         ) {
-                            Text("Discard", fontSize = 11.5.sp)
+                            Text("Discard", fontSize = 10.5.sp)
                         }
                     }
                 }
@@ -531,20 +654,23 @@ private fun FactsSection(
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(14.dp))
+                        .clip(RoundedCornerShape(15.dp))
                         .background(colors.surface)
-                        .border(1.dp, colors.border, RoundedCornerShape(14.dp))
-                        .padding(horizontal = 14.dp, vertical = 12.dp)
+                        .border(1.dp, colors.border, RoundedCornerShape(15.dp))
+                        .padding(horizontal = 13.dp, vertical = 11.dp)
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Box(
                             modifier = Modifier
-                                .clip(RoundedCornerShape(6.dp))
-                                .background(colors.accentGreen.copy(alpha = 0.16f))
-                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                                .size(30.dp)
+                                .clip(RoundedCornerShape(9.dp))
+                                .background(colors.accentGreen.copy(alpha = 0.13f)),
+                            contentAlignment = Alignment.Center
                         ) {
-                            Text(fact.category, color = colors.accentGreen, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = colors.accentGreen, modifier = Modifier.size(15.dp))
                         }
+                        Spacer(Modifier.width(8.dp))
+                        MemoryFactCategory(fact.category, colors.accentGreen)
                         Spacer(Modifier.weight(1f))
                         IconButton(onClick = { onDelete(fact) }, modifier = Modifier.size(26.dp)) {
                             Icon(
@@ -555,13 +681,13 @@ private fun FactsSection(
                             )
                         }
                     }
-                    Spacer(Modifier.height(4.dp))
+                    Spacer(Modifier.height(6.dp))
                     Text(fact.text, color = colors.textPrimary, fontSize = 13.sp, lineHeight = 18.sp)
                     Spacer(Modifier.height(4.dp))
                     Text(
                         "Confirmed · used when memory is on",
                         color = colors.textMuted,
-                        fontSize = 10.5.sp,
+                        fontSize = 9.5.sp,
                         fontFamily = FontFamily.Monospace
                     )
                 }
@@ -570,30 +696,65 @@ private fun FactsSection(
     }
 }
 
+@Composable
+private fun MemoryFactCategory(text: String, tint: Color) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(tint.copy(alpha = 0.14f))
+            .border(1.dp, tint.copy(alpha = 0.3f), RoundedCornerShape(6.dp))
+            .padding(horizontal = 6.dp, vertical = 2.dp)
+    ) {
+        Text(
+            text.uppercase(),
+            color = tint,
+            fontSize = 8.sp,
+            fontWeight = FontWeight.Bold,
+            fontFamily = FontFamily.Monospace,
+            letterSpacing = 0.4.sp
+        )
+    }
+}
+
 // ---- Preferences ----
 
 @Composable
 private fun MemoryPreferenceCard(memoryOn: Boolean, onToggle: (Boolean) -> Unit) {
     val colors = LocalKarenColors.current
+    val tint = if (memoryOn) colors.accentGreen else colors.textMuted
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(16.dp))
             .background(colors.surface)
-            .border(1.dp, colors.border, RoundedCornerShape(14.dp))
+            .border(1.dp, if (memoryOn) colors.accentGreen.copy(alpha = 0.3f) else colors.border, RoundedCornerShape(16.dp))
             .padding(14.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
+        MemoryIconTile(Icons.Default.Psychology, tint, 34)
+        Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f)) {
-            Text("Use memory in replies", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Use memory in replies",
+                    color = colors.textPrimary,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+                Spacer(Modifier.width(6.dp))
+                MemoryPill(if (memoryOn) "ON" else "OFF", tint)
+            }
+            Spacer(Modifier.height(2.dp))
             Text(
                 if (memoryOn) "Learned style + confirmed facts are added to prompts"
                 else "Stored on device but ignored by the model",
                 color = colors.textMuted,
-                fontSize = 11.5.sp
+                fontSize = 11.sp,
+                lineHeight = 15.sp
             )
         }
+        Spacer(Modifier.width(8.dp))
         Switch(
             checked = memoryOn,
             onCheckedChange = onToggle,
@@ -618,45 +779,56 @@ private fun InstructionsCard(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(16.dp))
             .background(colors.surface)
-            .border(1.dp, colors.border, RoundedCornerShape(14.dp))
+            .border(1.dp, colors.border, RoundedCornerShape(16.dp))
             .padding(14.dp)
     ) {
-        Text("Custom instructions", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
-        Text(
-            "Prepended to every prompt for Karen — max 500 characters.",
-            color = colors.textMuted,
-            fontSize = 11.5.sp
-        )
-        Spacer(Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            MemoryIconTile(Icons.Default.EditNote, colors.accentBlue, 34)
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "CUSTOM INSTRUCTIONS",
+                    color = colors.accentBlue,
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.sp
+                )
+                Text("Custom instructions", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "Prepended to every prompt for Karen — max 500 characters.",
+                    color = colors.textMuted,
+                    fontSize = 10.5.sp,
+                    lineHeight = 14.sp
+                )
+            }
+            MemoryPill("${value.length}/500", colors.accentBlue)
+        }
+        Spacer(Modifier.height(9.dp))
         OutlinedTextField(
             value = value,
             onValueChange = { onValueChange(it.take(500)) },
             placeholder = { Text("e.g. Answer in British English; keep code comments short", color = colors.textMuted, fontSize = 12.5.sp) },
             minLines = 3,
             maxLines = 5,
+            shape = RoundedCornerShape(12.dp),
             modifier = Modifier.fillMaxWidth(),
             textStyle = androidx.compose.ui.text.TextStyle(color = colors.textPrimary, fontSize = 13.sp),
             colors = karenFieldColors(colors)
         )
-        Spacer(Modifier.height(4.dp))
+        Spacer(Modifier.height(5.dp))
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
+            horizontalArrangement = Arrangement.End,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                "${value.length}/500",
-                color = colors.textMuted,
-                fontSize = 10.5.sp,
-                fontFamily = FontFamily.Monospace
-            )
             TextButton(onClick = onSave, enabled = dirty) {
                 Text(
                     if (dirty) "Save" else "Saved",
                     color = if (dirty) colors.accentGreen else colors.textMuted,
-                    fontSize = 12.5.sp
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold
                 )
             }
         }
@@ -669,17 +841,93 @@ private fun MemoryFooterNote() {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(bottom = 8.dp),
+            .clip(RoundedCornerShape(11.dp))
+            .background(colors.accentGreen.copy(alpha = 0.05f))
+            .border(1.dp, colors.accentGreen.copy(alpha = 0.16f), RoundedCornerShape(11.dp))
+            .padding(horizontal = 11.dp, vertical = 9.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(Icons.Default.Lock, contentDescription = null, tint = colors.textMuted, modifier = Modifier.size(14.dp))
+        Icon(Icons.Default.Lock, contentDescription = null, tint = colors.accentGreen, modifier = Modifier.size(14.dp))
         Spacer(Modifier.width(6.dp))
         Text(
             "Karen never uploads or syncs memory. Reset erases it from this device only.",
             color = colors.textMuted,
-            fontSize = 11.sp,
-            lineHeight = 15.sp
+            fontSize = 10.5.sp,
+            lineHeight = 14.sp
         )
+    }
+}
+
+// ---- Memory visual primitives ----
+
+@Composable
+private fun MemoryIconTile(icon: ImageVector, tint: Color, size: Int = 34) {
+    Box(
+        modifier = Modifier
+            .size(size.dp)
+            .clip(RoundedCornerShape((size / 3).dp))
+            .background(tint.copy(alpha = 0.12f))
+            .border(1.dp, tint.copy(alpha = 0.24f), RoundedCornerShape((size / 3).dp)),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size((size * 0.48f).dp))
+    }
+}
+
+@Composable
+private fun MemoryPill(text: String, tint: Color) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(tint.copy(alpha = 0.10f))
+            .border(1.dp, tint.copy(alpha = 0.4f), RoundedCornerShape(999.dp))
+            .padding(horizontal = 8.dp, vertical = 4.dp)
+    ) {
+        Text(
+            text,
+            color = tint,
+            fontSize = 7.5.sp,
+            fontWeight = FontWeight.Bold,
+            fontFamily = FontFamily.Monospace,
+            letterSpacing = 0.5.sp,
+            maxLines = 1
+        )
+    }
+}
+
+@Composable
+private fun MemorySectionLabel(
+    kicker: String,
+    icon: ImageVector,
+    tint: Color,
+    trailing: String? = null
+) {
+    val colors = LocalKarenColors.current
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(26.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(tint.copy(alpha = 0.12f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(14.dp))
+        }
+        Spacer(Modifier.width(8.dp))
+        Text(
+            kicker.uppercase(),
+            color = colors.textSecondary,
+            fontSize = 10.5.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 0.9.sp,
+            modifier = Modifier.weight(1f)
+        )
+        if (!trailing.isNullOrBlank()) {
+            Text(trailing, color = colors.textMuted, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+        }
     }
 }
 

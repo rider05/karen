@@ -6,8 +6,10 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.ClickableText
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -18,6 +20,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -82,6 +86,959 @@ private fun ModelSourceRow(
             Text(subtitle, color = colors.textMuted, fontSize = 11.5.sp)
         }
         Icon(Icons.Default.ChevronRight, contentDescription = null, tint = colors.textMuted, modifier = Modifier.size(18.dp))
+    }
+}
+
+/** Model Manager tabs: on-device weights, cloud providers, voice engines. */
+private enum class ModelTab(val label: String) {
+    Device("On device"),
+    Cloud("Cloud"),
+    Voice("Voice")
+}
+
+@Composable
+private fun MetaChip(text: String, tint: Color) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(tint.copy(alpha = 0.14f))
+            .padding(horizontal = 7.dp, vertical = 3.dp)
+    ) {
+        Text(
+            text,
+            color = tint,
+            fontSize = 10.sp,
+            fontFamily = FontFamily.Monospace,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1
+        )
+    }
+}
+
+@Composable
+private fun StatDivider() {
+    val colors = LocalKarenColors.current
+    Box(
+        Modifier
+            .width(1.dp)
+            .height(32.dp)
+            .background(colors.border.copy(alpha = 0.7f))
+    )
+}
+
+@Composable
+private fun ManagerStat(
+    label: String,
+    value: String,
+    tint: Color,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    val colors = LocalKarenColors.current
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 6.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(value, color = tint, fontSize = 21.sp, fontWeight = FontWeight.Bold)
+        Text(label, color = colors.textMuted, fontSize = 10.5.sp, maxLines = 1)
+    }
+}
+
+@Composable
+private fun ManagerHero(
+    localCount: Int,
+    cloudCount: Int,
+    voiceCount: Int,
+    deviceModel: String,
+    threads: Int,
+    online: Boolean,
+    status: String,
+    statusTint: Color,
+    onDevice: () -> Unit,
+    onCloud: () -> Unit,
+    onVoice: () -> Unit
+) {
+    val colors = LocalKarenColors.current
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(20.dp))
+            .background(
+                androidx.compose.ui.graphics.Brush.verticalGradient(
+                    colors = listOf(colors.surface, colors.cardBackground)
+                )
+            )
+            .border(1.dp, colors.border.copy(alpha = 0.5f), RoundedCornerShape(20.dp))
+            .padding(16.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(RoundedCornerShape(11.dp))
+                    .background(colors.accentGreen.copy(alpha = 0.15f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Default.Memory,
+                    contentDescription = null,
+                    tint = colors.accentGreen,
+                    modifier = Modifier.size(19.dp)
+                )
+            }
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "Your models",
+                    color = colors.textPrimary,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    "Weights, providers and voice engines",
+                    color = colors.textMuted,
+                    fontSize = 11.sp
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(7.dp))
+                    .background(statusTint.copy(alpha = 0.16f))
+                    .padding(horizontal = 8.dp, vertical = 4.dp)
+            ) {
+                Text(
+                    status,
+                    color = statusTint,
+                    fontSize = 9.5.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 0.6.sp
+                )
+            }
+        }
+        Spacer(Modifier.height(14.dp))
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            ManagerStat("On device", "$localCount", colors.accentGreen, Modifier.weight(1f), onDevice)
+            StatDivider()
+            ManagerStat("Cloud", "$cloudCount", colors.accentBlue, Modifier.weight(1f), onCloud)
+            StatDivider()
+            ManagerStat("Voice", "$voiceCount", colors.accentAmber, Modifier.weight(1f), onVoice)
+        }
+        Spacer(Modifier.height(10.dp))
+        Text(
+            "$deviceModel · $threads threads · ${if (online) "Network up" else "Offline"}",
+            color = colors.textMuted,
+            fontSize = 10.sp,
+            fontFamily = FontFamily.Monospace
+        )
+    }
+}
+
+@Composable
+private fun QuickActionTile(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    tint: Color,
+    label: String,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    val colors = LocalKarenColors.current
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(14.dp))
+            .background(colors.surface)
+            .border(1.dp, colors.border, RoundedCornerShape(14.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 11.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Box(
+            modifier = Modifier
+                .size(32.dp)
+                .clip(RoundedCornerShape(9.dp))
+                .background(tint.copy(alpha = 0.14f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(17.dp))
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(label, color = colors.textPrimary, fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+@Composable
+private fun ManagerTabBar(
+    selected: ModelTab,
+    localCount: Int,
+    cloudCount: Int,
+    voiceCount: Int,
+    onSelect: (ModelTab) -> Unit
+) {
+    val colors = LocalKarenColors.current
+    val counts = mapOf(
+        ModelTab.Device to localCount,
+        ModelTab.Cloud to cloudCount,
+        ModelTab.Voice to voiceCount
+    )
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(colors.surface)
+            .border(1.dp, colors.border, RoundedCornerShape(14.dp))
+            .padding(4.dp)
+    ) {
+        ModelTab.entries.forEach { t ->
+            val active = t == selected
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(if (active) colors.accentGreen else Color.Transparent)
+                    .clickable { onSelect(t) }
+                    .heightIn(min = 44.dp)
+                    .padding(horizontal = 4.dp),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    t.label,
+                    color = if (active) Color.White else colors.textSecondary,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Spacer(Modifier.width(5.dp))
+                Text(
+                    "${counts[t] ?: 0}",
+                    color = if (active) Color.White.copy(alpha = 0.75f) else colors.textMuted,
+                    fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SearchField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    placeholder: String
+) {
+    val colors = LocalKarenColors.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 42.dp)
+            .clip(RoundedCornerShape(13.dp))
+            .background(colors.surface)
+            .border(1.dp, colors.border, RoundedCornerShape(13.dp))
+            .padding(start = 12.dp, end = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            Icons.Default.Search,
+            contentDescription = null,
+            tint = colors.textMuted,
+            modifier = Modifier.size(17.dp)
+        )
+        Spacer(Modifier.width(8.dp))
+        Box(Modifier.weight(1f)) {
+            if (value.isEmpty()) {
+                Text(placeholder, color = colors.textMuted, fontSize = 12.5.sp)
+            }
+            BasicTextField(
+                value = value,
+                onValueChange = onValueChange,
+                singleLine = true,
+                textStyle = TextStyle(color = colors.textPrimary, fontSize = 12.5.sp),
+                cursorBrush = SolidColor(colors.accentGreen),
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+        if (value.isNotEmpty()) {
+            IconButton(onClick = { onValueChange("") }, modifier = Modifier.size(30.dp)) {
+                Icon(
+                    Icons.Default.Close,
+                    contentDescription = "Clear search",
+                    tint = colors.textMuted,
+                    modifier = Modifier.size(15.dp)
+                )
+            }
+        } else {
+            Spacer(Modifier.width(4.dp))
+        }
+    }
+}
+
+@Composable
+private fun SectionHeader(title: String, trailing: String? = null) {
+    val colors = LocalKarenColors.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 4.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            title.uppercase(),
+            color = colors.textMuted,
+            fontSize = 10.5.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 0.8.sp
+        )
+        if (!trailing.isNullOrBlank()) {
+            Text(
+                trailing,
+                color = colors.textMuted,
+                fontSize = 10.5.sp,
+                fontFamily = FontFamily.Monospace
+            )
+        }
+    }
+}
+
+@Composable
+private fun EmptyState(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    body: String,
+    actionLabel: String? = null,
+    onAction: (() -> Unit)? = null
+) {
+    val colors = LocalKarenColors.current
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(colors.surface)
+            .border(1.dp, colors.border.copy(alpha = 0.7f), RoundedCornerShape(16.dp))
+            .padding(18.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Box(
+            modifier = Modifier
+                .size(40.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(colors.surfaceHover),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(icon, contentDescription = null, tint = colors.textMuted, modifier = Modifier.size(20.dp))
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(title, color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(3.dp))
+        Text(
+            body,
+            color = colors.textMuted,
+            fontSize = 11.5.sp,
+            lineHeight = 16.sp,
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+        )
+        if (actionLabel != null && onAction != null) {
+            Spacer(Modifier.height(10.dp))
+            OutlinedButton(onClick = onAction, shape = RoundedCornerShape(10.dp)) {
+                Text(actionLabel, fontSize = 12.sp)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ErrorBanner(message: String) {
+    val colors = LocalKarenColors.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(colors.accentRed.copy(alpha = 0.1f))
+            .border(1.dp, colors.accentRed.copy(alpha = 0.3f), RoundedCornerShape(12.dp))
+            .padding(12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            Icons.Default.Warning,
+            contentDescription = null,
+            tint = colors.accentRed,
+            modifier = Modifier.size(16.dp)
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(message, color = colors.accentRed, fontSize = 11.5.sp, lineHeight = 16.sp)
+    }
+}
+
+@Composable
+private fun TransferCard(
+    kicker: String,
+    title: String,
+    progress: Float,
+    status: String,
+    onCancel: () -> Unit
+) {
+    val colors = LocalKarenColors.current
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(colors.surface)
+            .border(1.dp, colors.accentGreen.copy(alpha = 0.45f), RoundedCornerShape(14.dp))
+            .padding(13.dp)
+    ) {
+        Text(
+            kicker.uppercase(),
+            color = colors.accentGreen,
+            fontSize = 9.5.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 0.7.sp
+        )
+        Spacer(Modifier.height(3.dp))
+        Text(
+            title,
+            color = colors.textPrimary,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+        )
+        Spacer(Modifier.height(8.dp))
+        LinearProgressIndicator(
+            progress = { progress },
+            modifier = Modifier.fillMaxWidth(),
+            color = colors.accentGreen,
+            trackColor = colors.surfaceHover
+        )
+        Spacer(Modifier.height(4.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                status,
+                color = colors.textMuted,
+                fontSize = 10.5.sp,
+                fontFamily = FontFamily.Monospace,
+                modifier = Modifier.weight(1f),
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+            )
+            TextButton(onClick = onCancel) {
+                Text("Cancel", fontSize = 12.sp)
+            }
+        }
+    }
+}
+
+@Composable
+private fun InstalledWeightCard(
+    model: GgufModel,
+    expanded: Boolean,
+    contextLabel: String,
+    onToggle: () -> Unit,
+    onDelete: () -> Unit
+) {
+    val colors = LocalKarenColors.current
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(colors.surface)
+            .border(
+                1.dp,
+                if (expanded) colors.accentGreen.copy(alpha = 0.8f) else colors.border,
+                RoundedCornerShape(14.dp)
+            )
+            .clickable(onClick = onToggle)
+            .padding(13.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .size(38.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(colors.accentGreen.copy(alpha = 0.12f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    ModelDownloader.formatOf(model.name).replace("PyTorch", "TORCH"),
+                    color = colors.accentGreen,
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace,
+                    maxLines = 1
+                )
+            }
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    model.name,
+                    color = colors.textPrimary,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                )
+                Spacer(Modifier.height(3.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                    MetaChip(model.size, colors.accentBlue)
+                    MetaChip(model.quant, colors.textMuted)
+                }
+            }
+            IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
+                Icon(
+                    Icons.Default.DeleteOutline,
+                    contentDescription = "Delete ${model.name}",
+                    tint = colors.textMuted,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+            Icon(
+                if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                contentDescription = null,
+                tint = colors.textMuted,
+                modifier = Modifier.size(17.dp)
+            )
+        }
+        if (expanded) {
+            Spacer(Modifier.height(10.dp))
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(1.dp)
+                    .background(colors.border.copy(alpha = 0.7f))
+            )
+            Spacer(Modifier.height(10.dp))
+            Text(
+                "File-backed GGUF runtime · needs about ${model.ramRequired} RAM · ctx $contextLabel · Vulkan / ARM NEON",
+                color = colors.textSecondary,
+                fontSize = 11.5.sp,
+                lineHeight = 16.sp
+            )
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(onClick = onDelete, shape = RoundedCornerShape(10.dp)) {
+                Text("Delete weight", color = colors.accentRed, fontSize = 12.sp)
+            }
+        }
+    }
+}
+
+@Composable
+private fun CatalogCard(
+    entry: CatalogModel,
+    installed: Boolean,
+    downloading: Boolean,
+    contextLabel: String,
+    onDownload: () -> Unit,
+    onCancel: () -> Unit
+) {
+    val colors = LocalKarenColors.current
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(colors.surface)
+            .border(1.dp, colors.border, RoundedCornerShape(14.dp))
+            .padding(13.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    entry.name,
+                    color = colors.textPrimary,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                )
+                Spacer(Modifier.height(3.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                    MetaChip(entry.sizeLabel, colors.accentBlue)
+                    MetaChip(entry.quant, colors.textMuted)
+                    when {
+                        entry.reasoning -> MetaChip("REASONING", colors.accentAmber)
+                        entry.embedding -> MetaChip("EMBED", colors.accentBlue)
+                        entry.code -> MetaChip("CODE", colors.accentGreen)
+                    }
+                }
+            }
+            Spacer(Modifier.width(10.dp))
+            when {
+                installed -> Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.Default.CheckCircle,
+                        contentDescription = null,
+                        tint = colors.accentGreen,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text("Installed", color = colors.accentGreen, fontSize = 11.5.sp, fontWeight = FontWeight.Medium)
+                }
+                downloading -> OutlinedButton(onClick = onCancel) {
+                    Text("Cancel", fontSize = 12.sp)
+                }
+                else -> Button(
+                    onClick = onDownload,
+                    shape = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = colors.accentGreen,
+                        contentColor = Color.White
+                    )
+                ) {
+                    Text("Download", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
+        Spacer(Modifier.height(7.dp))
+        Text(
+            "Needs ${entry.ram} RAM · ctx $contextLabel",
+            color = colors.textMuted,
+            fontSize = 10.5.sp,
+            fontFamily = FontFamily.Monospace
+        )
+        if (downloading) {
+            Spacer(Modifier.height(8.dp))
+            LinearProgressIndicator(
+                progress = { ModelDownloader.progress },
+                modifier = Modifier.fillMaxWidth(),
+                color = colors.accentGreen,
+                trackColor = colors.surfaceHover
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                ModelDownloader.status,
+                color = colors.textMuted,
+                fontSize = 10.5.sp,
+                fontFamily = FontFamily.Monospace
+            )
+        }
+    }
+}
+
+@Composable
+private fun CloudProviderCard(
+    title: String,
+    subtitle: String,
+    connected: Boolean,
+    onClick: () -> Unit
+) {
+    val colors = LocalKarenColors.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(colors.surface)
+            .border(1.dp, colors.border, RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(32.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(
+                    if (connected) colors.accentGreen.copy(alpha = 0.12f)
+                    else colors.accentBlue.copy(alpha = 0.12f)
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                if (connected) Icons.Default.CheckCircle else Icons.Default.Cloud,
+                contentDescription = null,
+                tint = if (connected) colors.accentGreen else colors.accentBlue,
+                modifier = Modifier.size(16.dp)
+            )
+        }
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                title,
+                color = colors.textPrimary,
+                fontSize = 12.5.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+            )
+            Text(
+                subtitle,
+                color = if (connected) colors.accentGreen else colors.textMuted,
+                fontSize = 10.5.sp,
+                fontFamily = FontFamily.Monospace,
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+            )
+        }
+        Text(
+            if (connected) "Configure" else "Connect",
+            color = if (connected) colors.accentGreen else colors.accentBlue,
+            fontSize = 10.5.sp,
+            fontWeight = FontWeight.Medium
+        )
+        Spacer(Modifier.width(2.dp))
+        Icon(
+            Icons.Default.ChevronRight,
+            contentDescription = null,
+            tint = colors.textMuted,
+            modifier = Modifier.size(15.dp)
+        )
+    }
+}
+
+@Composable
+private fun KeyBackupCard(
+    keyCount: Int,
+    onExport: () -> Unit,
+    onImport: () -> Unit
+) {
+    val colors = LocalKarenColors.current
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(colors.surface)
+            .border(1.dp, colors.border, RoundedCornerShape(14.dp))
+            .padding(13.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                Icons.Default.Lock,
+                contentDescription = null,
+                tint = colors.accentAmber,
+                modifier = Modifier.size(16.dp)
+            )
+            Spacer(Modifier.width(7.dp))
+            Text(
+                "Key backup",
+                color = colors.textPrimary,
+                fontSize = 12.5.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f)
+            )
+            Text(
+                "$keyCount stored",
+                color = colors.textMuted,
+                fontSize = 10.5.sp,
+                fontFamily = FontFamily.Monospace
+            )
+        }
+        Spacer(Modifier.height(5.dp))
+        Text(
+            "Password-encrypted .kbk file in local storage — restores every provider key after a reinstall.",
+            color = colors.textMuted,
+            fontSize = 11.sp,
+            lineHeight = 15.sp
+        )
+        Spacer(Modifier.height(9.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = onExport, shape = RoundedCornerShape(10.dp)) {
+                Text("Export keys", fontSize = 12.sp)
+            }
+            OutlinedButton(onClick = onImport, shape = RoundedCornerShape(10.dp)) {
+                Text("Import keys", fontSize = 12.sp)
+            }
+        }
+    }
+}
+
+@Composable
+private fun VoiceWeightCard(
+    model: ModelDownloader.VoiceModel,
+    installed: Boolean,
+    downloading: Boolean,
+    engineStatus: String,
+    progress: Float,
+    progressLabel: String,
+    onDownload: () -> Unit,
+    onCancel: () -> Unit,
+    onDelete: () -> Unit
+) {
+    val colors = LocalKarenColors.current
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(colors.surface)
+            .border(1.dp, colors.border, RoundedCornerShape(14.dp))
+            .padding(13.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .size(38.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(colors.accentAmber.copy(alpha = 0.12f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Default.RecordVoiceOver,
+                    contentDescription = null,
+                    tint = colors.accentAmber,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    model.name,
+                    color = colors.textPrimary,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                )
+                Spacer(Modifier.height(3.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                    MetaChip(model.sizeLabel, colors.accentBlue)
+                    MetaChip(model.engine, colors.textMuted)
+                }
+            }
+            when {
+                installed -> IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
+                    Icon(
+                        Icons.Default.DeleteOutline,
+                        contentDescription = "Delete ${model.name}",
+                        tint = colors.textMuted,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+                downloading -> OutlinedButton(onClick = onCancel) {
+                    Text("Cancel", fontSize = 12.sp)
+                }
+                else -> TextButton(onClick = onDownload) {
+                    Text("Download", color = colors.accentGreen, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                }
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(model.note, color = colors.textSecondary, fontSize = 11.sp, lineHeight = 15.sp)
+        Spacer(Modifier.height(3.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                engineStatus,
+                color = if (installed) colors.accentGreen else colors.textMuted,
+                fontSize = 10.5.sp,
+                fontFamily = FontFamily.Monospace,
+                modifier = Modifier.weight(1f),
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+            )
+            if (installed) {
+                Text("Installed", color = colors.accentGreen, fontSize = 10.5.sp, fontWeight = FontWeight.Medium)
+            }
+        }
+        if (downloading) {
+            Spacer(Modifier.height(7.dp))
+            LinearProgressIndicator(
+                progress = { progress },
+                modifier = Modifier.fillMaxWidth(),
+                color = colors.accentGreen,
+                trackColor = colors.surfaceHover
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                progressLabel,
+                color = colors.textMuted,
+                fontSize = 10.5.sp,
+                fontFamily = FontFamily.Monospace
+            )
+        }
+    }
+}
+
+@Composable
+private fun CatalogSourceCard(
+    value: String,
+    onValueChange: (String) -> Unit,
+    busy: Boolean,
+    message: String?,
+    remoteCount: Int,
+    onRefresh: () -> Unit
+) {
+    val colors = LocalKarenColors.current
+    var expanded by remember { mutableStateOf(false) }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(colors.surface)
+            .border(1.dp, colors.border, RoundedCornerShape(14.dp))
+            .padding(horizontal = 13.dp, vertical = 11.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { expanded = !expanded },
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                Icons.Default.Tune,
+                contentDescription = null,
+                tint = colors.textMuted,
+                modifier = Modifier.size(16.dp)
+            )
+            Spacer(Modifier.width(8.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "Catalog source",
+                    color = colors.textPrimary,
+                    fontSize = 12.5.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    "Bundled${if (remoteCount > 0) " + $remoteCount remote" else ""}",
+                    color = colors.textMuted,
+                    fontSize = 10.5.sp,
+                    fontFamily = FontFamily.Monospace
+                )
+            }
+            Text(
+                if (expanded) "Hide" else "Change",
+                color = colors.accentGreen,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Medium
+            )
+            Icon(
+                if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                contentDescription = null,
+                tint = colors.textMuted,
+                modifier = Modifier.size(16.dp)
+            )
+        }
+        if (expanded) {
+            Spacer(Modifier.height(9.dp))
+            OutlinedTextField(
+                value = value,
+                onValueChange = onValueChange,
+                label = { Text("Remote catalog URL (blank = bundled)", color = colors.textMuted) },
+                placeholder = { Text("https://…/models.json", color = colors.textMuted) },
+                singleLine = true,
+                textStyle = TextStyle(
+                    color = colors.textPrimary,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 12.sp
+                ),
+                colors = karenFieldColors(colors),
+                modifier = Modifier.fillMaxWidth()
+            )
+            if (message != null) {
+                Spacer(Modifier.height(4.dp))
+                Text(message, color = colors.textMuted, fontSize = 11.sp)
+            }
+            TextButton(
+                onClick = onRefresh,
+                enabled = !busy,
+                modifier = Modifier.align(Alignment.End)
+            ) {
+                Text(
+                    if (busy) "Refreshing…" else "Save & refresh",
+                    color = if (busy) colors.textMuted else colors.accentGreen,
+                    fontSize = 12.sp
+                )
+            }
+        }
     }
 }
 
@@ -168,6 +1125,31 @@ fun ModelManagerScreen(
         reloadVoices()
     }
 
+    // Console state: active tab, search, catalog source, system voice probe.
+    var tab by remember { mutableStateOf(ModelTab.Device) }
+    var query by remember { mutableStateOf("") }
+    val listState = rememberLazyListState()
+    LaunchedEffect(tab) { listState.scrollToItem(0) }
+    var catalogUrlText by remember { mutableStateOf(UserPrefs.catalogUrl(ctx)) }
+    var catalogBusy by remember { mutableStateOf(false) }
+    var catalogMsg by remember { mutableStateOf<String?>(null) }
+    val sttOk = remember { SpeechRecognizer.isRecognitionAvailable(ctx) }
+    var ttsStatus by remember { mutableStateOf("Checking…") }
+    LaunchedEffect(Unit) {
+        try {
+            var tts: TextToSpeech? = null
+            tts = TextToSpeech(ctx) { status ->
+                ttsStatus = if (status == TextToSpeech.SUCCESS) {
+                    val n = try { tts?.voices?.size ?: 0 } catch (_: Exception) { 0 }
+                    if (n > 0) "$n voices" else "Engine ready"
+                } else "Unavailable"
+                try { tts?.shutdown() } catch (_: Exception) {}
+            }
+        } catch (_: Exception) {
+            ttsStatus = "Unavailable"
+        }
+    }
+
     /** Manual refresh: weights, connections, and one downloader poll. */
     fun refreshAll() {
         reloadModels()
@@ -240,6 +1222,7 @@ fun ModelManagerScreen(
             showExportPw -> { showExportPw = false; true }
             showImportPw -> { showImportPw = false; true }
             pendingDelete != null -> { pendingDelete = null; true }
+            tab != ModelTab.Device -> { tab = ModelTab.Device; query = ""; true }
             else -> false
         }
     }
@@ -336,6 +1319,37 @@ fun ModelManagerScreen(
         }
     }
 
+    /** Opens the key dialog: step 0 = provider list, otherwise the provider form. */
+    fun openApiFlow(provider: CloudProvider?) {
+        apiError = null
+        if (provider == null) {
+            apiStep = 0
+            selectedProvider = null
+            showApiDialog = true
+            return
+        }
+        selectedProvider = provider
+        apiKeyInput = UserPrefs.apiKey(ctx, provider.id)
+        apiModelInput = UserPrefs.apiModel(ctx, provider.id).ifBlank { provider.defaultModel }
+        modelCustom = false
+        modelMenu = false
+        liveModels = liveModelCache[provider.id]
+        liveError = false
+        keyVisible = false
+        apiStep = 1
+        fetchLiveModels()
+        showApiDialog = true
+    }
+
+    /** Opens a system settings page, falling back to a toast. */
+    fun openSystemSettings(intent: Intent, fallback: String) {
+        try {
+            ctx.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        } catch (_: Exception) {
+            Toast.makeText(ctx, fallback, Toast.LENGTH_SHORT).show()
+        }
+    }
+
     fun fileNameOf(uri: Uri): String =
         ctx.contentResolver.query(uri, null, null, null, null)?.use { c ->
             val i = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
@@ -411,6 +1425,8 @@ fun ModelManagerScreen(
             importProgress = 0f
             importStatus = "Starting…"
             importCancelled = false
+            tab = ModelTab.Device
+            query = ""
             val err = withContext(Dispatchers.IO) { copyImport(uri, dest, fileSizeOf(uri)) }
             importingName = null
             when {
@@ -465,199 +1481,321 @@ fun ModelManagerScreen(
             .background(colors.background)
     ) {
         ChatGPTTopAppBar(
-            selectedModel = "Local Models (GGUF)",
+            selectedModel = "Model Manager",
             onMenuClick = onOpenDrawer,
             onBackClick = onNavigateToHome,
             moreActions = listOf(
                 Triple("Refresh lists", Icons.Default.Refresh) { refreshAll() },
                 Triple("Import model", Icons.Default.Upload) { importModelLauncher.launch(arrayOf("*/*")) },
-                Triple("Download model", Icons.Default.Download) { resetUrlDialog(); showUrlDialog = true },
-                Triple("Delete model", Icons.Default.Delete) {
-                    val selected = activeModel
-                    if (selected != null) pendingDelete = selected
-                    else Toast.makeText(ctx, "Tap an installed weight first to select it", Toast.LENGTH_SHORT).show()
-                }
+                Triple("Download model", Icons.Default.Download) { resetUrlDialog(); showUrlDialog = true }
             )
         )
 
         LazyColumn(
+            state = listState,
             modifier = Modifier
                 .fillMaxSize()
                 .padding(horizontal = 16.dp),
-            contentPadding = PaddingValues(top = 12.dp, bottom = 80.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
+            contentPadding = PaddingValues(top = 10.dp, bottom = 90.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // Model Sources: import / download / API
             item {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(20.dp))
-                        .background(
-                            androidx.compose.ui.graphics.Brush.verticalGradient(
-                                colors = listOf(colors.surface, colors.cardBackground)
-                            )
-                        )
-                        .border(1.dp, colors.border.copy(alpha = 0.5f), RoundedCornerShape(20.dp))
-                        .padding(18.dp)
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            modifier = Modifier
-                                .size(34.dp)
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(colors.accentGreen.copy(alpha = 0.15f)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(Icons.Default.Add, contentDescription = null, tint = colors.accentGreen, modifier = Modifier.size(18.dp))
-                        }
-                        Spacer(Modifier.width(10.dp))
-                        Column {
-                            Text("Add a Model", color = colors.textPrimary, fontSize = 15.sp, fontWeight = FontWeight.Bold)
-                            Text("Local import · URL pull · Cloud API", color = colors.textMuted, fontSize = 11.sp)
-                        }
-                    }
-                    Spacer(Modifier.height(16.dp))
-                    ModelSourceRow(
+                val activeDownload = ModelDownloader.activeName
+                val transferring = activeDownload != null ||
+                    importingName != null || ModelDownloader.activeVoiceName != null
+                val ready = models.isNotEmpty() || connectedApis.isNotEmpty()
+                ManagerHero(
+                    localCount = models.size,
+                    cloudCount = connectedApis.size,
+                    voiceCount = voiceModels.size,
+                    deviceModel = device.deviceModel,
+                    threads = device.cpuCores,
+                    online = device.networkUp,
+                    status = when {
+                        importingName != null -> "IMPORTING"
+                        activeDownload != null -> "DOWNLOADING"
+                        ModelDownloader.activeVoiceName != null -> "DOWNLOADING"
+                        ready -> "READY"
+                        else -> "SET UP"
+                    },
+                    statusTint = when {
+                        transferring -> colors.accentBlue
+                        ready -> colors.accentGreen
+                        else -> colors.accentAmber
+                    },
+                    onDevice = { tab = ModelTab.Device; query = "" },
+                    onCloud = { tab = ModelTab.Cloud; query = "" },
+                    onVoice = { tab = ModelTab.Voice; query = "" }
+                )
+            }
+            item {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    QuickActionTile(
                         icon = Icons.Default.FolderOpen,
                         tint = colors.accentGreen,
-                        title = "Import from Storage",
-                        subtitle = "Pick .gguf, .onnx or .pth from your device",
-                        onClick = { importModelLauncher.launch(arrayOf("*/*")) }
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    ModelSourceRow(
+                        label = "Import",
+                        modifier = Modifier.weight(1f)
+                    ) { importModelLauncher.launch(arrayOf("*/*")) }
+                    QuickActionTile(
                         icon = Icons.Default.Download,
                         tint = colors.accentBlue,
-                        title = "Download via URL or Hugging Face",
-                        subtitle = "Direct .gguf link, or a repo id like org/model-GGUF",
-                        onClick = {
-                            resetUrlDialog()
-                            showUrlDialog = true
-                        }
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    ModelSourceRow(
+                        label = "Download",
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        resetUrlDialog()
+                        showUrlDialog = true
+                    }
+                    QuickActionTile(
                         icon = Icons.Default.Cloud,
                         tint = colors.accentAmber,
-                        title = "Connect Cloud API",
-                        subtitle = "OpenAI, Claude, Gemini & more · internet required",
-                        onClick = {
-                            if (device.networkUp) {
-                                apiError = null
-                                apiStep = 0
-                                selectedProvider = null
-                                showApiDialog = true
-                            } else {
-                                apiError = "No internet connection. Cloud API models require connectivity."
-                            }
-                        }
-                    )
-                    if (apiError != null) {
-                        Spacer(Modifier.height(10.dp))
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(colors.accentRed.copy(alpha = 0.1f))
-                                .padding(10.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(Icons.Default.Warning, contentDescription = null, tint = colors.accentRed, modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(8.dp))
-                            Text(apiError!!, color = colors.accentRed, fontSize = 12.sp)
+                        label = "Connect",
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        if (device.networkUp) {
+                            openApiFlow(null)
+                        } else {
+                            apiError = "No internet connection. Cloud API models require connectivity."
+                            tab = ModelTab.Cloud
                         }
                     }
-                    if (connectedApis.isNotEmpty()) {
-                        Spacer(Modifier.height(10.dp))
-                        Text("Connected APIs", color = colors.textMuted, fontSize = 10.5.sp, fontWeight = FontWeight.SemiBold)
-                        Spacer(Modifier.height(6.dp))
-                        val providerByName = allProviders().associateBy { it.name }
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .heightIn(max = 200.dp)
-                                .verticalScroll(rememberScrollState()),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            connectedApis.forEach { apiName ->
-                                val provider = providerByName[apiName]
-                                val providerId = provider?.id
-                                val hasKey = providerId != null && UserPrefs.apiKey(ctx, providerId).isNotBlank()
-                                val modelName = if (providerId != null) UserPrefs.apiModel(ctx, providerId).ifBlank { provider?.defaultModel ?: "" } else ""
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clip(RoundedCornerShape(10.dp))
-                                        .background(colors.surface)
-                                        .border(1.dp, colors.border, RoundedCornerShape(10.dp))
-                                        .clickable {
-                                            if (providerId != null) {
-                                                selectedProvider = provider
-                                                apiKeyInput = UserPrefs.apiKey(ctx, providerId)
-                                                apiModelInput = modelName
-                                                modelCustom = false
-                                                modelMenu = false
-                                                liveModels = null
-                                                liveError = false
-                                                keyVisible = false
-                                                apiStep = 1
-                                                fetchLiveModels()
-                                                showApiDialog = true
-                                            }
-                                        }
-                                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                                    verticalAlignment = Alignment.CenterVertically
+                }
+            }
+            item {
+                ManagerTabBar(
+                    selected = tab,
+                    localCount = models.size,
+                    cloudCount = connectedApis.size,
+                    voiceCount = voiceModels.size,
+                    onSelect = { tab = it; query = "" }
+                )
+            }
+            if (tab != ModelTab.Voice) {
+                item {
+                    SearchField(
+                        value = query,
+                        onValueChange = { query = it },
+                        placeholder = if (tab == ModelTab.Device)
+                            "Search installed or catalog models"
+                        else
+                            "Search cloud providers"
+                    )
+                }
+            }
+
+            when (tab) {
+                ModelTab.Device -> {
+                    val installing = importingName
+                    if (installing != null) {
+                        item {
+                            TransferCard(
+                                kicker = "Local import",
+                                title = installing,
+                                progress = importProgress,
+                                status = importStatus.ifBlank { "Starting…" },
+                                onCancel = { importCancelled = true }
+                            )
+                        }
+                    }
+                    val downloading = ModelDownloader.activeName
+                    if (downloading != null) {
+                        item {
+                            TransferCard(
+                                kicker = "Downloading",
+                                title = downloading,
+                                progress = ModelDownloader.progress,
+                                status = ModelDownloader.status,
+                                onCancel = { ModelDownloader.cancel(ctx) }
+                            )
+                        }
+                    }
+                    val q = query.trim().lowercase()
+                    val installed = models.filter { q.isEmpty() || it.name.lowercase().contains(q) }
+                    val allCatalog = ModelDownloader.catalogModels()
+                    val catalog = allCatalog.filter {
+                        q.isEmpty() || it.name.lowercase().contains(q) ||
+                            it.quant.lowercase().contains(q) || it.fileName.lowercase().contains(q)
+                    }
+                    item { SectionHeader("Installed weights", "${models.size} on device") }
+                    when {
+                        models.isEmpty() -> item {
+                            EmptyState(
+                                icon = Icons.Default.Memory,
+                                title = "No local weights yet",
+                                body = "Import a .gguf from storage or pull one from the catalog. Weights run fully on this phone — nothing leaves the device.",
+                                actionLabel = "Import a file",
+                                onAction = { importModelLauncher.launch(arrayOf("*/*")) }
+                            )
+                        }
+                        installed.isEmpty() -> item {
+                            EmptyState(
+                                icon = Icons.Default.Search,
+                                title = "No match",
+                                body = "Nothing installed matches “$query”."
+                            )
+                        }
+                        else -> items(installed, key = { "installed:${it.name}" }) { m ->
+                            InstalledWeightCard(
+                                model = m,
+                                expanded = activeModel?.name == m.name,
+                                contextLabel = windowLabel(UserPrefs.contextTokens(ctx)),
+                                onToggle = {
+                                    activeModel = if (activeModel?.name == m.name) null else m
+                                },
+                                onDelete = { pendingDelete = m }
+                            )
+                        }
+                    }
+                    item { SectionHeader("Catalog", "${allCatalog.size} available") }
+                    if (catalog.isEmpty()) {
+                        item {
+                            EmptyState(
+                                icon = Icons.Default.Search,
+                                title = "No catalog match",
+                                body = "No downloadable model matches “$query”."
+                            )
+                        }
+                    } else {
+                        val shown = if (catalogExpanded || q.isNotEmpty()) catalog else catalog.take(3)
+                        items(shown, key = { "catalog:${it.name}" }) { entry ->
+                            val entryInstalled = models.any { it.name == entry.name }
+                            val entryDownloading = ModelDownloader.activeName == entry.name
+                            CatalogCard(
+                                entry = entry,
+                                installed = entryInstalled,
+                                downloading = entryDownloading,
+                                contextLabel = windowLabel(UserPrefs.contextTokens(ctx)),
+                                onDownload = {
+                                    when {
+                                        ModelDownloader.activeName != null ->
+                                            Toast.makeText(ctx, "One download at a time", Toast.LENGTH_SHORT).show()
+                                        ModelDownloader.startEntry(ctx, entry) ->
+                                            Toast.makeText(ctx, "Downloading ${entry.name}", Toast.LENGTH_SHORT).show()
+                                        else ->
+                                            Toast.makeText(ctx, "Could not start download", Toast.LENGTH_SHORT).show()
+                                    }
+                                },
+                                onCancel = { ModelDownloader.cancel(ctx) }
+                            )
+                        }
+                        if (catalog.size > 3 && q.isEmpty()) {
+                            item {
+                                TextButton(
+                                    onClick = { catalogExpanded = !catalogExpanded },
+                                    modifier = Modifier.fillMaxWidth()
                                 ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(32.dp)
-                                            .clip(RoundedCornerShape(8.dp))
-                                            .background(colors.accentBlue.copy(alpha = 0.12f)),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Icon(
-                                            if (hasKey) Icons.Default.CheckCircle else Icons.Default.Cloud,
-                                            contentDescription = null,
-                                            tint = if (hasKey) colors.accentGreen else colors.accentBlue,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                    }
-                                    Spacer(Modifier.width(10.dp))
-                                    Column(Modifier.weight(1f)) {
-                                        Text(
-                                            apiName,
-                                            color = colors.textPrimary,
-                                            fontSize = 13.sp,
-                                            fontWeight = FontWeight.SemiBold,
-                                            maxLines = 1,
-                                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
-                                        )
-                                        Text(
-                                            if (hasKey) modelName else "Tap to connect",
-                                            color = if (hasKey) colors.accentGreen else colors.textMuted,
-                                            fontSize = 10.5.sp,
-                                            fontFamily = FontFamily.Monospace,
-                                            maxLines = 1,
-                                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
-                                        )
-                                    }
                                     Icon(
-                                        Icons.Default.ChevronRight,
-                                        contentDescription = "Configure",
-                                        tint = colors.textMuted,
+                                        if (catalogExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                                        contentDescription = null,
+                                        tint = colors.accentGreen,
                                         modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(Modifier.width(4.dp))
+                                    Text(
+                                        if (catalogExpanded) "Show fewer" else "Show all ${catalog.size} models",
+                                        color = colors.accentGreen,
+                                        fontSize = 12.5.sp,
+                                        fontWeight = FontWeight.Medium
                                     )
                                 }
                             }
                         }
-                        Spacer(Modifier.height(8.dp))
                     }
-                    Spacer(Modifier.height(8.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(
-                            onClick = {
-                                val n = allProviders().count { UserPrefs.apiKey(ctx, it.id).isNotBlank() }
+                    item {
+                        CatalogSourceCard(
+                            value = catalogUrlText,
+                            onValueChange = { catalogUrlText = it.take(300) },
+                            busy = catalogBusy,
+                            message = catalogMsg,
+                            remoteCount = ModelDownloader.remoteCatalog.size,
+                            onRefresh = {
+                                if (!catalogBusy) {
+                                    catalogBusy = true
+                                    catalogMsg = null
+                                    UserPrefs.setCatalogUrl(ctx, catalogUrlText)
+                                    managerScope.launch {
+                                        try {
+                                            catalogMsg = ModelDownloader.refreshRemoteCatalog(ctx)
+                                        } finally {
+                                            catalogBusy = false
+                                        }
+                                    }
+                                }
+                            }
+                        )
+                    }
+                }
+
+                ModelTab.Cloud -> {
+                    val providers = allProviders()
+                    val q = query.trim().lowercase()
+                    val connectedNames = connectedApis.toList()
+                    val available = providers
+                        .filter { p -> connectedNames.none { it == p.name } }
+                        .filter { p ->
+                            q.isEmpty() || p.name.lowercase().contains(q) ||
+                                p.note.lowercase().contains(q) || p.id.lowercase().contains(q)
+                        }
+                    if (apiError != null) {
+                        item { ErrorBanner(apiError!!) }
+                    }
+                    item { SectionHeader("Connected", "${connectedNames.size} of ${providers.size}") }
+                    if (connectedNames.isEmpty()) {
+                        item {
+                            EmptyState(
+                                icon = Icons.Default.Cloud,
+                                title = "No cloud provider connected",
+                                body = "Add a key to route chat through OpenAI, Claude, Gemini, Groq and more. Keys stay in this phone's private storage.",
+                                actionLabel = "Add a provider",
+                                onAction = {
+                                    if (device.networkUp) openApiFlow(null)
+                                    else apiError = "No internet connection. Cloud API models require connectivity."
+                                }
+                            )
+                        }
+                    } else {
+                        items(connectedNames, key = { "connected:$it" }) { apiName ->
+                            val provider = providers.firstOrNull { it.name == apiName }
+                            val modelName = if (provider != null) {
+                                UserPrefs.apiModel(ctx, provider.id).ifBlank { provider.defaultModel }
+                            } else {
+                                "Custom provider"
+                            }
+                            CloudProviderCard(
+                                title = apiName,
+                                subtitle = modelName,
+                                connected = true,
+                                onClick = { if (provider != null) openApiFlow(provider) }
+                            )
+                        }
+                    }
+                    if (available.isNotEmpty()) {
+                        item { SectionHeader("Available providers", "${available.size}") }
+                        items(available, key = { "provider:${it.id}" }) { p ->
+                            CloudProviderCard(
+                                title = p.name,
+                                subtitle = p.note,
+                                connected = false,
+                                onClick = {
+                                    if (device.networkUp) openApiFlow(p)
+                                    else apiError = "No internet connection. Cloud API models require connectivity."
+                                }
+                            )
+                        }
+                    }
+                    if (available.isEmpty() && q.isNotEmpty()) {
+                        item {
+                            EmptyState(
+                                icon = Icons.Default.Search,
+                                title = "No provider match",
+                                body = "No cloud provider matches “$query”."
+                            )
+                        }
+                    }
+                    item {
+                        KeyBackupCard(
+                            keyCount = providers.count { UserPrefs.apiKey(ctx, it.id).isNotBlank() },
+                            onExport = {
+                                val n = providers.count { UserPrefs.apiKey(ctx, it.id).isNotBlank() }
                                 if (n == 0) {
                                     Toast.makeText(ctx, "No API keys stored to export", Toast.LENGTH_SHORT).show()
                                 } else {
@@ -665,518 +1803,72 @@ fun ModelManagerScreen(
                                     showExportPw = true
                                 }
                             },
-                            shape = RoundedCornerShape(10.dp)
-                        ) {
-                            Text("Export keys", fontSize = 12.sp)
-                        }
-                        OutlinedButton(
-                            onClick = { importKeysLauncher.launch(arrayOf("*/*")) },
-                            shape = RoundedCornerShape(10.dp)
-                        ) {
-                            Text("Import keys", fontSize = 12.sp)
-                        }
+                            onImport = { importKeysLauncher.launch(arrayOf("*/*")) }
+                        )
                     }
-                    Text(
-                        "Password-encrypted .kbk file in local storage — works across reinstalls",
-                        color = colors.textMuted,
-                        fontSize = 11.sp,
-                        modifier = Modifier.padding(top = 4.dp)
-                    )
                 }
-            }
 
-            // Active Model Card
-            item {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(colors.cardBackground)
-                        .border(1.dp, colors.accentGreen, RoundedCornerShape(16.dp))
-                        .padding(16.dp)
-                ) {
-                    if (activeModel == null) {
-                        Text("No model selected", color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
-                        Spacer(Modifier.height(2.dp))
-                        Text(
-                            "Tap an installed weight below to inspect it. Downloads and imports land there automatically.",
-                            color = colors.textMuted,
-                            fontSize = 11.5.sp,
-                            lineHeight = 16.sp
-                        )
-                    } else {
-                        val active = activeModel!!
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.Memory, contentDescription = null, tint = colors.accentGreen, modifier = Modifier.size(20.dp))
-                                Spacer(Modifier.width(8.dp))
-                                Text(active.name, color = colors.textPrimary, fontSize = 15.sp, fontWeight = FontWeight.Bold)
-                            }
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(colors.accentGreen.copy(alpha = 0.2f))
-                                    .padding(horizontal = 8.dp, vertical = 2.dp)
-                            ) {
-                                Text("SELECTED", color = colors.accentGreen, fontSize = 10.5.sp, fontWeight = FontWeight.Bold)
-                            }
-                        }
-                        Spacer(Modifier.height(8.dp))
-                        Text(
-                            "File-backed GGUF runtime (${active.quant}) · needs about ${active.ramRequired} RAM to load · ${device.cpuCores} threads · Vulkan / ARM NEON acceleration.",
-                            color = colors.textSecondary,
-                            fontSize = 12.sp,
-                            lineHeight = 17.sp
-                        )
-                        Spacer(Modifier.height(10.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text("Weight: ${active.size}", color = colors.textMuted, fontSize = 11.5.sp, fontFamily = FontFamily.Monospace)
-                            Text("ctx ${windowLabel(UserPrefs.contextTokens(ctx))}", color = colors.accentGreen, fontSize = 11.5.sp, fontFamily = FontFamily.Monospace)
-                        }
-                    }
-                }
-            }
-
-            // Download-in-progress card (live DownloadManager state)
-            item {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(colors.surface)
-                        .border(1.dp, colors.border, RoundedCornerShape(12.dp))
-                        .padding(12.dp)
-                ) {
-                    Text("Active Download", color = colors.textMuted, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-                    Spacer(Modifier.height(6.dp))
-                    val activeName = ModelDownloader.activeName
-                    val importName = importingName
-                    if (activeName == null && importName == null) {
-                        Text("Idle — nothing downloading", color = colors.textSecondary, fontSize = 12.5.sp)
-                        Spacer(Modifier.height(2.dp))
-                        Text(
-                            "Catalog pulls and Hugging Face downloads show live progress here.",
-                            color = colors.textMuted,
-                            fontSize = 11.5.sp
-                        )
-                    } else if (activeName != null) {
-                        Text(activeName, color = colors.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
-                        Spacer(Modifier.height(6.dp))
-                        LinearProgressIndicator(
-                            progress = { ModelDownloader.progress },
-                            modifier = Modifier.fillMaxWidth(),
-                            color = colors.accentGreen,
-                            trackColor = colors.surfaceHover
-                        )
-                        Spacer(Modifier.height(4.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                ModelDownloader.status,
-                                color = colors.textMuted,
-                                fontSize = 11.5.sp,
-                                fontFamily = FontFamily.Monospace
-                            )
-                            OutlinedButton(onClick = { ModelDownloader.cancel(ctx) }) {
-                                Text("Cancel", fontSize = 12.sp)
-                            }
-                        }
-                    } else {
-                        Text(importName ?: "", color = colors.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
-                        Spacer(Modifier.height(6.dp))
-                        LinearProgressIndicator(
-                            progress = { importProgress },
-                            modifier = Modifier.fillMaxWidth(),
-                            color = colors.accentGreen,
-                            trackColor = colors.surfaceHover
-                        )
-                        Spacer(Modifier.height(4.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                "Import · $importStatus",
-                                color = colors.textMuted,
-                                fontSize = 11.5.sp,
-                                fontFamily = FontFamily.Monospace
-                            )
-                            OutlinedButton(onClick = { importCancelled = true }) {
-                                Text("Cancel", fontSize = 12.sp)
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Installed GGUF Models
-            item {
-                Text("Installed Weights (${models.size})", color = colors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                Spacer(Modifier.height(6.dp))
-                if (models.isEmpty()) {
-                    Text(
-                        "No weights installed yet — import a .gguf above, or download one from the catalog below.",
-                        color = colors.textMuted,
-                        fontSize = 12.sp,
-                        lineHeight = 16.sp
-                    )
-                }
-            }
-
-            items(models) { m ->
-                val isActive = m.name == activeModel?.name
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(colors.surface)
-                        .border(1.dp, if (isActive) colors.accentGreen else colors.border, RoundedCornerShape(12.dp))
-                        .clickable { activeModel = m }
-                        .padding(14.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            m.name,
-                            color = colors.textPrimary,
-                            fontSize = 13.5.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            modifier = Modifier.weight(1f)
-                        )
-                        Text(
-                            if (isActive) "Selected" else "Tap to select",
-                            color = if (isActive) colors.accentGreen else colors.textMuted,
-                            fontSize = 11.sp,
-                            fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal
-                        )
-                        IconButton(
-                            onClick = { pendingDelete = m },
-                            modifier = Modifier.size(32.dp)
-                        ) {
-                            Icon(Icons.Default.DeleteOutline, contentDescription = "Delete ${m.name}", tint = colors.textMuted, modifier = Modifier.size(16.dp))
-                        }
-                    }
-                    Spacer(Modifier.height(4.dp))
-                    Text("Weight ${m.size} · RAM Floor ${m.ramRequired} · ${m.throughput} · ${m.quant} · ctx ${windowLabel(UserPrefs.contextTokens(ctx))}", color = colors.textMuted, fontSize = 11.5.sp, fontFamily = FontFamily.Monospace)
-                }
-            }
-
-            // Voice Models — zero-MB system engines (no downloads needed).
-            item {
-                Spacer(Modifier.height(6.dp))
-                Text("Voice Models", color = colors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                Spacer(Modifier.height(6.dp))
-                val sttOk = remember { SpeechRecognizer.isRecognitionAvailable(ctx) }
-                var ttsStatus by remember { mutableStateOf("Checking…") }
-                LaunchedEffect(Unit) {
-                    try {
-                        var tts: TextToSpeech? = null
-                        tts = TextToSpeech(ctx) { status ->
-                            ttsStatus = if (status == TextToSpeech.SUCCESS) {
-                                val n = try { tts?.voices?.size ?: 0 } catch (_: Exception) { 0 }
-                                if (n > 0) "$n voices · 0 MB" else "Engine ready · 0 MB"
-                            } else "Unavailable"
-                            try { tts?.shutdown() } catch (_: Exception) {}
-                        }
-                    } catch (_: Exception) {
-                        ttsStatus = "Unavailable"
-                    }
-                }
-                fun openSystem(intent: Intent, fallback: String) {
-                    try {
-                        ctx.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                    } catch (_: Exception) {
-                        Toast.makeText(ctx, fallback, Toast.LENGTH_SHORT).show()
-                    }
-                }
-                ModelSourceRow(
-                    icon = Icons.Default.Mic,
-                    tint = colors.accentGreen,
-                    title = "On-device Speech Recognition",
-                    subtitle = if (sttOk) "Available · system STT · 0 MB — tap for voice input settings" else "Not available on this device",
-                    onClick = {
-                        openSystem(
-                            Intent(Settings.ACTION_VOICE_INPUT_SETTINGS),
-                            "Voice input settings not found"
-                        )
-                    }
-                )
-                Spacer(Modifier.height(8.dp))
-                ModelSourceRow(
-                    icon = Icons.Default.RecordVoiceOver,
-                    tint = colors.accentBlue,
-                    title = "System TTS Voices ($ttsStatus)",
-                    subtitle = "Reads replies aloud · 0 MB — tap for TTS settings & voice data",
-                    onClick = {
-                        openSystem(
-                            Intent("com.android.settings.TTS_SETTINGS"),
-                            "TTS settings not found"
-                        )
-                    }
-                )
-                Spacer(Modifier.height(10.dp))
-                Text("Downloadable voice weights", color = colors.textMuted, fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold)
-                Spacer(Modifier.height(6.dp))
-                ModelDownloader.voiceCatalog.forEach { v ->
-                    val installed = v.name in voiceModels
-                    val downloading = ModelDownloader.activeVoiceName == v.name
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(colors.surfaceHover.copy(alpha = 0.6f))
-                            .border(1.dp, colors.border.copy(alpha = 0.6f), RoundedCornerShape(12.dp))
-                            .padding(12.dp)
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Column(Modifier.weight(1f)) {
-                                Text(v.name, color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold)
-                                Text(
-                                    "${v.sizeLabel} · ${v.engine}",
-                                    color = colors.textMuted,
-                                    fontSize = 11.sp,
-                                    fontFamily = FontFamily.Monospace
-                                )
-                            }
-                            if (installed) {
-                                IconButton(
-                                    onClick = { deleteVoice(v.name, v.fileName) },
-                                    modifier = Modifier.size(32.dp)
-                                ) {
-                                    Icon(Icons.Default.DeleteOutline, contentDescription = "Delete ${v.name}", tint = colors.textMuted, modifier = Modifier.size(16.dp))
+                ModelTab.Voice -> {
+                    item { SectionHeader("System engines", "0 MB") }
+                    item {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            ModelSourceRow(
+                                icon = Icons.Default.Mic,
+                                tint = colors.accentGreen,
+                                title = "On-device speech recognition",
+                                subtitle = if (sttOk) "System STT · 0 MB · tap for voice input settings"
+                                else "Not available on this device",
+                                onClick = {
+                                    openSystemSettings(
+                                        Intent(Settings.ACTION_VOICE_INPUT_SETTINGS),
+                                        "Voice input settings not found"
+                                    )
                                 }
-                            } else if (!downloading) {
-                                TextButton(onClick = {
-                                    if (!ModelDownloader.startVoice(ctx, v)) {
-                                        Toast.makeText(ctx, "Another download is running", Toast.LENGTH_SHORT).show()
-                                    }
-                                }) { Text("Download", color = colors.accentGreen) }
-                            }
-                        }
-                        Text(v.note, color = colors.textSecondary, fontSize = 11.5.sp)
-                        Spacer(Modifier.height(2.dp))
-                        Text(
-                            VoiceEngine.status(ctx, v),
-                            color = if (installed) colors.accentGreen else colors.textMuted,
-                            fontSize = 11.sp,
-                            fontFamily = FontFamily.Monospace
-                        )
-                        if (downloading) {
-                            Spacer(Modifier.height(6.dp))
-                            LinearProgressIndicator(
-                                progress = { ModelDownloader.voiceProgress },
-                                modifier = Modifier.fillMaxWidth(),
-                                color = colors.accentGreen,
-                                trackColor = colors.surfaceHover
                             )
-                            Spacer(Modifier.height(4.dp))
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    ModelDownloader.voiceStatus,
-                                    color = colors.textMuted,
-                                    fontSize = 11.5.sp,
-                                    fontFamily = FontFamily.Monospace
-                                )
-                                OutlinedButton(onClick = { ModelDownloader.cancelVoice(ctx) }) {
-                                    Text("Cancel", fontSize = 12.sp)
+                            ModelSourceRow(
+                                icon = Icons.Default.RecordVoiceOver,
+                                tint = colors.accentBlue,
+                                title = "System TTS voices",
+                                subtitle = "$ttsStatus · 0 MB · tap for TTS settings & voice data",
+                                onClick = {
+                                    openSystemSettings(
+                                        Intent("com.android.settings.TTS_SETTINGS"),
+                                        "TTS settings not found"
+                                    )
                                 }
-                            }
+                            )
                         }
                     }
-                    Spacer(Modifier.height(8.dp))
-                }
-            }
-
-            // Available to download — tap to fetch real GGUF weights.
-            item {
-                Spacer(Modifier.height(6.dp))
-                Text("Available to Download", color = colors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                Spacer(Modifier.height(6.dp))
-                var catalogUrlText by remember { mutableStateOf(UserPrefs.catalogUrl(ctx)) }
-                var catalogMsg by remember { mutableStateOf<String?>(null) }
-                var catalogBusy by remember { mutableStateOf(false) }
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(colors.surface)
-                        .border(1.dp, colors.border, RoundedCornerShape(12.dp))
-                        .padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            "Catalog: bundled${if (ModelDownloader.remoteCatalog.isNotEmpty()) " + ${ModelDownloader.remoteCatalog.size} remote" else ""}",
-                            color = colors.textSecondary,
-                            fontSize = 12.sp
-                        )
-                        TextButton(
-                            onClick = {
-                                if (catalogBusy) return@TextButton
-                                catalogBusy = true
-                                catalogMsg = null
-                                UserPrefs.setCatalogUrl(ctx, catalogUrlText)
-                                managerScope.launch {
-                                    try {
-                                        catalogMsg = ModelDownloader.refreshRemoteCatalog(ctx)
-                                    } finally {
-                                        catalogBusy = false
-                                    }
+                    item { SectionHeader("Downloadable weights", "${ModelDownloader.voiceCatalog.size}") }
+                    items(ModelDownloader.voiceCatalog, key = { "voice:${it.fileName}" }) { v ->
+                        VoiceWeightCard(
+                            model = v,
+                            installed = v.name in voiceModels,
+                            downloading = ModelDownloader.activeVoiceName == v.name,
+                            engineStatus = VoiceEngine.status(ctx, v),
+                            progress = ModelDownloader.voiceProgress,
+                            progressLabel = ModelDownloader.voiceStatus,
+                            onDownload = {
+                                if (!ModelDownloader.startVoice(ctx, v)) {
+                                    Toast.makeText(ctx, "Another download is running", Toast.LENGTH_SHORT).show()
                                 }
                             },
-                            enabled = !catalogBusy
-                        ) {
-                            Text(if (catalogBusy) "Refreshing…" else "Refresh", color = colors.accentGreen, fontSize = 12.sp)
-                        }
-                    }
-                    OutlinedTextField(
-                        value = catalogUrlText,
-                        onValueChange = { catalogUrlText = it.take(300) },
-                        label = { Text("Remote catalog URL (blank = bundled)", color = colors.textMuted) },
-                        placeholder = { Text("https://…/models.json", color = colors.textMuted) },
-                        singleLine = true,
-                        textStyle = androidx.compose.ui.text.TextStyle(
-                            color = colors.textPrimary,
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 12.sp
-                        ),
-                        colors = karenFieldColors(colors),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    if (catalogMsg != null) {
-                        Text(catalogMsg!!, color = colors.textMuted, fontSize = 11.5.sp)
-                    }
-                }
-                Spacer(Modifier.height(6.dp))
-                if (models.isEmpty()) {
-                    Text(
-                        "Nothing installed yet — pick a model below and it appears in selection once downloaded.",
-                        color = colors.textMuted,
-                        fontSize = 12.sp
-                    )
-                    Spacer(Modifier.height(6.dp))
-                }
-            }
-
-            items(
-                if (catalogExpanded) ModelDownloader.catalogModels() else ModelDownloader.catalogModels().take(3),
-                key = { it.name }
-            ) { entry ->
-                val alreadyInstalled = models.any { it.name == entry.name }
-                val isActive = ModelDownloader.activeName == entry.name
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(colors.surface)
-                        .border(1.dp, colors.border, RoundedCornerShape(12.dp))
-                        .padding(14.dp)
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text(entry.name, color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold)
-                            Text(
-                                "${entry.sizeLabel} · ${entry.quant} · RAM ${entry.ram}${if (entry.reasoning) " · Reasons" else ""} · ctx ${windowLabel(UserPrefs.contextTokens(ctx))}",
-                                color = colors.textMuted,
-                                fontSize = 11.5.sp,
-                                fontFamily = FontFamily.Monospace
-                            )
-                        }
-                        when {
-                            alreadyInstalled -> {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(Icons.Default.CheckCircle, contentDescription = null, tint = colors.accentGreen, modifier = Modifier.size(16.dp))
-                                    Spacer(Modifier.width(4.dp))
-                                    Text("Installed", color = colors.accentGreen, fontSize = 12.sp, fontWeight = FontWeight.Medium)
-                                }
-                            }
-                            isActive -> {
-                                OutlinedButton(onClick = { ModelDownloader.cancel(ctx) }) {
-                                    Text("Cancel", fontSize = 12.sp)
-                                }
-                            }
-                            else -> {
-                                Button(
-                                    onClick = {
-                                        if (ModelDownloader.activeName != null) {
-                                            android.widget.Toast.makeText(ctx, "One download at a time", android.widget.Toast.LENGTH_SHORT).show()
-                                        } else if (ModelDownloader.startEntry(ctx, entry)) {
-                                            android.widget.Toast.makeText(ctx, "Downloading ${entry.name}", android.widget.Toast.LENGTH_SHORT).show()
-                                        } else {
-                                            android.widget.Toast.makeText(ctx, "Could not start download", android.widget.Toast.LENGTH_SHORT).show()
-                                        }
-                                    },
-                                    colors = ButtonDefaults.buttonColors(containerColor = colors.accentGreen)
-                                ) { Text("Download", fontSize = 12.5.sp) }
-                            }
-                        }
-                    }
-                    if (isActive) {
-                        Spacer(Modifier.height(8.dp))
-                        LinearProgressIndicator(
-                            progress = { ModelDownloader.progress },
-                            modifier = Modifier.fillMaxWidth(),
-                            color = colors.accentGreen,
-                            trackColor = colors.surfaceHover
+                            onCancel = { ModelDownloader.cancelVoice(ctx) },
+                            onDelete = { deleteVoice(v.name, v.fileName) }
                         )
-                        Spacer(Modifier.height(4.dp))
+                    }
+                    item {
                         Text(
-                            ModelDownloader.status,
+                            "Whistle needs the Cactus Needle engine (arm64). Silero VAD runs on the bundled ONNX Runtime; both stay in app-private storage.",
                             color = colors.textMuted,
-                            fontSize = 11.5.sp,
-                            fontFamily = FontFamily.Monospace
-                        )
-                    }
-                }
-            }
-
-            // Collapse: 3 cards by default, expandable to the full catalog.
-            if (ModelDownloader.catalogModels().size > 3) {
-                item {
-                    TextButton(
-                        onClick = { catalogExpanded = !catalogExpanded },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Icon(
-                            if (catalogExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                            contentDescription = null,
-                            tint = colors.accentGreen,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(Modifier.width(4.dp))
-                        Text(
-                            if (catalogExpanded) "Show less" else "Show all ${ModelDownloader.catalogModels().size} models",
-                            color = colors.accentGreen,
-                            fontSize = 12.5.sp,
-                            fontWeight = FontWeight.Medium
+                            fontSize = 11.sp,
+                            lineHeight = 16.sp,
+                            modifier = Modifier.padding(top = 2.dp)
                         )
                     }
                 }
             }
         }
-
         // Delete confirmation — explicit per §96 ownership rules.
         val doomed = pendingDelete
         if (doomed != null) {

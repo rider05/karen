@@ -469,64 +469,126 @@ object TtsManager {
             var track: AudioTrack? = null
             var sampleRate = 0
             var channels = 1
+            var frameBytes = 2
+            var pending = ByteArray(0)
+            var pendingLen = 0
             var skipCurrent = false
             var written = 0L
+            var started = false
             var played = false
+
+            fun bytesPerSecond() = sampleRate * channels * 2
+
+            /** 200 ms fills the gap before the first sample without a long wait. */
+            fun prebufferBytes() = maxOf(frameBytes, bytesPerSecond() / 5)
+
+            fun releaseTrack() {
+                val old = track
+                track = null
+                cloudTrack = null
+                pendingLen = 0
+                started = false
+                skipCurrent = true
+                try {
+                    old?.stop()
+                } catch (_: Exception) {
+                }
+                try {
+                    old?.flush()
+                } catch (_: Exception) {
+                }
+                try {
+                    old?.release()
+                } catch (_: Exception) {
+                }
+            }
+
+            fun startPlayback(player: AudioTrack) {
+                if (started) return
+                try {
+                    player.play()
+                    started = true
+                    played = true
+                    onMain { if (gen == cloudGen) speaking = true }
+                } catch (_: Exception) {
+                    releaseTrack()
+                }
+            }
+
+            /**
+             * Writes only whole PCM frames. A partial frame at the end of a
+             * network chunk is carried into the next chunk; writing half a
+             * sample is heard as a click. `write(..., WRITE_BLOCKING)` also
+             * blocks while the track buffer is full, so no audio is dropped
+             * when the mixer is momentarily behind.
+             */
+            suspend fun flushFrames(player: AudioTrack) {
+                val usable = pendingLen - (pendingLen % frameBytes)
+                if (usable <= 0) return
+                var offset = 0
+                var zeroRetries = 0
+                while (offset < usable) {
+                    val n = try {
+                        player.write(
+                            pending,
+                            offset,
+                            usable - offset,
+                            AudioTrack.WRITE_BLOCKING
+                        )
+                    } catch (_: Exception) {
+                        -1
+                    }
+                    if (n < 0) {
+                        releaseTrack()
+                        return
+                    }
+                    if (n == 0) {
+                        // Some devices return 0 while the mixer starts up or
+                        // repairs an underrun. Retry briefly instead of
+                        // dropping the chunk and leaving a hole in the voice.
+                        zeroRetries++
+                        if (zeroRetries > 40) {
+                            releaseTrack()
+                            return
+                        }
+                        delay(5)
+                        continue
+                    }
+                    zeroRetries = 0
+                    offset += n
+                    written += n
+                    anyAudio.set(true)
+                }
+                val left = pendingLen - offset
+                if (left > 0) System.arraycopy(pending, offset, pending, 0, left)
+                pendingLen = left
+                if (!started && written >= prebufferBytes()) startPlayback(player)
+            }
+
             try {
                 withContext(Dispatchers.IO) {
                     for (event in events) {
                         if (gen != cloudGen) break
                         when (event) {
                             is PcmEvent.Start -> {
-                                if (track == null) {
-                                    sampleRate = event.sampleRate
-                                    channels = event.channels
-                                    track = createPcmTrack(sampleRate, channels)
-                                    cloudTrack = track
-                                    try {
-                                        track?.play()
-                                    } catch (_: Exception) {
-                                        try {
-                                            track?.release()
-                                        } catch (_: Exception) {
-                                        }
-                                        if (cloudTrack === track) cloudTrack = null
-                                        track = null
-                                    }
-                                    skipCurrent = track == null
-                                } else if (event.sampleRate != sampleRate ||
+                                val formatChanged = event.sampleRate != sampleRate ||
                                     event.channels != channels
-                                ) {
-                                    // A rare mid-reply route switch (direct Fish
-                                    // to OpenRouter, say) changes the format.
-                                    // Rebuild instead of writing at the wrong
-                                    // rate or going silent for the rest.
-                                    try {
-                                        track?.stop()
-                                    } catch (_: Exception) {
-                                    }
-                                    try {
-                                        track?.release()
-                                    } catch (_: Exception) {
-                                    }
-                                    if (cloudTrack === track) cloudTrack = null
+                                if (track == null || formatChanged) {
+                                    if (track != null) releaseTrack()
                                     sampleRate = event.sampleRate
                                     channels = event.channels
+                                    frameBytes = 2 * channels.coerceAtLeast(1)
+                                    pending = ByteArray(0)
+                                    pendingLen = 0
+                                    written = 0L
+                                    started = false
                                     track = createPcmTrack(sampleRate, channels)
                                     cloudTrack = track
-                                    try {
-                                        track?.play()
-                                    } catch (_: Exception) {
-                                        try {
-                                            track?.release()
-                                        } catch (_: Exception) {
-                                        }
-                                        if (cloudTrack === track) cloudTrack = null
-                                        track = null
-                                    }
-                                    written = 0
                                     skipCurrent = track == null
                                 } else {
+                                    // Same format: the next sentence reuses this
+                                    // track. Clear a transient failure so a
+                                    // later sentence can still be heard.
                                     skipCurrent = false
                                 }
                             }
@@ -536,28 +598,36 @@ object TtsManager {
                             is PcmEvent.Data -> {
                                 val player = track ?: continue
                                 if (skipCurrent) continue
-                                var offset = 0
-                                while (offset < event.bytes.size) {
-                                    val n = try {
-                                        player.write(event.bytes, offset, event.bytes.size - offset)
-                                    } catch (_: Exception) {
-                                        -1
-                                    }
-                                    if (n <= 0) break
-                                    offset += n
-                                    written += n
-                                    anyAudio.set(true)
+                                val need = pendingLen + event.bytes.size
+                                if (pending.size < need) {
+                                    pending = pending.copyOf(
+                                        maxOf(need, pending.size * 2, 8192)
+                                    )
                                 }
-                                if (!played && written > 0) {
-                                    played = true
-                                    onMain { if (gen == cloudGen) speaking = true }
-                                }
+                                System.arraycopy(
+                                    event.bytes,
+                                    0,
+                                    pending,
+                                    pendingLen,
+                                    event.bytes.size
+                                )
+                                pendingLen = need
+                                flushFrames(player)
                             }
                         }
                     }
+                    // Flush the last complete frame, then start playback if the
+                    // sentence was shorter than the prebuffer.
+                    if (gen == cloudGen && !skipCurrent && pendingLen >= frameBytes) {
+                        track?.let { flushFrames(it) }
+                    }
+                    val playTrack = track
+                    if (gen == cloudGen && playTrack != null && written > 0 && !started) {
+                        startPlayback(playTrack)
+                    }
                     // Let the hardware buffer finish before releasing the track.
                     if (gen == cloudGen && written > 0 && track != null) {
-                        val frames = (written / (2L * channels.coerceAtLeast(1))).toInt()
+                        val frames = (written / frameBytes.coerceAtLeast(1)).toInt()
                         val durationMs = frames * 1000L / sampleRate.coerceAtLeast(1)
                         val deadline = SystemClock.elapsedRealtime() + durationMs + 2500
                         while (gen == cloudGen &&
@@ -618,10 +688,11 @@ object TtsManager {
             AudioFormat.ENCODING_PCM_16BIT
         )
         if (min <= 0) return null
-        // ~200 ms of cushion keeps playback smooth without adding noticeable
-        // start delay; the first write is audible as soon as it lands.
+        // A full second of slack absorbs Bluetooth/A2DP and network jitter.
+        // It does not delay the first sample: playback starts as soon as the
+        // 200 ms prebuffer has been written.
         val bytesPerSecond = sampleRate * channels * 2
-        val bufferSize = maxOf(min * 2, bytesPerSecond / 5)
+        val bufferSize = maxOf(min * 4, bytesPerSecond)
         return try {
             AudioTrack.Builder()
                 .setAudioAttributes(

@@ -49,6 +49,34 @@ class WakeWordService : Service() {
             private set
 
         /**
+         * Live mode owns the microphone while it is open. Two active
+         * SpeechRecognizers in one app fight over the mic session, which the
+         * platform reports to the foreground one as ERROR_SERVER_DISCONNECTED
+         * (11). Live mode parks this loop on entry and resumes it on exit.
+         */
+        @Volatile
+        private var voicePaused = false
+
+        @Volatile
+        private var instance: WakeWordService? = null
+
+        fun pauseForVoice() {
+            voicePaused = true
+            try {
+                instance?.parkForVoice()
+            } catch (_: Exception) {
+            }
+        }
+
+        fun resumeAfterVoice() {
+            voicePaused = false
+            try {
+                instance?.unparkAfterVoice()
+            } catch (_: Exception) {
+            }
+        }
+
+        /**
          * Set by MainActivity when Voice is visibly opened from a wake
          * trigger. Lets the service skip the fallback tap-to-open
          * notification when the direct open already worked.
@@ -86,9 +114,10 @@ class WakeWordService : Service() {
     override fun onCreate() {
         super.onCreate()
         running = true
+        instance = this
         wakePhrase = UserPrefs.wakePhrase(this).ifBlank { WakeWord.DEFAULT_PHRASE }
         ensureChannels()
-        startForeground(NOTIF_ID, ongoingNotification())
+        refreshNotification()
         // Partial wakelock keeps recognition alive with the screen off.
         // Released in onDestroy; CPU-only (no screen bright).
         try {
@@ -105,10 +134,7 @@ class WakeWordService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         wakePhrase = UserPrefs.wakePhrase(this).ifBlank { WakeWord.DEFAULT_PHRASE }
         ensureChannels()
-        try {
-            startForeground(NOTIF_ID, ongoingNotification())
-        } catch (_: Exception) {
-        }
+        refreshNotification()
         if (recognizer == null && !restartPending) startListening()
         return START_STICKY
     }
@@ -117,6 +143,7 @@ class WakeWordService : Service() {
         restartPending = false
         handler.removeCallbacksAndMessages(null)
         stopRecognizer()
+        if (instance === this) instance = null
         try {
             wakeLock?.release()
         } catch (_: Exception) {
@@ -143,6 +170,8 @@ class WakeWordService : Service() {
         }
 
     private fun startListening() {
+        // Live mode holds the mic; the loop resumes when it closes.
+        if (voicePaused) return
         if (!hasMicPermission()) {
             stopSelf()
             return
@@ -196,20 +225,53 @@ class WakeWordService : Service() {
         }
     }
 
+    private val restartRunnable = Runnable {
+        restartPending = false
+        if (voicePaused) return@Runnable
+        try {
+            startListening()
+        } catch (_: Exception) {
+            scheduleRestart(2_000L)
+        }
+    }
+
     private fun scheduleRestart(delayMs: Long) {
-        if (restartPending) return
+        if (restartPending || voicePaused) return
         restartPending = true
-        handler.postDelayed(
-            {
-                restartPending = false
-                try {
-                    startListening()
-                } catch (_: Exception) {
-                    scheduleRestart(2_000L)
+        handler.postDelayed(restartRunnable, delayMs)
+    }
+
+    /** Live mode opened: release the mic immediately and cancel wake restarts. */
+    private fun parkForVoice() {
+        handler.removeCallbacks(restartRunnable)
+        restartPending = false
+        stopRecognizer()
+        refreshNotification()
+    }
+
+    /** Live mode closed: re-arm the wake loop after the mic settles. */
+    private fun unparkAfterVoice() {
+        if (voicePaused) return
+        refreshNotification()
+        if (recognizer != null || restartPending) return
+        scheduleRestart(700L)
+    }
+
+    private fun refreshNotification() {
+        try {
+            startForeground(
+                NOTIF_ID,
+                if (voicePaused) {
+                    ongoingNotification(
+                        title = "Wake word paused",
+                        text = "Resumes when Live mode closes"
+                    )
+                } else {
+                    ongoingNotification()
                 }
-            },
-            delayMs
-        )
+            )
+        } catch (_: Exception) {
+        }
     }
 
     private fun stopRecognizer() {
@@ -295,10 +357,13 @@ class WakeWordService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-    private fun ongoingNotification(): Notification =
+    private fun ongoingNotification(
+        title: String = "Listening for \u201c$wakePhrase\u201d",
+        text: String = "Say the wake phrase to open Karen Live mode"
+    ): Notification =
         NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Listening for \u201c$wakePhrase\u201d")
-            .setContentText("Say the wake phrase to open Karen Live mode")
+            .setContentTitle(title)
+            .setContentText(text)
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .setContentIntent(openPendingIntent(2001))
             .setOngoing(true)

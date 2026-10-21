@@ -484,8 +484,13 @@ suspend fun CloudProvider.complete(
     /** Socket read timeout per request. */
     timeoutMs: Int = 90000,
     /** Karen effort pill; becomes Anthropic `output_config.effort` on 4.7+. */
-    effort: String? = null
-): String = completeResult(apiKey, history, maxTokens, thinkingBudget, historyLimit, model, images, timeoutMs, effort).text
+    effort: String? = null,
+    /** Realtime voice: force provider reasoning off when the route supports it. */
+    disableReasoning: Boolean = false
+): String = completeResult(
+    apiKey, history, maxTokens, thinkingBudget, historyLimit, model, images,
+    timeoutMs, effort, disableReasoning
+).text
 
 /**
  * Last output budget a provider's credits could cover ("can only afford N").
@@ -540,12 +545,17 @@ suspend fun CloudProvider.completeResult(
     model: String? = null,
     images: List<VisionImage> = emptyList(),
     timeoutMs: Int = 90000,
-    effort: String? = null
+    effort: String? = null,
+    /** Realtime voice: force provider reasoning off when the route supports it. */
+    disableReasoning: Boolean = false
 ): CloudResult {
     val budget = creditBudget(maxTokens)
     val thinking = if (budget < maxTokens) null else thinkingBudget
     return try {
-        completeResultOnce(apiKey, history, budget, thinking, historyLimit, model, images, timeoutMs, effort, budget < maxTokens)
+        completeResultOnce(
+            apiKey, history, budget, thinking, historyLimit, model, images, timeoutMs,
+            effort, disableReasoning || budget < maxTokens
+        )
     } catch (e: CloudApiException) {
         val affordable = affordableBudget(budget, e) ?: throw e
         completeResultOnce(apiKey, history, affordable, null, historyLimit, model, images, timeoutMs, effort, true)
@@ -713,6 +723,8 @@ suspend fun CloudProvider.completeStreamingResult(
     isCancelled: () -> Boolean = { false },
     /** Karen effort pill; becomes Anthropic `output_config.effort` on 4.7+. */
     effort: String? = null,
+    /** Realtime voice: force provider reasoning off when the route supports it. */
+    disableReasoning: Boolean = false,
     /** Connection timeout; realtime voice uses a shorter one to fail over fast. */
     connectTimeoutMs: Int = 15000,
     /** Per-read timeout; live voice uses a shorter one to avoid dead air. */
@@ -728,7 +740,7 @@ suspend fun CloudProvider.completeStreamingResult(
     return try {
         completeStreamingResultOnce(
             apiKey, history, budget, thinking, historyLimit, model, images, tracked,
-            isCancelled, effort, budget < maxTokens, connectTimeoutMs, readTimeoutMs
+            isCancelled, effort, budget < maxTokens || disableReasoning, connectTimeoutMs, readTimeoutMs
         )
     } catch (e: CloudApiException) {
         val affordable = affordableBudget(budget, e) ?: throw e
@@ -739,6 +751,7 @@ suspend fun CloudProvider.completeStreamingResult(
             apiKey, history, affordable, null, historyLimit, model, images, tracked,
             isCancelled, effort, true, connectTimeoutMs, readTimeoutMs
         )
+        // (disableReasoning is already true in this credit-clamped retry.)
     }
 }
 
@@ -983,6 +996,8 @@ suspend fun CloudProvider.completeStreaming(
     onToken: (String) -> Unit = {},
     isCancelled: () -> Boolean = { false },
     effort: String? = null,
+    /** Realtime voice: force provider reasoning off when the route supports it. */
+    disableReasoning: Boolean = false,
     connectTimeoutMs: Int = 15000,
     readTimeoutMs: Int = 90000
 ): String = completeStreamingResult(
@@ -995,6 +1010,7 @@ suspend fun CloudProvider.completeStreaming(
     onToken = onToken,
     isCancelled = isCancelled,
     effort = effort,
+    disableReasoning = disableReasoning,
     connectTimeoutMs = connectTimeoutMs,
     readTimeoutMs = readTimeoutMs
 ).text

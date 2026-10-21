@@ -27,16 +27,23 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
+import com.karen.WakeWordService
 import com.karen.rememberDeviceTelemetry
 import com.karen.rememberVoiceStt
 
 /** Spoken-reply instruction: short, human, TTS-safe answers for Live mode. */
 const val VOICE_REPLY_STYLE =
     "Answer immediately with the useful part first — no preamble, no filler, " +
-        "no restating the question. Reply as natural human speech for text-to-speech: " +
-        "1-3 short spoken sentences, warm and conversational, plain words only — " +
-        "no markdown, no lists, no tables, no code, no emojis, no stage directions, " +
-        "no bullet points."
+        "no restating the question, and no step-by-step reasoning. " +
+        "Reply as natural human speech for text-to-speech: 1-3 short spoken sentences, " +
+        "warm and conversational, plain words only — no markdown, no lists, no tables, " +
+        "no code, no emojis, no stage directions, no bullet points."
+
+/** A provider that cannot produce a visible token by now loses the turn. */
+private const val VOICE_FIRST_TOKEN_TIMEOUT_MS = 3000L
+
+/** Non-SSE bridge request: short enough that failover still feels live. */
+private const val VOICE_ONESHOT_TIMEOUT_MS = 6000
 
 /**
  * One useful spoken sentence for a failed Live-mode chat request.
@@ -70,11 +77,23 @@ private fun voiceFailureText(e: Exception): String {
 private fun voiceModelFor(provider: CloudProvider, stored: String): String {
     if (stored.isNotBlank()) return stored
     return when (provider.id) {
-        "groq" -> "llama-3.1-8b-instant"
         "openai" -> "gpt-4o-mini"
+        "anthropic" -> "claude-haiku-5-5"
+        // Gemini 2.0 Flash is retired; the rolling alias is the current
+        // fast non-thinking voice route.
+        "gemini" -> "gemini-flash-latest"
+        "mistral" -> "mistral-small-latest"
+        "grok" -> "grok-3-mini"
+        "deepseek" -> "deepseek-chat"
+        // Groq's small non-reasoning model: ~0.3 s to first token in Live
+        // mode. The old llama-3.1-8b alias now returns 404 on Groq.
+        "groq" -> "allam-2-7b"
+        "cerebras" -> "llama-3.3-70b"
         "sambanova" -> "Meta-Llama-3.1-8B-Instruct"
+        "huggingface" -> "meta-llama/Llama-3.1-8B-Instruct"
         "githubmodels" -> "openai/gpt-4o-mini"
         "nvidia" -> "meta/llama-3.1-8b-instruct"
+        "zai" -> "glm-4-flash"
         else -> stored
     }
 }
@@ -92,7 +111,15 @@ fun VoiceScreen(
     // Real speech output state; stop it when leaving Live mode.
     val isSpeaking = TtsManager.speaking
     androidx.compose.runtime.DisposableEffect(Unit) {
-        onDispose { TtsManager.stop() }
+        // Only one recognizer may own the mic. The wake-word foreground
+        // service parks while Live mode is open; otherwise its looping
+        // SpeechRecognizer steals the session and Android reports the drop
+        // as ERROR_SERVER_DISCONNECTED (11) on this one.
+        WakeWordService.pauseForVoice()
+        onDispose {
+            WakeWordService.resumeAfterVoice()
+            TtsManager.stop()
+        }
     }
 
     val colors = LocalKarenColors.current
@@ -170,13 +197,16 @@ fun VoiceScreen(
                     UserPrefs.preferredLocalModel(personaCtx), UserPrefs.preferredApiModel(personaCtx)
                 )?.modelName
                 val auto = UserPrefs.autoRoute(personaCtx)
+                val preferredApi = UserPrefs.preferredApiModel(personaCtx)
                 // Speech has no "typing" time to hide behind: loading a local
                 // GGUF can take seconds before the first token. With auto
-                // routing on, take the fastest connected cloud provider; local
-                // still wins when it is the only option or the user pinned it.
-                // Keep cloud routing off if the user disabled it.
+                // routing on, rank by first-token latency, not chat quality —
+                // a short spoken turn should not wait for a flagship thinker.
+                // Local still wins when it is the only option or pinned.
                 val fastestCloud = if (UserPrefs.autoCloud(personaCtx)) {
-                    keyed.maxByOrNull { scoreCloud(it.id, detectIntent(text)) }?.name
+                    keyed.maxByOrNull {
+                        scoreCloudVoice(it.id) + if (it.name == preferredApi) 4 else 0
+                    }?.name
                 } else {
                     null
                 }
@@ -221,14 +251,14 @@ fun VoiceScreen(
                 if (cloud != null && key.isNotBlank()) {
                     // One failing provider should not sink the turn when another
                     // connected key works. The chosen provider goes first, then
-                    // the best remaining keyed providers for this intent.
-                    val preferredApi = UserPrefs.preferredApiModel(personaCtx)
+                    // the lowest-latency remaining keys — failover must be fast
+                    // too, not another flagship-quality detour.
                     val candidates = buildList {
                         add(cloud to key)
                         keyed.filter { it.name != cloud.name }
                             .sortedByDescending {
-                                scoreCloud(it.id, detectIntent(text)) +
-                                    if (it.name == preferredApi) 8 else 0
+                                scoreCloudVoice(it.id) +
+                                    if (it.name == preferredApi) 4 else 0
                             }
                             .forEach { add(it to UserPrefs.apiKey(personaCtx, it.id)) }
                     }
@@ -238,6 +268,18 @@ fun VoiceScreen(
                             provider,
                             UserPrefs.apiModel(personaCtx, provider.id)
                         )
+                        // Watch the first visible token, not just the socket:
+                        // a provider can hold the connection open while it
+                        // plans. Disconnect that request and try a fast route.
+                        val firstToken = java.util.concurrent.atomic.AtomicBoolean(false)
+                        val firstTokenTimedOut = java.util.concurrent.atomic.AtomicBoolean(false)
+                        val watchdog = launch {
+                            kotlinx.coroutines.delay(VOICE_FIRST_TOKEN_TIMEOUT_MS)
+                            if (!firstToken.get() && !cancelVoice) {
+                                firstTokenTimedOut.set(true)
+                            }
+                        }
+                        var streamError: Exception? = null
                         val streamText = try {
                             provider.withModelFallback(personaCtx, voiceModel) { useModel ->
                                 provider.completeStreaming(
@@ -247,10 +289,15 @@ fun VoiceScreen(
                                     thinkingBudget = null,
                                     historyLimit = 4,
                                     model = useModel,
-                                    onToken = ::onPiece,
-                                    isCancelled = { cancelVoice },
-                                    connectTimeoutMs = 6000,
-                                    readTimeoutMs = 12000
+                                    effort = "Low",
+                                    disableReasoning = true,
+                                    onToken = { piece ->
+                                        if (piece.isNotBlank()) firstToken.set(true)
+                                        onPiece(piece)
+                                    },
+                                    isCancelled = { cancelVoice || firstTokenTimedOut.get() },
+                                    connectTimeoutMs = 3000,
+                                    readTimeoutMs = 8000
                                 )
                             }
                         } catch (e: kotlinx.coroutines.CancellationException) {
@@ -260,19 +307,42 @@ fun VoiceScreen(
                                 TtsManager.stop()
                                 return@launch
                             }
+                            streamError = e
                             ""
+                        } finally {
+                            watchdog.cancel()
                         }
                         if (cancelVoice) break
                         if (full.isBlank() && streamText.isNotBlank()) {
+                            // The streaming helper falls back to reasoning text
+                            // when a model emits no visible answer. Live mode
+                            // must never speak hidden thinking as the reply.
+                            if (!firstToken.get()) {
+                                failure = "The model returned no spoken answer."
+                                continue
+                            }
                             full = streamText
                             publish(force = true)
                         }
                         // A partial stream must not be replayed by another
                         // provider; only fail over when nothing was produced.
                         if (full.isNotBlank()) break
-                        // Streaming can succeed with no token events (or fail
-                        // after the endpoint rejected SSE). A one-shot call is
-                        // the bridge before trying the next connected key.
+                        // A slow first token will not get faster on a one-shot
+                        // retry; hand the turn to the next fast provider now.
+                        if (firstTokenTimedOut.get()) {
+                            failure = "The model took too long to start replying."
+                            continue
+                        }
+                        // A real transport/auth/model failure is not an SSE
+                        // shape problem, so don't add another long request.
+                        if (streamError != null) {
+                            failure = voiceFailureText(streamError)
+                            val status = (streamError as? CloudApiException)?.status
+                            if (status != null && status in 400..404) needsSetup = true
+                            continue
+                        }
+                        // A clean stream with no tokens can mean the endpoint
+                        // does not speak SSE; bridge with one short one-shot.
                         val once = try {
                             provider.withModelFallback(personaCtx, voiceModel) { useModel ->
                                 provider.complete(
@@ -282,7 +352,9 @@ fun VoiceScreen(
                                     thinkingBudget = null,
                                     historyLimit = 4,
                                     model = useModel,
-                                    timeoutMs = 20000
+                                    effort = "Low",
+                                    disableReasoning = true,
+                                    timeoutMs = VOICE_ONESHOT_TIMEOUT_MS
                                 )
                             }
                         } catch (e: kotlinx.coroutines.CancellationException) {
@@ -416,7 +488,10 @@ fun VoiceScreen(
         if (wasSpeaking && !TtsManager.speaking) {
             if (autoArmed && !cancelVoice && autoVoice && !isMuted && voiceReply.isNotBlank()) {
                 autoArmed = false
-                kotlinx.coroutines.delay(100)
+                // The barge-in watcher releases its AudioRecord in a finally
+                // block on this same transition; give the mic a beat to free
+                // up or the recognizer starts into a busy device.
+                kotlinx.coroutines.delay(300)
                 voiceStt.startListening()
             } else {
                 autoArmed = false
@@ -441,7 +516,12 @@ fun VoiceScreen(
         }
         voiceBusy = false
         voiceReply = ""
-        voiceStt.startListening()
+        // TTS audio and the barge-in AudioRecord are still unwinding; start
+        // the recognizer once the audio path has actually been released.
+        voiceScope.launch {
+            kotlinx.coroutines.delay(220)
+            voiceStt.startListening()
+        }
     }
 
     // Warm the TTS engine and start listening on entry (Gemini-style).
@@ -790,6 +870,7 @@ fun VoiceScreen(
                                 voiceStt.state.isListening -> colors.accentGreen.copy(alpha = statusPulse)
                                 isSpeaking -> colors.accentBlue.copy(alpha = statusPulse)
                                 isThinking || isTranscribing -> colors.accentGreen.copy(alpha = statusPulse)
+                                voiceStt.state.isRecovering -> colors.accentAmber.copy(alpha = statusPulse)
                                 else -> colors.textMuted
                             }
                         )
@@ -800,7 +881,9 @@ fun VoiceScreen(
                         voiceStt.state.isListening -> "Listening..."
                         isSpeaking -> "Speaking · ${if (CloudTts.available(personaCtx)) selectedVoiceLabel else "System TTS"}"
                         isTranscribing -> "Got it…"
-                        isThinking -> "Thinking…"
+                        isThinking && voiceReply.isBlank() -> "Thinking…"
+                        isThinking -> "Replying…"
+                        voiceStt.state.isRecovering -> "Reconnecting…"
                         else -> "Ready · Tap to Speak"
                     },
                     color = colors.textSecondary,
@@ -950,10 +1033,13 @@ fun VoiceScreen(
                     text = when {
                         voiceStt.state.isListening -> "YOU (LISTENING...)"
                         isSpeaking -> "KAREN · ${activeVoiceLabel.uppercase()}"
-                        isThinking || isTranscribing -> "KAREN · THINKING"
+                        isThinking && voiceReply.isBlank() -> "KAREN · THINKING"
+                        isThinking -> "KAREN · REPLYING"
+                        isTranscribing -> "KAREN · THINKING"
+                        voiceStt.state.isRecovering -> "KAREN · RECONNECTING"
                         else -> "STANDBY"
                     },
-                    color = colors.accentGreen,
+                    color = if (voiceStt.state.isRecovering) colors.accentAmber else colors.accentGreen,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
                     letterSpacing = 1.sp
@@ -963,8 +1049,9 @@ fun VoiceScreen(
                     text = when {
                         voiceStt.state.isListening -> "YOU (LISTENING...)"
                         isTranscribing -> "Got it — thinking…"
-                        voiceBusy -> "Thinking…"
+                        voiceStt.state.isRecovering -> "Reconnecting to the speech service…"
                         voiceReply.isNotBlank() -> "“$voiceReply”"
+                        voiceBusy -> "Starting reply…"
                         !voiceStt.state.errorMessage.isNullOrBlank() -> "⚠ ${voiceStt.state.errorMessage} — tap orb to retry"
                         userSpokenText.isNotEmpty() -> "“$userSpokenText”"
                         else -> "Tap orb to speak. Karen native STT is ready..."

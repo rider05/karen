@@ -15,7 +15,59 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.*
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.util.Locale
+
+/**
+ * Failures that mean the recognition backend dropped the session, not that
+ * the user said nothing. These are safe to retry on a freshly built engine.
+ */
+private val STT_TRANSIENT_ERRORS = setOf(
+    SpeechRecognizer.ERROR_AUDIO,
+    SpeechRecognizer.ERROR_CLIENT,
+    SpeechRecognizer.ERROR_NETWORK,
+    SpeechRecognizer.ERROR_NETWORK_TIMEOUT,
+    SpeechRecognizer.ERROR_RECOGNIZER_BUSY,
+    SpeechRecognizer.ERROR_SERVER,
+    SpeechRecognizer.ERROR_SERVER_DISCONNECTED,
+    SpeechRecognizer.ERROR_TOO_MANY_REQUESTS
+)
+
+/** Automatic reconnects after a dropped session before asking for a tap. */
+private const val STT_MAX_AUTO_RETRIES = 2
+
+/** Android speech error code → one short line the Live-mode card can show. */
+private fun sttErrorMessage(error: Int): String = when (error) {
+    SpeechRecognizer.ERROR_AUDIO -> "Microphone unavailable — another app may be using it"
+    SpeechRecognizer.ERROR_CLIENT -> "Recognition was interrupted"
+    SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Microphone permission required"
+    SpeechRecognizer.ERROR_NETWORK -> "Speech service needs a network connection"
+    SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Speech service timed out"
+    SpeechRecognizer.ERROR_NO_MATCH -> "No speech detected"
+    SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Recognition service busy"
+    SpeechRecognizer.ERROR_SERVER -> "Speech service error"
+    SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "No speech input"
+    SpeechRecognizer.ERROR_TOO_MANY_REQUESTS -> "Speech service is rate-limiting"
+    SpeechRecognizer.ERROR_SERVER_DISCONNECTED -> "Speech service disconnected"
+    SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED -> "This language is not supported by speech"
+    SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE -> "Speech language pack unavailable"
+    SpeechRecognizer.ERROR_CANNOT_CHECK_SUPPORT -> "Speech recognition unsupported on this device"
+    else -> "Recognition error ($error)"
+}
+
+/** Retry bookkeeping kept outside Compose state so it never recomposes. */
+private class SttRetryState {
+    var attempts = 0
+
+    /** True while a start the user still wants is in flight. */
+    var armed = false
+
+    /** True after a deliberate stop/cancel; late errors are not surfaced. */
+    var cancelled = false
+    var job: Job? = null
+}
 
 class VoiceSttState(
     isListening: Boolean = false,
@@ -31,6 +83,9 @@ class VoiceSttState(
 
     /** True between end-of-speech and the final transcript. */
     var isTranscribing by mutableStateOf(isTranscribing)
+
+    /** True while a dropped recognition session is being rebuilt. */
+    var isRecovering by mutableStateOf(false)
 }
 
 class VoiceSttController(
@@ -58,6 +113,11 @@ fun rememberVoiceStt(
 ): VoiceSttController {
     val context = LocalContext.current
     val state = remember { VoiceSttState() }
+    val retry = remember { SttRetryState() }
+    val scope = rememberCoroutineScope()
+    // Filled on every composition; the remembered listener calls through it
+    // so it always reaches the latest start logic (no stale capture).
+    val startHolder = remember { arrayOfNulls<(Boolean) -> Unit>(1) }
 
     // The recognizer is reused across hands-free turns; keep the newest
     // callbacks without recreating it and losing the warm engine.
@@ -65,6 +125,22 @@ fun rememberVoiceStt(
     val currentOnPartial = rememberUpdatedState(onPartialResult)
 
     var speechRecognizer by remember { mutableStateOf<SpeechRecognizer?>(null) }
+
+    fun destroyRecognizer() {
+        try {
+            speechRecognizer?.destroy()
+        } catch (_: Exception) {
+        }
+        speechRecognizer = null
+    }
+
+    fun cancelRetry() {
+        retry.job?.cancel()
+        retry.job = null
+        retry.armed = false
+        retry.cancelled = true
+        state.isRecovering = false
+    }
 
     // Fallback system dialog intent launcher
     val systemIntentLauncher = rememberLauncherForActivityResult(
@@ -109,7 +185,6 @@ fun rememberVoiceStt(
             Toast.makeText(context, "Speech recognition not available on device", Toast.LENGTH_SHORT).show()
         }
     }
-    val currentFallback = rememberUpdatedState(launchSystemDialogFallback)
 
     val listener = remember {
         object : RecognitionListener {
@@ -117,6 +192,7 @@ fun rememberVoiceStt(
                 state.isListening = true
                 state.isTranscribing = false
                 state.errorMessage = null
+                state.isRecovering = false
             }
 
             override fun onBeginningOfSpeech() {
@@ -139,33 +215,55 @@ fun rememberVoiceStt(
             override fun onError(error: Int) {
                 state.isListening = false
                 state.isTranscribing = false
-                val msg = when (error) {
-                    SpeechRecognizer.ERROR_AUDIO -> "Audio recording error"
-                    SpeechRecognizer.ERROR_CLIENT -> "Client error"
-                    SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Insufficient permissions"
-                    SpeechRecognizer.ERROR_NETWORK -> "Network error"
-                    SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Network timeout"
-                    SpeechRecognizer.ERROR_NO_MATCH -> "No speech detected"
-                    SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Recognition service busy"
-                    SpeechRecognizer.ERROR_SERVER -> "Server error"
-                    SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "No speech input"
-                    else -> "Recognition error ($error)"
+                state.rmsDb = 0f
+                // A reused engine keeps a broken server connection after
+                // ERROR_SERVER_DISCONNECTED (11), which is exactly why the
+                // old code looped back into the same error. Drop every dead
+                // engine; a clean one is cheap to build.
+                if (error != SpeechRecognizer.ERROR_NO_MATCH &&
+                    error != SpeechRecognizer.ERROR_SPEECH_TIMEOUT
+                ) {
+                    destroyRecognizer()
                 }
-                state.errorMessage = msg
-                if (error == SpeechRecognizer.ERROR_CLIENT || error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY) {
-                    // The engine is wedged: discard it before the dialog.
-                    try {
-                        speechRecognizer?.destroy()
-                    } catch (_: Exception) {
+
+                // stopListening()/cancel() also end in a client error on most
+                // devices. That is the user's intent, not a failure to report.
+                if (retry.cancelled) {
+                    retry.cancelled = false
+                    state.errorMessage = null
+                    state.isRecovering = false
+                    return
+                }
+
+                val transient = error in STT_TRANSIENT_ERRORS
+                if (transient && retry.armed && retry.attempts < STT_MAX_AUTO_RETRIES) {
+                    retry.attempts++
+                    state.errorMessage = null
+                    state.isRecovering = true
+                    state.partialText = ""
+                    retry.job?.cancel()
+                    retry.job = scope.launch {
+                        // Short backoff: long enough for the mic/audio route
+                        // to free up, short enough to feel like a reconnect.
+                        delay(if (retry.attempts <= 1) 350L else 1_000L)
+                        if (retry.armed) startHolder[0]?.invoke(true)
                     }
-                    speechRecognizer = null
-                    currentFallback.value()
+                } else {
+                    retry.armed = false
+                    retry.job?.cancel()
+                    retry.job = null
+                    state.isRecovering = false
+                    state.errorMessage = sttErrorMessage(error)
                 }
             }
 
             override fun onResults(results: Bundle?) {
                 state.isListening = false
                 state.isTranscribing = false
+                state.isRecovering = false
+                retry.attempts = 0
+                retry.armed = false
+                retry.cancelled = false
                 val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                 val finalSpeech = matches?.firstOrNull()?.trim()
                 if (!finalSpeech.isNullOrEmpty()) {
@@ -199,11 +297,20 @@ fun rememberVoiceStt(
         state.isTranscribing = false
     }
 
-    val startRecognizingInternal = {
+    fun startRecognizingInternal(isRetry: Boolean = false) {
+        // Never stack sessions: two overlapping starts are the classic cause
+        // of ERROR_CLIENT and of the mic being stolen from the recognizer.
+        if (state.isListening || state.isTranscribing) return
+        if (!isRetry) retry.attempts = 0
+        retry.armed = true
+        retry.cancelled = false
+        retry.job?.cancel()
+        retry.job = null
         if (SpeechRecognizer.isRecognitionAvailable(context)) {
             state.isTranscribing = false
             state.errorMessage = null
             state.partialText = ""
+            state.isRecovering = isRetry
             try {
                 val recognizer = speechRecognizer ?: createRecognizer()
                 try {
@@ -221,12 +328,18 @@ fun rememberVoiceStt(
             } catch (e: Exception) {
                 state.isListening = false
                 state.isTranscribing = false
+                state.isRecovering = false
+                retry.armed = false
                 launchSystemDialogFallback()
             }
         } else {
+            retry.armed = false
+            state.isRecovering = false
             launchSystemDialogFallback()
         }
     }
+    // The remembered listener must reach the current lambda, not a stale one.
+    startHolder[0] = { isRetry -> startRecognizingInternal(isRetry) }
 
     // Permission launcher for RECORD_AUDIO
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -235,6 +348,7 @@ fun rememberVoiceStt(
         if (isGranted) {
             startRecognizingInternal()
         } else {
+            cancelRetry()
             state.isListening = false
             state.isTranscribing = false
             state.errorMessage = "Audio recording permission required"
@@ -256,6 +370,8 @@ fun rememberVoiceStt(
     }
 
     val stopListening = {
+        // A deliberate stop must not be undone by a pending reconnect.
+        cancelRetry()
         try {
             speechRecognizer?.stopListening()
         } catch (_: Exception) {}
@@ -263,6 +379,7 @@ fun rememberVoiceStt(
     }
 
     val cancelListening = {
+        cancelRetry()
         try {
             speechRecognizer?.cancel()
         } catch (_: Exception) {}
@@ -273,6 +390,8 @@ fun rememberVoiceStt(
 
     DisposableEffect(Unit) {
         onDispose {
+            retry.job?.cancel()
+            retry.job = null
             try {
                 speechRecognizer?.destroy()
             } catch (_: Exception) {}

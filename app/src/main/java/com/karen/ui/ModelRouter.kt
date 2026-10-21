@@ -135,6 +135,30 @@ fun scoreCloud(providerId: String, intent: TaskIntent): Int = when (intent) {
     }
 }
 
+/**
+ * Higher wins for Live mode. Voice turns are short, so first-token latency
+ * beats flagship answer quality: a direct small/fast route should answer
+ * before a thinker has finished planning. Users can still pin a specific
+ * model in the Live mode pill or Model Manager.
+ */
+fun scoreCloudVoice(providerId: String): Int = when (providerId) {
+    "groq" -> 100
+    "cerebras" -> 98
+    "sambanova" -> 92
+    "gemini" -> 90
+    "nvidia" -> 84
+    "githubmodels" -> 82
+    "openai" -> 76
+    "huggingface" -> 72
+    "zai" -> 70
+    "mistral" -> 64
+    "deepseek" -> 62
+    "openrouter" -> 58
+    "grok" -> 56
+    "anthropic" -> 52
+    else -> 48
+}
+
 /** True for thinking models: reasoning cloud providers or reasoning catalog weights. */
 fun isReasoningModel(name: String): Boolean {
     if (findCloudProviderByName(name)?.reasoning == true) return true

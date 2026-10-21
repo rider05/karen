@@ -1374,7 +1374,10 @@ fun WorkspaceScreen(
     var selectedModel by remember {
         mutableStateOf(
             UserPrefs.selectedModel(ctx).takeIf { isSelectableModel(ctx, it) }
-                ?: (UserPrefs.models(ctx).firstOrNull { !isCloudProviderName(it) } ?: modelCatalog.first().name)
+                ?: (
+                    UserPrefs.models(ctx).firstOrNull { !isCloudProviderName(it) && !isNonChatModel(it) }
+                        ?: modelCatalog.first { !it.embedding && !it.projector }.name
+                )
         )
     }
     // Auto routing: best installed/connected model per project message.
@@ -1387,7 +1390,7 @@ fun WorkspaceScreen(
     fun routeFor(prompt: String): String {
         if (!autoRoute) return selectedModel
         val locals = UserPrefs.models(ctx)
-            .filter { !isCloudProviderName(it) && !isEmbeddingModel(it) && ModelDownloader.isRunnableWeight(ctx, it) }
+            .filter { !isCloudProviderName(it) && !isNonChatModel(it) && ModelDownloader.isRunnableWeight(ctx, it) }
         val keyed = allCloudProviders(ctx).filter { UserPrefs.apiKey(ctx, it.id).isNotBlank() }
         val decision = routeModel(
             prompt, locals, keyed, UserPrefs.autoCloud(ctx),

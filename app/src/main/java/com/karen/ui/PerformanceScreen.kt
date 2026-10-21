@@ -43,7 +43,7 @@ fun PerformanceScreen(
         if (benchmarkRunning) return
         val pinned = UserPrefs.selectedModel(ctx)
             .takeIf { it.isNotBlank() && !isCloudProviderName(it) && isSelectableModel(ctx, it) }
-        val name = pinned ?: UserPrefs.models(ctx).firstOrNull { !isCloudProviderName(it) }
+        val name = pinned ?: UserPrefs.models(ctx).firstOrNull { !isCloudProviderName(it) && !isNonChatModel(it) }
         if (name == null) {
             benchmarkResult = "No local model on device — download one in Model Manager first."
             return

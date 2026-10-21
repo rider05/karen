@@ -183,7 +183,7 @@ fun VoiceScreen(
                 val customs = UserPrefs.customProviders(personaCtx)
                 val locals = UserPrefs.models(personaCtx)
                     .filter {
-                        !isCloudProviderName(it, customs) && !isEmbeddingModel(it) &&
+                        !isCloudProviderName(it, customs) && !isNonChatModel(it) &&
                             ModelDownloader.isRunnableWeight(personaCtx, it)
                     }
                 val keyed = allCloudProviders(personaCtx).filter { UserPrefs.apiKey(personaCtx, it.id).isNotBlank() }

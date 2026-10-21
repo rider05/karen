@@ -132,8 +132,11 @@ fun StudyBookScreen(
             return
         }
         val model = UserPrefs.selectedModel(ctx)
-            .takeIf { it.isNotBlank() && !isCloudProviderName(it) && ModelDownloader.isRunnableWeight(ctx, it) }
-            ?: UserPrefs.models(ctx).firstOrNull { ModelDownloader.isRunnableWeight(ctx, it) }
+            .takeIf {
+                it.isNotBlank() && !isCloudProviderName(it) && !isNonChatModel(it) &&
+                    ModelDownloader.isRunnableWeight(ctx, it)
+            }
+            ?: UserPrefs.models(ctx).firstOrNull { !isNonChatModel(it) && ModelDownloader.isRunnableWeight(ctx, it) }
         if (model == null) {
             status = "No local model — download or import a GGUF in Model Manager to generate decks offline."
             return

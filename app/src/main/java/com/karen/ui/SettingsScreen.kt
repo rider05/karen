@@ -317,7 +317,7 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                     var localMenu by remember { mutableStateOf(false) }
                     var apiMenu by remember { mutableStateOf(false) }
                     val localOptions = remember {
-                        listOf("") + UserPrefs.models(context).filter { !isCloudProviderName(it) }
+                        listOf("") + UserPrefs.models(context).filter { !isCloudProviderName(it) && !isNonChatModel(it) }
                     }
                     val apiOptions = remember {
                         listOf("") + allCloudProviders(context)

@@ -32,10 +32,112 @@ data class CatalogModel(
     /** True for solid code generators for its size. */
     val code: Boolean = false,
     /** True for embedding-only weights (vault/RAG): never chat-routed. */
-    val embedding: Boolean = false
+    val embedding: Boolean = false,
+    /** True when the model accepts image input with a companion mmproj file. */
+    val vision: Boolean = false,
+    /** True for mmproj projector companions: downloadable, never chat-routed. */
+    val projector: Boolean = false
 )
 
+/**
+ * Builds a bundled entry and derives display size/RAM from the exact Hugging
+ * Face file size. RAM uses the same 25% overhead estimate as installed weights.
+ */
+private fun catalogModel(
+    name: String,
+    fileName: String,
+    repo: String,
+    quant: String,
+    sizeBytes: Long,
+    paramsB: Float = 0f,
+    reasoning: Boolean = false,
+    code: Boolean = false,
+    embedding: Boolean = false,
+    vision: Boolean = false,
+    projector: Boolean = false
+): CatalogModel {
+    val sizeGb = sizeBytes / 1073741824.0
+    val sizeLabel = if (sizeGb >= 1.0) {
+        "≈%.1f GB".format(sizeGb)
+    } else {
+        "≈%d MB".format((sizeBytes + 1048575L) / 1048576L)
+    }
+    val ramMb = sizeBytes * 1.25 / 1048576.0
+    val ram = if (ramMb >= 1024.0) "≈%.1f GB".format(ramMb / 1024.0) else "≈%d MB".format(ramMb.toLong())
+    return CatalogModel(
+        name = name,
+        fileName = fileName,
+        sizeLabel = sizeLabel,
+        quant = quant,
+        ram = ram,
+        url = "https://huggingface.co/$repo/resolve/main/$fileName",
+        paramsB = paramsB,
+        reasoning = reasoning,
+        code = code,
+        embedding = embedding,
+        vision = vision,
+        projector = projector
+    )
+}
+
 val modelCatalog = listOf(
+    // Qwen 3.5
+    catalogModel("Qwen3.5-0.8B", "Qwen3.5-0.8B-Q8_0.gguf", "ggml-org/Qwen3.5-0.8B-GGUF", "Q8_0", 833592096L, 0.8f, code = true),
+    catalogModel("Qwen3.5-2B", "Qwen3.5-2B-Q4_K_M.gguf", "unsloth/Qwen3.5-2B-GGUF", "Q4_K_M", 1280835840L, 2f, code = true),
+    catalogModel("Qwen3.5-4B", "Qwen3.5-4B-Q4_K_M.gguf", "unsloth/Qwen3.5-4B-GGUF", "Q4_K_M", 2740937888L, 4f, code = true),
+    // Qwen 3 / Qwen 2.5
+    catalogModel("Qwen3-0.6B", "Qwen3-0.6B-Q8_0.gguf", "Qwen/Qwen3-0.6B-GGUF", "Q8_0", 639446688L, 0.6f, reasoning = true, code = true),
+    catalogModel("Qwen3-1.7B", "Qwen3-1.7B-Q8_0.gguf", "Qwen/Qwen3-1.7B-GGUF", "Q8_0", 1834426016L, 1.7f, reasoning = true, code = true),
+    catalogModel("Qwen3-4B", "Qwen3-4B-Q4_K_M.gguf", "Qwen/Qwen3-4B-GGUF", "Q4_K_M", 2497280256L, 4f, reasoning = true, code = true),
+    catalogModel("Qwen3-4B-Instruct-2507", "Qwen3-4B-Instruct-2507-Q4_K_M.gguf", "unsloth/Qwen3-4B-Instruct-2507-GGUF", "Q4_K_M", 2497281120L, 4f, code = true),
+    catalogModel("Qwen2.5-0.5B-Instruct", "qwen2.5-0.5b-instruct-q4_k_m.gguf", "Qwen/Qwen2.5-0.5B-Instruct-GGUF", "Q4_K_M", 491400032L, 0.5f, code = true),
+    catalogModel("Qwen2.5-1.5B-Instruct", "qwen2.5-1.5b-instruct-q4_k_m.gguf", "Qwen/Qwen2.5-1.5B-Instruct-GGUF", "Q4_K_M", 1117320736L, 1.5f, code = true),
+    // Gemma 4 / Gemma 3 / Gemma 3n / Gemma 2
+    catalogModel("Gemma 4 E2B-it", "gemma-4-E2B-it-Q4_0.gguf", "ggml-org/gemma-4-E2B-it-GGUF", "Q4_0", 2841481184L, 2f, vision = true),
+    catalogModel("Gemma 4 E4B-it", "gemma-4-E4B-it-Q4_0.gguf", "ggml-org/gemma-4-E4B-it-GGUF", "Q4_0", 4590807392L, 4f, vision = true),
+    catalogModel("Gemma 3 270M-it", "gemma-3-270m-it-Q8_0.gguf", "ggml-org/gemma-3-270m-it-GGUF", "Q8_0", 291545600L, 0.27f),
+    catalogModel("Gemma 3 1B-it", "gemma-3-1b-it-Q4_K_M.gguf", "ggml-org/gemma-3-1b-it-GGUF", "Q4_K_M", 806058240L, 1f),
+    catalogModel("Gemma 3 4B-it", "gemma-3-4b-it-Q4_K_M.gguf", "ggml-org/gemma-3-4b-it-GGUF", "Q4_K_M", 2489757856L, 4f, vision = true),
+    catalogModel("Gemma 3n E2B-it", "gemma-3n-E2B-it-Q4_K_M.gguf", "unsloth/gemma-3n-E2B-it-GGUF", "Q4_K_M", 3026881888L, 2f),
+    catalogModel("Gemma 2 2B-it", "gemma-2-2b-it-Q4_K_M.gguf", "bartowski/gemma-2-2b-it-GGUF", "Q4_K_M", 1708582752L, 2f),
+    // Llama 3.2
+    catalogModel("Llama 3.2 1B Instruct", "Llama-3.2-1B-Instruct-Q4_K_M.gguf", "bartowski/Llama-3.2-1B-Instruct-GGUF", "Q4_K_M", 807694464L, 1f),
+    catalogModel("Llama 3.2 3B Instruct", "Llama-3.2-3B-Instruct-Q4_K_M.gguf", "bartowski/Llama-3.2-3B-Instruct-GGUF", "Q4_K_M", 2019377696L, 3f),
+    // Phi
+    catalogModel("Phi-3.5-mini-instruct", "Phi-3.5-mini-instruct-Q4_K_M.gguf", "bartowski/Phi-3.5-mini-instruct-GGUF", "Q4_K_M", 2393232672L, 3.8f),
+    catalogModel("Phi-4-mini-instruct", "microsoft_Phi-4-mini-instruct-Q4_K_M.gguf", "bartowski/microsoft_Phi-4-mini-instruct-GGUF", "Q4_K_M", 2491874688L, 3.8f),
+    // Granite
+    catalogModel("Granite 4.1 3B", "granite-4.1-3b-Q4_K_M.gguf", "ibm-granite/granite-4.1-3b-GGUF", "Q4_K_M", 2099501664L, 3f),
+    catalogModel("Granite 4.0 h-micro", "granite-4.0-h-micro-Q4_K_M.gguf", "ibm-granite/granite-4.0-h-micro-GGUF", "Q4_K_M", 1942564512L, 3f),
+    // LFM2.5 / LFM2
+    catalogModel("LFM2.5-350M", "LFM2.5-350M-Q8_0.gguf", "LiquidAI/LFM2.5-350M-GGUF", "Q8_0", 379217632L, 0.35f),
+    catalogModel("LFM2.5-1.2B-Instruct", "LFM2.5-1.2B-Instruct-Q4_K_M.gguf", "LiquidAI/LFM2.5-1.2B-Instruct-GGUF", "Q4_K_M", 730895168L, 1.2f),
+    catalogModel("LFM2.5-2.6B", "LFM2.5-2.6B-Q4_K_M.gguf", "LiquidAI/LFM2.5-2.6B-GGUF", "Q4_K_M", 1674455040L, 2.6f),
+    catalogModel("LFM2-1.2B", "LFM2-1.2B-Q4_K_M.gguf", "LiquidAI/LFM2-1.2B-GGUF", "Q4_K_M", 730893248L, 1.2f),
+    // SmolLM
+    catalogModel("SmolLM3 3B", "SmolLM3-Q4_K_M.gguf", "ggml-org/SmolLM3-3B-GGUF", "Q4_K_M", 1915305312L, 3f, reasoning = true),
+    catalogModel("SmolLM2 1.7B-Instruct", "SmolLM2-1.7B-Instruct-Q4_K_M.gguf", "bartowski/SmolLM2-1.7B-Instruct-GGUF", "Q4_K_M", 1055609824L, 1.7f),
+    // Other
+    catalogModel("TinyLlama 1.1B Chat v1.0", "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf", "TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF", "Q4_K_M", 668788096L, 1.1f),
+    catalogModel("NVIDIA Nemotron 3 Nano 4B", "NVIDIA-Nemotron3-Nano-4B-Q4_K_M.gguf", "nvidia/NVIDIA-Nemotron-3-Nano-4B-GGUF", "Q4_K_M", 2837072864L, 4f),
+    // Vision projectors (mmproj companions, never chat-routed)
+    catalogModel("Gemma 3 4B Vision Projector", "mmproj-model-f16.gguf", "ggml-org/gemma-3-4b-it-GGUF", "F16", 851251104L, projector = true),
+    catalogModel("Gemma 4 E2B Vision Projector", "mmproj-gemma-4-E2B-it-Q8_0.gguf", "ggml-org/gemma-4-E2B-it-GGUF", "Q8_0", 557368064L, projector = true),
+    catalogModel("Gemma 4 E4B Vision Projector", "mmproj-gemma-4-E4B-it-Q8_0.gguf", "ggml-org/gemma-4-E4B-it-GGUF", "Q8_0", 559874816L, projector = true),
+    // Embedding models (vault/RAG, never chat-routed)
+    catalogModel("EmbeddingGemma 300M", "embeddinggemma-300M-Q8_0.gguf", "ggml-org/embeddinggemma-300M-GGUF", "Q8_0", 333590944L, 0.3f, embedding = true),
+    catalogModel("Qwen3-Embedding 0.6B", "Qwen3-Embedding-0.6B-Q8_0.gguf", "Qwen/Qwen3-Embedding-0.6B-GGUF", "Q8_0", 639150592L, 0.6f, embedding = true),
+    catalogModel("BGE Small EN v1.5", "bge-small-en-v1.5-q8_0.gguf", "CompendiumLabs/bge-small-en-v1.5-gguf", "Q8_0", 36806944L, 0.033f, embedding = true),
+    catalogModel("Nomic Embed Text v1.5", "nomic-embed-text-v1.5.Q5_K_M.gguf", "nomic-ai/nomic-embed-text-v1.5-GGUF", "Q5_K_M", 99588928L, 0.137f, embedding = true),
+    catalogModel("All-MiniLM L6 v2", "all-MiniLM-L6-v2.Q8_0.gguf", "leliuga/all-MiniLM-L6-v2-GGUF", "Q8_0", 25008064L, 0.022f, embedding = true)
+)
+
+/**
+ * Entries removed from the bundled catalog. Kept only so weights already
+ * downloaded under these old display names still resolve to their files and
+ * keep their routing flags. Never shown in the download catalog.
+ */
+val legacyCatalog = listOf(
     CatalogModel(
         "Qwen2.5 0.5B Fast", "Qwen2.5-0.5B-Instruct-Q4_K_M.gguf", "≈0.4 GB", "Q4_K_M", "1.5 GB",
         "https://huggingface.co/bartowski/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/Qwen2.5-0.5B-Instruct-Q4_K_M.gguf",
@@ -107,7 +209,8 @@ object ModelDownloader {
     /**
      * Fetches a remote catalog so models ship without an APK update.
      * Expected shape: {"models":[{"name","file","url","size","quant","ram",
-     * "paramsB","reasoning","code"}]} — unknown entries are skipped, max 50.
+     * "paramsB","reasoning","code","embedding","vision","projector"}]} —
+     * unknown entries are skipped, max 50.
      */
     suspend fun refreshRemoteCatalog(ctx: Context): String = withContext(Dispatchers.IO) {
         val url = UserPrefs.catalogUrl(ctx).trim()
@@ -146,7 +249,10 @@ object ModelDownloader {
                         url = link,
                         paramsB = o.optDouble("paramsB", 0.0).toFloat(),
                         reasoning = o.optBoolean("reasoning", false),
-                        code = o.optBoolean("code", false)
+                        code = o.optBoolean("code", false),
+                        embedding = o.optBoolean("embedding", false),
+                        vision = o.optBoolean("vision", false),
+                        projector = o.optBoolean("projector", false)
                     )
                 )
             }
@@ -176,8 +282,8 @@ object ModelDownloader {
         if (isCloudProviderName(displayName)) return null
         File(dir, displayName).takeIf { it.exists() && it.length() > 0 }?.let { return it }
         File(dir, "$displayName.gguf").takeIf { it.exists() && it.length() > 0 }?.let { return it }
-        modelCatalog.find { it.name == displayName }?.let {
-            File(dir, it.fileName).takeIf { f -> f.exists() && f.length() > 0 }?.let { return it }
+        (catalogModels() + legacyCatalog).find { it.name == displayName }?.let { entry ->
+            File(dir, entry.fileName).takeIf { f -> f.exists() && f.length() > 0 }?.let { return it }
         }
         return dir.listFiles()
             ?.firstOrNull { it.isFile && it.nameWithoutExtension == displayName && it.length() > 0 }

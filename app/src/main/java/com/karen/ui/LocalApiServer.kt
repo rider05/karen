@@ -2043,7 +2043,7 @@ object LocalApiServer {
                     val data = JSONArray()
                     val seen = mutableSetOf<String>()
                     val installedPaths = mutableSetOf<String>()
-                    UserPrefs.models(ctx).filter { !isCloudProviderName(it) }.forEach { name ->
+                    UserPrefs.models(ctx).filter { !isCloudProviderName(it) && !isProjectorModel(it) }.forEach { name ->
                         seen.add(name.lowercase())
                         ModelDownloader.weightFileFor(ctx, name)?.let { installedPaths.add(it.absolutePath) }
                         data.put(
@@ -2055,7 +2055,7 @@ object LocalApiServer {
                     }
                     // Real .gguf files found on disk run through the same runtime
                     // (skip files already represented by an installed model).
-                    scanModelFiles(ctx).filter { it.runnable }.forEach { f ->
+                    scanModelFiles(ctx).filter { it.runnable && !isProjectorFile(it.name) }.forEach { f ->
                         if (installedPaths.contains(f.path)) return@forEach
                         if (seen.add(f.name.lowercase())) {
                             data.put(
@@ -2081,11 +2081,11 @@ object LocalApiServer {
                     val data = JSONArray()
                     val installedNames = UserPrefs.models(ctx).filter { !isCloudProviderName(it) }
                     val runnableFiles = mutableMapOf<String, File>()
-                    scanModelFiles(ctx).filter { it.runnable }.forEach { f ->
+                    scanModelFiles(ctx).filter { it.runnable && !isProjectorFile(it.name) }.forEach { f ->
                         runnableFiles[f.name.lowercase()] = File(f.path)
                     }
                     val usedFiles = mutableSetOf<String>()
-                    ModelDownloader.catalogModels().forEach { c ->
+                    ModelDownloader.catalogModels().filter { !it.projector }.forEach { c ->
                         val base = c.fileName.substringBeforeLast('.')
                         val installed = runnableFiles.containsKey(c.fileName.lowercase()) ||
                             installedNames.any {
@@ -2102,6 +2102,8 @@ object LocalApiServer {
                                 .put("paramsB", c.paramsB.toDouble())
                                 .put("reasoning", c.reasoning)
                                 .put("embedding", c.embedding)
+                                .put("vision", c.vision)
+                                .put("projector", c.projector)
                                 .put("installed", installed)
                                 .put("source", "catalog")
                         )
@@ -2119,6 +2121,8 @@ object LocalApiServer {
                                 .put("paramsB", 0.0)
                                 .put("reasoning", false)
                                 .put("embedding", false)
+                                .put("vision", false)
+                                .put("projector", false)
                                 .put("installed", true)
                                 .put("source", "file")
                         )
@@ -2465,7 +2469,7 @@ object LocalApiServer {
                 }
                 method == "GET" && path == "/api/tags" -> {
                     val models = JSONArray()
-                    UserPrefs.models(ctx).filter { !isCloudProviderName(it) }.forEach { name ->
+                    UserPrefs.models(ctx).filter { !isCloudProviderName(it) && !isNonChatModel(it) }.forEach { name ->
                         models.put(JSONObject().put("name", name).put("model", name))
                     }
                     writeJson(socket, 200, JSONObject().put("models", models))
@@ -2580,7 +2584,7 @@ object LocalApiServer {
      */
     private fun pickModel(ctx: Context, socket: Socket, body: JSONObject): Pair<String, File>? {
         val want = body.optString("model", "").trim()
-        val installed = UserPrefs.models(ctx).filter { !isCloudProviderName(it) }
+        val installed = UserPrefs.models(ctx).filter { !isCloudProviderName(it) && !isNonChatModel(it) }
         var pick: String? = null
         var file: File? = null
 
@@ -2590,7 +2594,7 @@ object LocalApiServer {
             file = ModelDownloader.weightFileFor(ctx, inst)
         } else if (want.isNotBlank()) {
             val hit = scanModelFiles(ctx).firstOrNull {
-                it.runnable &&
+                it.runnable && !isProjectorFile(it.name) &&
                     (it.name.equals(want, ignoreCase = true) || it.path.equals(want, ignoreCase = true))
             }
             if (hit != null) {
@@ -2615,7 +2619,7 @@ object LocalApiServer {
                 pick = firstInstalled
                 file = ModelDownloader.weightFileFor(ctx, firstInstalled)
             } else {
-                val hit = scanModelFiles(ctx).firstOrNull { it.runnable }
+                val hit = scanModelFiles(ctx).firstOrNull { it.runnable && !isProjectorFile(it.name) }
                 if (hit != null) {
                     pick = hit.name
                     file = File(hit.path)
@@ -3013,7 +3017,7 @@ object LocalApiServer {
         val port = UserPrefs.serverPort(ctx)
         val mode = if (worker) "worker" else "console"
         val workerUrl = "http://" + ip.ifBlank { "127.0.0.1" } + ":" + port
-        val models = UserPrefs.models(ctx).filter { !isCloudProviderName(it) }
+        val models = UserPrefs.models(ctx).filter { !isCloudProviderName(it) && !isNonChatModel(it) }
         return """
 <!DOCTYPE html>
 <html lang="en">

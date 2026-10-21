@@ -307,7 +307,10 @@ fun ChatScreen(
     var selectedModel by remember {
         mutableStateOf(
             UserPrefs.selectedModel(context).takeIf { isSelectableModel(context, it) }
-                ?: (UserPrefs.models(context).firstOrNull { !isCloudProviderName(it) } ?: modelCatalog.first().name)
+                ?: (
+                    UserPrefs.models(context).firstOrNull { !isCloudProviderName(it) && !isNonChatModel(it) }
+                        ?: modelCatalog.first { !it.embedding && !it.projector }.name
+                )
         )
     }
     // Auto routing: pick the best installed/connected model per message.
@@ -320,7 +323,7 @@ fun ChatScreen(
     fun effectiveModel(prompt: String): String {
         if (!autoRoute) return selectedModel
         val locals = UserPrefs.models(context)
-            .filter { !isCloudProviderName(it) && !isEmbeddingModel(it) && ModelDownloader.isRunnableWeight(context, it) }
+            .filter { !isCloudProviderName(it) && !isNonChatModel(it) && ModelDownloader.isRunnableWeight(context, it) }
         val keyed = allCloudProviders(context).filter { UserPrefs.apiKey(context, it.id).isNotBlank() }
         val decision = routeModel(
             prompt, locals, keyed, UserPrefs.autoCloud(context),
@@ -1361,7 +1364,7 @@ fun ChatScreen(
         // Auto routing swaps in the best model for this prompt.
         val routed = effectiveModel(userText.ifBlank { "chat" })
         val runnableLocals = UserPrefs.models(context).filter {
-            !isCloudProviderName(it) && !isEmbeddingModel(it) && ModelDownloader.isRunnableWeight(context, it)
+            !isCloudProviderName(it) && !isNonChatModel(it) && ModelDownloader.isRunnableWeight(context, it)
         }
         val sendModel = if (forceLocal) {
             val preferred = UserPrefs.preferredLocalModel(context).takeIf {
@@ -1485,6 +1488,8 @@ fun ChatScreen(
                     errorSettle(aid, "$sendModel is ${ModelDownloader.formatOf(sendModel)} — on-device runs GGUF weights only. Convert it to GGUF or pick a cloud model.")
                 } else if (isEmbeddingModel(sendModel)) {
                     errorSettle(aid, "$sendModel is an embedding weight for vault search — pick a chat model to talk.")
+                } else if (isProjectorModel(sendModel)) {
+                    errorSettle(aid, "$sendModel is a vision projector companion — pick a chat model to talk.")
                 } else if (UserPrefs.thermalGuard(context) && device.batteryTempC >= UserPrefs.thermalLimitC(context)) {
                     errorSettle(
                         aid,

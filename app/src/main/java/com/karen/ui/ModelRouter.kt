@@ -35,7 +35,7 @@ fun intentReason(intent: TaskIntent): String = when (intent) {
 
 /** Bundle + remote catalog entry for a display name (if known). */
 fun catalogEntryFor(name: String): CatalogModel? {
-    val catalog = ModelDownloader.catalogModels()
+    val catalog = ModelDownloader.catalogModels() + legacyCatalog
     catalog.find { it.name == name }?.let { return it }
     // Hugging Face pulls register under the file's base name — match that too.
     return catalog.find { it.fileName.substringBeforeLast('.').equals(name, ignoreCase = true) }
@@ -184,11 +184,29 @@ fun isSelectableModel(ctx: Context, name: String): Boolean {
     // Catalog-only names are downloadable models, not installed weights. Treating
     // them as selectable made Live Mode pick a model with no file on disk and
     // fall back to "connect a model" even when a cloud key was configured.
-    return name in UserPrefs.models(ctx)
+    return name in UserPrefs.models(ctx) && !isNonChatModel(name)
 }
 
 /** True for embedding-only weights: downloaded, but never chat-routed. */
 fun isEmbeddingModel(name: String): Boolean = catalogEntryFor(name)?.embedding == true
+
+/** True for mmproj companions: downloaded next to a vision model, never chat-routed. */
+fun isProjectorModel(name: String): Boolean = catalogEntryFor(name)?.projector == true
+
+/** True when a file name belongs to a catalog projector companion. */
+fun isProjectorFile(name: String): Boolean {
+    val base = name.substringBeforeLast('.')
+    return ModelDownloader.catalogModels().any {
+        it.projector &&
+            (it.fileName.equals(name, true) || it.fileName.substringBeforeLast('.').equals(base, true))
+    }
+}
+
+/** True when a catalog weight cannot serve a chat turn on its own. */
+fun isNonChatModel(name: String): Boolean {
+    val entry = catalogEntryFor(name) ?: return false
+    return entry.embedding || entry.projector
+}
 
 /**
  * Returns the best model for [prompt], or null when nothing usable is
@@ -206,10 +224,13 @@ fun routeModel(
     /** Display name favored for cloud picks (blank = none). */
     preferredApi: String = ""
 ): RouteDecision? {
-    if (installedLocals.isEmpty() && (!allowCloud || keyedClouds.isEmpty())) return null
+    // Embeddings and mmproj projectors are files, not chat weights: never route
+    // a turn to one even if a caller forgets to filter them out.
+    val locals = installedLocals.filter { !isNonChatModel(it) }
+    if (locals.isEmpty() && (!allowCloud || keyedClouds.isEmpty())) return null
     val intent = detectIntent(prompt)
     val reason = intentReason(intent)
-    val bestLocal = installedLocals.maxByOrNull {
+    val bestLocal = locals.maxByOrNull {
         scoreLocal(it, intent) + if (it == preferredLocal) 0.5 else 0.0
     }
     val bestLocalSize = bestLocal

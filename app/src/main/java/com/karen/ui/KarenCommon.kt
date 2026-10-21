@@ -2200,7 +2200,10 @@ fun ModelSelectorSheet(
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.padding(bottom = 4.dp)
             )
-            val installed = UserPrefs.models(sheetCtx).filter { !isCloudProviderName(it) }
+            val installed = UserPrefs.models(sheetCtx).filter { !isCloudProviderName(it) && !isNonChatModel(it) }
+            val installedFiles = installed.mapNotNull { name ->
+                ModelDownloader.weightFileFor(sheetCtx, name)?.name?.lowercase()
+            }.toSet()
             if (installed.isEmpty()) {
                 Text(
                     text = "No local models on this device yet — download one below or add a cloud API key.",
@@ -2375,8 +2378,9 @@ fun ModelSelectorSheet(
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.padding(bottom = 4.dp)
             )
-            (if (sheetCatalogExpanded) ModelDownloader.catalogModels() else ModelDownloader.catalogModels().take(3)).forEach { entry ->
-                val alreadyInstalled = entry.name in installed
+            val chatCatalog = ModelDownloader.catalogModels().filter { !it.embedding && !it.projector }
+            (if (sheetCatalogExpanded) chatCatalog else chatCatalog.take(3)).forEach { entry ->
+                val alreadyInstalled = entry.name in installed || entry.fileName.lowercase() in installedFiles
                 val isActive = ModelDownloader.activeName == entry.name
                 Column(
                     modifier = Modifier
@@ -2456,7 +2460,7 @@ fun ModelSelectorSheet(
                     }
                 }
             }
-            if (ModelDownloader.catalogModels().size > 3) {
+            if (chatCatalog.size > 3) {
                 TextButton(
                     onClick = { sheetCatalogExpanded = !sheetCatalogExpanded },
                     modifier = Modifier.fillMaxWidth()
@@ -2469,7 +2473,7 @@ fun ModelSelectorSheet(
                     )
                     Spacer(Modifier.width(4.dp))
                     Text(
-                        if (sheetCatalogExpanded) "Show less" else "Show all ${ModelDownloader.catalogModels().size} models",
+                        if (sheetCatalogExpanded) "Show less" else "Show all ${chatCatalog.size} chat models",
                         color = colors.accentGreen,
                         fontSize = 12.5.sp,
                         fontWeight = FontWeight.Medium

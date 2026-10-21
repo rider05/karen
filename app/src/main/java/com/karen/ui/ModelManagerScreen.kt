@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+
 package com.karen.ui
 
 import androidx.compose.foundation.background
@@ -13,6 +15,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.ClickableText
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -21,6 +24,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -112,6 +116,215 @@ private fun MetaChip(text: String, tint: Color) {
             fontWeight = FontWeight.Medium,
             maxLines = 1
         )
+    }
+}
+
+private data class ModelChipSpec(val icon: ImageVector, val label: String)
+
+private fun modelProviderOf(name: String): String = when {
+    name.contains("Qwen", true) -> "ALIBABA"
+    name.contains("Gemma", true) -> "GOOGLE"
+    name.contains("TinyLlama", true) -> "TINYLLAMA"
+    name.contains("Llama", true) -> "META"
+    name.contains("Phi", true) -> "MICROSOFT"
+    name.contains("Granite", true) -> "IBM"
+    name.contains("LFM", true) -> "LIQUID AI"
+    name.contains("SmolLM", true) -> "HUGGING FACE"
+    name.contains("Nemotron", true) || name.contains("NVIDIA", true) -> "NVIDIA"
+    name.contains("DeepSeek", true) -> "DEEPSEEK"
+    name.contains("Saluki", true) -> "UNDERDOG"
+    name.contains("Nomic", true) -> "NOMIC"
+    name.contains("BGE", true) -> "BAAI"
+    name.contains("MiniLM", true) -> "SENTENCE TRANSFORMERS"
+    else -> "LOCAL"
+}
+
+private fun modelMonogramOf(name: String): String = when {
+    name.contains("Qwen", true) -> "Q"
+    name.contains("Gemma", true) -> "G"
+    name.contains("TinyLlama", true) -> "T"
+    name.contains("Llama", true) -> "L"
+    name.contains("Phi", true) -> "P"
+    name.contains("Granite", true) -> "IBM"
+    name.contains("LFM", true) -> "LFM"
+    name.contains("SmolLM", true) -> "S"
+    name.contains("Nemotron", true) || name.contains("NVIDIA", true) -> "N"
+    name.contains("DeepSeek", true) -> "D"
+    name.contains("Saluki", true) -> "S"
+    name.contains("Nomic", true) -> "N"
+    name.contains("BGE", true) -> "BGE"
+    name.contains("MiniLM", true) -> "M"
+    else -> "AI"
+}
+
+private fun modelTintOf(name: String, colors: KarenColors): Color = when {
+    name.contains("Qwen", true) -> Color(0xFFA78BFA)
+    name.contains("Gemma", true) -> Color(0xFF38BDF8)
+    name.contains("TinyLlama", true) -> Color(0xFFFBBF24)
+    name.contains("Llama", true) -> Color(0xFF818CF8)
+    name.contains("Phi", true) -> Color(0xFF2DD4BF)
+    name.contains("Granite", true) -> Color(0xFF94A3B8)
+    name.contains("LFM", true) -> Color(0xFF22D3EE)
+    name.contains("SmolLM", true) -> Color(0xFFFBBF24)
+    name.contains("Nemotron", true) || name.contains("NVIDIA", true) -> Color(0xFF76B900)
+    name.contains("DeepSeek", true) -> Color(0xFF60A5FA)
+    name.contains("Saluki", true) -> Color(0xFFF59E0B)
+    name.contains("Nomic", true) -> Color(0xFFF472B6)
+    name.contains("BGE", true) -> Color(0xFF60A5FA)
+    name.contains("MiniLM", true) -> Color(0xFFF97316)
+    else -> colors.accentGreen
+}
+
+private fun paramsChipLabel(paramsB: Float): String {
+    if (paramsB <= 0f) return "?"
+    return when {
+        paramsB >= 1f && paramsB % 1f == 0f -> "${paramsB.toInt()} B"
+        paramsB >= 1f -> "%.1f B".format(paramsB)
+        paramsB < 0.2f -> "${(paramsB * 1000).toInt()} M"
+        else -> "%.2f B".format(paramsB).trimEnd('0').trimEnd('.') + " B"
+    }
+}
+
+private fun speedChipLabel(paramsB: Float): String = when {
+    paramsB <= 0f -> "Local"
+    paramsB <= 1.5f -> "Fast"
+    paramsB <= 4f -> "Balanced"
+    else -> "Deep"
+}
+
+@Composable
+private fun ModelIconTile(name: String) {
+    val colors = LocalKarenColors.current
+    val tint = modelTintOf(name, colors)
+    val monogram = modelMonogramOf(name)
+    Box(
+        modifier = Modifier
+            .size(44.dp)
+            .clip(RoundedCornerShape(13.dp))
+            .background(tint.copy(alpha = 0.12f))
+            .border(1.dp, tint.copy(alpha = 0.24f), RoundedCornerShape(13.dp)),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            monogram,
+            color = tint,
+            fontSize = when {
+                monogram.length >= 3 -> 9.sp
+                monogram.length == 2 -> 12.sp
+                else -> 17.sp
+            },
+            fontWeight = FontWeight.Bold,
+            fontFamily = FontFamily.Monospace,
+            letterSpacing = (-0.4).sp
+        )
+    }
+}
+
+@Composable
+private fun ModelModalityChip(entry: CatalogModel?) {
+    val colors = LocalKarenColors.current
+    val spec = when {
+        entry?.projector == true -> Triple("PROJECTOR", Icons.Default.Visibility, colors.accentAmber)
+        entry?.embedding == true -> Triple("EMBED", Icons.Default.Hub, colors.accentBlue)
+        entry?.vision == true -> Triple("VISION", Icons.Default.Visibility, colors.accentBlue)
+        else -> Triple("TEXT", Icons.Default.TextFields, colors.accentGreen)
+    }
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(6.dp))
+            .border(1.dp, spec.third.copy(alpha = 0.6f), RoundedCornerShape(6.dp))
+            .padding(horizontal = 5.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(spec.second, contentDescription = null, tint = spec.third, modifier = Modifier.size(9.dp))
+        Spacer(Modifier.width(3.dp))
+        Text(
+            spec.first,
+            color = spec.third,
+            fontSize = 8.5.sp,
+            fontWeight = FontWeight.Bold,
+            fontFamily = FontFamily.Monospace,
+            letterSpacing = 0.5.sp
+        )
+    }
+}
+
+@Composable
+private fun ModelInfoChip(spec: ModelChipSpec) {
+    val colors = LocalKarenColors.current
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(7.dp))
+            .background(colors.surfaceHover.copy(alpha = 0.35f))
+            .border(1.dp, colors.border, RoundedCornerShape(7.dp))
+            .padding(horizontal = 7.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(spec.icon, contentDescription = null, tint = colors.textSecondary, modifier = Modifier.size(11.dp))
+        Spacer(Modifier.width(3.dp))
+        Text(
+            spec.label,
+            color = colors.textSecondary,
+            fontSize = 9.5.sp,
+            fontFamily = FontFamily.Monospace,
+            maxLines = 1
+        )
+    }
+}
+
+@Composable
+private fun InstalledPill() {
+    val colors = LocalKarenColors.current
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(colors.accentGreen.copy(alpha = 0.12f))
+            .border(1.dp, colors.accentGreen.copy(alpha = 0.55f), RoundedCornerShape(999.dp))
+            .padding(horizontal = 9.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            Icons.Default.CheckCircle,
+            contentDescription = null,
+            tint = colors.accentGreen,
+            modifier = Modifier.size(12.dp)
+        )
+        Spacer(Modifier.width(3.dp))
+        Text("Installed", color = colors.accentGreen, fontSize = 10.5.sp, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+@Composable
+private fun DownloadPill(onClick: () -> Unit) {
+    val colors = LocalKarenColors.current
+    Row(
+        modifier = Modifier
+            .heightIn(min = 34.dp)
+            .clip(RoundedCornerShape(999.dp))
+            .background(colors.accentGreen)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 11.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(Icons.Default.Download, contentDescription = null, tint = Color.White, modifier = Modifier.size(12.dp))
+        Spacer(Modifier.width(3.dp))
+        Text("Download", color = Color.White, fontSize = 10.5.sp, fontWeight = FontWeight.Bold)
+    }
+}
+
+@Composable
+private fun CancelPill(onClick: () -> Unit) {
+    val colors = LocalKarenColors.current
+    Row(
+        modifier = Modifier
+            .heightIn(min = 34.dp)
+            .clip(RoundedCornerShape(999.dp))
+            .border(1.dp, colors.accentGreen.copy(alpha = 0.6f), RoundedCornerShape(999.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 11.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text("Cancel", color = colors.accentGreen, fontSize = 10.5.sp, fontWeight = FontWeight.SemiBold)
     }
 }
 
@@ -541,66 +754,135 @@ private fun InstalledWeightCard(
     onDelete: () -> Unit
 ) {
     val colors = LocalKarenColors.current
+    val catalog = catalogEntryFor(model.name)
+    var menuOpen by remember { mutableStateOf(false) }
+    val isProjector = catalog?.projector == true
+    val isEmbedding = catalog?.embedding == true
+    val paramsB = catalog?.paramsB?.takeIf { it > 0f } ?: paramsOf(model.name)
+    val chips = when {
+        isProjector -> listOf(
+            ModelChipSpec(Icons.Default.Storage, model.size),
+            ModelChipSpec(Icons.Default.Memory, model.quant),
+            ModelChipSpec(Icons.Default.Visibility, "Projector")
+        )
+        isEmbedding -> listOf(
+            ModelChipSpec(Icons.Default.Bolt, paramsChipLabel(paramsB)),
+            ModelChipSpec(Icons.Default.Memory, model.quant),
+            ModelChipSpec(Icons.Default.Hub, "Embedding")
+        )
+        else -> listOf(
+            ModelChipSpec(Icons.Default.Bolt, paramsChipLabel(paramsB)),
+            ModelChipSpec(Icons.AutoMirrored.Filled.MenuBook, "$contextLabel ctx"),
+            ModelChipSpec(Icons.Default.Speed, speedChipLabel(paramsB))
+        )
+    }
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(16.dp))
             .background(colors.surface)
             .border(
                 1.dp,
                 if (expanded) colors.accentGreen.copy(alpha = 0.8f) else colors.border,
-                RoundedCornerShape(14.dp)
+                RoundedCornerShape(16.dp)
             )
             .clickable(onClick = onToggle)
-            .padding(13.dp)
+            .padding(14.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                modifier = Modifier
-                    .size(38.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(colors.accentGreen.copy(alpha = 0.12f)),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    ModelDownloader.formatOf(model.name).replace("PyTorch", "TORCH"),
-                    color = colors.accentGreen,
-                    fontSize = 9.sp,
-                    fontWeight = FontWeight.Bold,
-                    fontFamily = FontFamily.Monospace,
-                    maxLines = 1
-                )
-            }
-            Spacer(Modifier.width(10.dp))
+            ModelIconTile(model.name)
+            Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        modelProviderOf(model.name),
+                        color = colors.textMuted,
+                        fontSize = 9.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.1.sp,
+                        maxLines = 1
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    ModelModalityChip(catalog)
+                }
+                Spacer(Modifier.height(3.dp))
                 Text(
                     model.name,
                     color = colors.textPrimary,
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 14.5.sp,
+                    fontWeight = FontWeight.Bold,
                     maxLines = 1,
                     overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                 )
-                Spacer(Modifier.height(3.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                    MetaChip(model.size, colors.accentBlue)
-                    MetaChip(model.quant, colors.textMuted)
+            }
+            Spacer(Modifier.width(4.dp))
+            Box {
+                IconButton(
+                    onClick = { menuOpen = true },
+                    modifier = Modifier.size(30.dp)
+                ) {
+                    Icon(
+                        Icons.Default.MoreVert,
+                        contentDescription = "Actions for ${model.name}",
+                        tint = colors.textMuted,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+                KDropdownMenu(
+                    expanded = menuOpen,
+                    onDismissRequest = { menuOpen = false }
+                ) {
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                if (expanded) "Hide details" else "Show details",
+                                color = colors.textPrimary,
+                                fontSize = 13.sp
+                            )
+                        },
+                        leadingIcon = {
+                            Icon(
+                                if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                                contentDescription = null,
+                                tint = colors.textMuted,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        },
+                        onClick = {
+                            menuOpen = false
+                            onToggle()
+                        }
+                    )
+                    KMenuDivider()
+                    DropdownMenuItem(
+                        text = { Text("Delete weight", color = colors.accentRed, fontSize = 13.sp) },
+                        leadingIcon = {
+                            Icon(
+                                Icons.Default.DeleteOutline,
+                                contentDescription = null,
+                                tint = colors.accentRed,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        },
+                        onClick = {
+                            menuOpen = false
+                            onDelete()
+                        }
+                    )
                 }
             }
-            IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
-                Icon(
-                    Icons.Default.DeleteOutline,
-                    contentDescription = "Delete ${model.name}",
-                    tint = colors.textMuted,
-                    modifier = Modifier.size(16.dp)
-                )
+        }
+        Spacer(Modifier.height(10.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            FlowRow(
+                modifier = Modifier.weight(1f),
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                verticalArrangement = Arrangement.spacedBy(5.dp)
+            ) {
+                chips.forEach { ModelInfoChip(it) }
             }
-            Icon(
-                if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                contentDescription = null,
-                tint = colors.textMuted,
-                modifier = Modifier.size(17.dp)
-            )
+            Spacer(Modifier.width(8.dp))
+            InstalledPill()
         }
         if (expanded) {
             Spacer(Modifier.height(10.dp))
@@ -612,15 +894,18 @@ private fun InstalledWeightCard(
             )
             Spacer(Modifier.height(10.dp))
             Text(
-                "File-backed GGUF runtime · needs about ${model.ramRequired} RAM · ctx $contextLabel · Vulkan / ARM NEON",
+                when {
+                    isProjector ->
+                        "Vision projector companion · ${model.quant} · loads with its base model · not a chat model"
+                    isEmbedding ->
+                        "Embedding weight for vault/RAG search · ${model.quant} · not a chat model"
+                    else ->
+                        "File-backed GGUF runtime · ${model.quant} · needs about ${model.ramRequired} RAM · ctx $contextLabel · Vulkan / ARM NEON"
+                },
                 color = colors.textSecondary,
                 fontSize = 11.5.sp,
                 lineHeight = 16.sp
             )
-            Spacer(Modifier.height(8.dp))
-            OutlinedButton(onClick = onDelete, shape = RoundedCornerShape(10.dp)) {
-                Text("Delete weight", color = colors.accentRed, fontSize = 12.sp)
-            }
         }
     }
 }
@@ -635,67 +920,87 @@ private fun CatalogCard(
     onCancel: () -> Unit
 ) {
     val colors = LocalKarenColors.current
+    val isProjector = entry.projector
+    val isEmbedding = entry.embedding
+    val paramsB = entry.paramsB.takeIf { it > 0f } ?: paramsOf(entry.name)
+    val chips = when {
+        isProjector -> listOf(
+            ModelChipSpec(Icons.Default.Storage, entry.sizeLabel),
+            ModelChipSpec(Icons.Default.Memory, entry.quant),
+            ModelChipSpec(Icons.Default.Visibility, "Projector")
+        )
+        isEmbedding -> listOf(
+            ModelChipSpec(Icons.Default.Bolt, paramsChipLabel(paramsB)),
+            ModelChipSpec(Icons.Default.Memory, entry.quant),
+            ModelChipSpec(Icons.Default.Hub, "Embedding")
+        )
+        else -> listOf(
+            ModelChipSpec(Icons.Default.Bolt, paramsChipLabel(paramsB)),
+            ModelChipSpec(Icons.AutoMirrored.Filled.MenuBook, "$contextLabel ctx"),
+            ModelChipSpec(Icons.Default.Speed, speedChipLabel(paramsB))
+        )
+    }
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(16.dp))
             .background(colors.surface)
-            .border(1.dp, colors.border, RoundedCornerShape(14.dp))
-            .padding(13.dp)
+            .border(1.dp, colors.border, RoundedCornerShape(16.dp))
+            .padding(14.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
+            ModelIconTile(entry.name)
+            Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        modelProviderOf(entry.name),
+                        color = colors.textMuted,
+                        fontSize = 9.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.1.sp,
+                        maxLines = 1
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    ModelModalityChip(entry)
+                }
+                Spacer(Modifier.height(3.dp))
                 Text(
                     entry.name,
                     color = colors.textPrimary,
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 14.5.sp,
+                    fontWeight = FontWeight.Bold,
                     maxLines = 1,
                     overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                 )
-                Spacer(Modifier.height(3.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                    MetaChip(entry.sizeLabel, colors.accentBlue)
-                    MetaChip(entry.quant, colors.textMuted)
-                    when {
-                        entry.reasoning -> MetaChip("REASONING", colors.accentAmber)
-                        entry.embedding -> MetaChip("EMBED", colors.accentBlue)
-                        entry.code -> MetaChip("CODE", colors.accentGreen)
-                    }
-                }
             }
-            Spacer(Modifier.width(10.dp))
+        }
+        Spacer(Modifier.height(10.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            FlowRow(
+                modifier = Modifier.weight(1f),
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                verticalArrangement = Arrangement.spacedBy(5.dp)
+            ) {
+                chips.forEach { ModelInfoChip(it) }
+            }
+            Spacer(Modifier.width(8.dp))
             when {
-                installed -> Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        Icons.Default.CheckCircle,
-                        contentDescription = null,
-                        tint = colors.accentGreen,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(Modifier.width(4.dp))
-                    Text("Installed", color = colors.accentGreen, fontSize = 11.5.sp, fontWeight = FontWeight.Medium)
-                }
-                downloading -> OutlinedButton(onClick = onCancel) {
-                    Text("Cancel", fontSize = 12.sp)
-                }
-                else -> Button(
-                    onClick = onDownload,
-                    shape = RoundedCornerShape(10.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = colors.accentGreen,
-                        contentColor = Color.White
-                    )
-                ) {
-                    Text("Download", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                }
+                installed -> InstalledPill()
+                downloading -> CancelPill(onClick = onCancel)
+                else -> DownloadPill(onClick = onDownload)
             }
         }
         Spacer(Modifier.height(7.dp))
         Text(
-            "Needs ${entry.ram} RAM · ctx $contextLabel",
+            when {
+                entry.projector -> "Companion projector · not a chat model"
+                entry.embedding -> "Embedding weight · not a chat model"
+                entry.vision -> "${entry.quant} · needs ${entry.ram} RAM · pairs with a vision projector"
+                else -> "${entry.quant} · needs ${entry.ram} RAM"
+            },
             color = colors.textMuted,
-            fontSize = 10.5.sp,
+            fontSize = 10.sp,
             fontFamily = FontFamily.Monospace
         )
         if (downloading) {
@@ -1610,6 +1915,9 @@ fun ModelManagerScreen(
                     }
                     val q = query.trim().lowercase()
                     val installed = models.filter { q.isEmpty() || it.name.lowercase().contains(q) }
+                    val installedFiles = models.mapNotNull { m ->
+                        ModelDownloader.weightFileFor(ctx, m.name)?.name?.lowercase()
+                    }.toSet()
                     val allCatalog = ModelDownloader.catalogModels()
                     val catalog = allCatalog.filter {
                         q.isEmpty() || it.name.lowercase().contains(q) ||
@@ -1645,7 +1953,14 @@ fun ModelManagerScreen(
                             )
                         }
                     }
-                    item { SectionHeader("Catalog", "${allCatalog.size} available") }
+                    item {
+                        SectionHeader(
+                            "Catalog",
+                            "${allCatalog.count { !it.embedding && !it.projector }} chat · " +
+                                "${allCatalog.count { it.embedding }} embed · " +
+                                "${allCatalog.count { it.projector }} projector"
+                        )
+                    }
                     if (catalog.isEmpty()) {
                         item {
                             EmptyState(
@@ -1657,7 +1972,8 @@ fun ModelManagerScreen(
                     } else {
                         val shown = if (catalogExpanded || q.isNotEmpty()) catalog else catalog.take(3)
                         items(shown, key = { "catalog:${it.name}" }) { entry ->
-                            val entryInstalled = models.any { it.name == entry.name }
+                            val entryInstalled = models.any { it.name == entry.name } ||
+                                entry.fileName.lowercase() in installedFiles
                             val entryDownloading = ModelDownloader.activeName == entry.name
                             CatalogCard(
                                 entry = entry,

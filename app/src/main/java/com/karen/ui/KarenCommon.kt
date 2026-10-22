@@ -160,6 +160,9 @@ fun ChatGPTTopAppBar(
     selectedModel: String = "Qwen 3.5 2B",
     onMenuClick: () -> Unit = {},
     showMenu: Boolean = true,
+    showNewChat: Boolean = true,
+    showMore: Boolean = true,
+    showModelChevron: Boolean = true,
     onModelClick: () -> Unit = {},
     onNewChatClick: () -> Unit = {},
     onMoreClick: () -> Unit = {},
@@ -178,18 +181,24 @@ fun ChatGPTTopAppBar(
     var showMoreMenu by remember { mutableStateOf(false) }
     var effortMenu by remember { mutableStateOf(false) }
 
-    Column {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(colors.background)
+    ) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(colors.background)
-                // The Scaffold already pads content by the status-bar inset;
-                // this adds only a small margin, so the bar sits one inset deep
-                // on every screen instead of stacking a second status inset.
-                .padding(top = 6.dp)
-                .padding(top = 2.dp, bottom = 2.dp)
-                .height(48.dp)
-                .padding(start = 4.dp, end = 4.dp),
+                .padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 6.dp)
+                .clip(RoundedCornerShape(16.dp))
+                .background(
+                    androidx.compose.ui.graphics.Brush.verticalGradient(
+                        listOf(colors.surface, colors.cardBackground)
+                    )
+                )
+                .border(1.dp, colors.accentGreen.copy(alpha = 0.18f), RoundedCornerShape(16.dp))
+                .height(50.dp)
+                .padding(horizontal = 4.dp),
             contentAlignment = Alignment.Center
         ) {
             // Left: navigation affordances
@@ -198,23 +207,23 @@ fun ChatGPTTopAppBar(
                 modifier = Modifier.align(Alignment.CenterStart)
             ) {
                 if (onBackClick != null) {
-                    KIconButton(onClick = onBackClick) {
+                    TopBarAction(onClick = onBackClick) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = "Back",
                             tint = colors.textSecondary,
-                            modifier = Modifier.size(22.dp)
+                            modifier = Modifier.size(19.dp)
                         )
                     }
                 }
 
                 if (showMenu) {
-                    KIconButton(onClick = onMenuClick) {
+                    TopBarAction(onClick = onMenuClick) {
                         Icon(
                             imageVector = Icons.Default.Menu,
                             contentDescription = "Open navigation",
                             tint = colors.textSecondary,
-                            modifier = Modifier.size(24.dp)
+                            modifier = Modifier.size(20.dp)
                         )
                     }
                 }
@@ -236,10 +245,17 @@ fun ChatGPTTopAppBar(
                 Row(
                     modifier = Modifier
                         .clip(CircleShape)
-                        .background(colors.surface)
-                        .border(1.dp, colors.accentGreen.copy(alpha = 0.32f), CircleShape)
+                        .background(
+                            androidx.compose.ui.graphics.Brush.horizontalGradient(
+                                listOf(
+                                    colors.accentGreen.copy(alpha = 0.10f),
+                                    colors.surfaceHover.copy(alpha = 0.55f)
+                                )
+                            )
+                        )
+                        .border(1.dp, colors.accentGreen.copy(alpha = 0.38f), CircleShape)
                         .clickable { onModelClick() }
-                        .padding(start = 9.dp, end = 6.dp, top = 4.dp, bottom = 4.dp),
+                        .padding(start = 10.dp, end = if (showModelChevron) 7.dp else 10.dp, top = 4.dp, bottom = 4.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Box(
@@ -258,13 +274,15 @@ fun ChatGPTTopAppBar(
                         maxLines = 1,
                         overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                     )
-                    Spacer(Modifier.width(2.dp))
-                    Icon(
-                        imageVector = Icons.Default.KeyboardArrowDown,
-                        contentDescription = "Select model",
-                        tint = colors.textMuted,
-                        modifier = Modifier.size(15.dp)
-                    )
+                    if (showModelChevron) {
+                        Spacer(Modifier.width(2.dp))
+                        Icon(
+                            imageVector = Icons.Default.KeyboardArrowDown,
+                            contentDescription = "Select model",
+                            tint = colors.textMuted,
+                            modifier = Modifier.size(15.dp)
+                        )
+                    }
                 }
 
                 if (effort != null && efforts.isNotEmpty()) {
@@ -341,79 +359,89 @@ fun ChatGPTTopAppBar(
                 modifier = Modifier.align(Alignment.CenterEnd)
             ) {
                 if (showTemporaryChat) {
-                    KIconButton(onClick = onToggleTemporaryChat) {
+                    TopBarAction(onClick = onToggleTemporaryChat) {
                         Icon(
                             imageVector = Icons.Default.AutoAwesome,
                             contentDescription = "Temporary chat",
                             tint = if (temporaryChat) colors.accentAmber else colors.textSecondary,
-                            modifier = Modifier.size(21.dp)
+                            modifier = Modifier.size(18.dp)
                         )
                     }
                 }
-                KIconButton(onClick = onNewChatClick) {
-                    Icon(
-                        imageVector = Icons.Default.AddCircle,
-                        contentDescription = "New Chat",
-                        tint = colors.textSecondary,
-                        modifier = Modifier.size(23.dp)
-                    )
-                }
-                Box {
-                    KIconButton(onClick = {
-                        if (moreActions.isNotEmpty()) showMoreMenu = true else onMoreClick()
-                    }) {
+                if (showNewChat) {
+                    Spacer(Modifier.width(4.dp))
+                    TopBarAction(onClick = onNewChatClick) {
                         Icon(
-                            imageVector = Icons.Default.MoreVert,
-                            contentDescription = "More options",
+                            imageVector = Icons.Default.AddCircle,
+                            contentDescription = "New Chat",
                             tint = colors.textSecondary,
-                            modifier = Modifier.size(22.dp)
+                            modifier = Modifier.size(20.dp)
                         )
                     }
-                    KDropdownMenu(
-                        expanded = showMoreMenu && moreActions.isNotEmpty(),
-                        onDismissRequest = { showMoreMenu = false },
-                        width = 260.dp
-                    ) {
-                        moreActions.forEachIndexed { idx, action ->
-                            DropdownMenuItem(
-                                text = {
-                                    Text(action.first, color = colors.textPrimary, fontSize = 14.sp)
-                                },
-                                leadingIcon = {
-                                    Icon(
-                                        action.second,
-                                        contentDescription = null,
-                                        tint = colors.textSecondary,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                },
-                                onClick = {
-                                    showMoreMenu = false
-                                    action.third.invoke()
-                                }
+                }
+                if (showMore) {
+                    Spacer(Modifier.width(4.dp))
+                    Box {
+                        TopBarAction(onClick = {
+                            if (moreActions.isNotEmpty()) showMoreMenu = true else onMoreClick()
+                        }) {
+                            Icon(
+                                imageVector = Icons.Default.MoreVert,
+                                contentDescription = "More options",
+                                tint = colors.textSecondary,
+                                modifier = Modifier.size(19.dp)
                             )
-                            if (idx != moreActions.lastIndex) KMenuDivider()
+                        }
+                        KDropdownMenu(
+                            expanded = showMoreMenu && moreActions.isNotEmpty(),
+                            onDismissRequest = { showMoreMenu = false },
+                            width = 260.dp
+                        ) {
+                            moreActions.forEachIndexed { idx, action ->
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(action.first, color = colors.textPrimary, fontSize = 14.sp)
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            action.second,
+                                            contentDescription = null,
+                                            tint = colors.textSecondary,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    },
+                                    onClick = {
+                                        showMoreMenu = false
+                                        action.third.invoke()
+                                    }
+                                )
+                                if (idx != moreActions.lastIndex) KMenuDivider()
+                            }
                         }
                     }
                 }
             }
         }
+    }
+}
 
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .height(1.dp)
-                .background(
-                    androidx.compose.ui.graphics.Brush.horizontalGradient(
-                        listOf(
-                            Color.Transparent,
-                            colors.accentGreen.copy(alpha = 0.35f),
-                            colors.accentGreen.copy(alpha = 0.12f),
-                            Color.Transparent
-                        )
-                    )
-                )
-        )
+/** Compact bordered action tile used by the shared top bar. */
+@Composable
+private fun TopBarAction(
+    onClick: () -> Unit,
+    content: @Composable () -> Unit
+) {
+    val colors = LocalKarenColors.current
+    Box(
+        modifier = Modifier
+            .size(32.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(colors.surfaceHover.copy(alpha = 0.38f))
+            .border(1.dp, colors.border.copy(alpha = 0.55f), RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        content()
     }
 }
 
@@ -3177,7 +3205,8 @@ fun Section(title: String, icon: String = "", content: @Composable ColumnScope.(
 fun WorkerRouteChip(
     current: String,
     onSelect: (String) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    wide: Boolean = false
 ) {
     val colors = LocalKarenColors.current
     var open by remember { mutableStateOf(false) }
@@ -3201,22 +3230,92 @@ fun WorkerRouteChip(
         else -> active.name
     }
     val tint = if (current.isBlank()) colors.textMuted else colors.accentGreen
+    val status = when {
+        current.isBlank() -> "LOCAL"
+        active == null || !active.online -> "OFFLINE"
+        active.state == "paused" -> "PAUSED"
+        else -> "ONLINE"
+    }
+    val statusTint = when (status) {
+        "ONLINE" -> colors.accentGreen
+        "PAUSED" -> colors.accentAmber
+        "OFFLINE" -> colors.accentRed
+        else -> colors.textMuted
+    }
+    val shape = RoundedCornerShape(if (wide) 14.dp else 999.dp)
 
     Box(modifier = modifier) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
-                .clip(RoundedCornerShape(999.dp))
-                .background(colors.surface)
-                .border(1.dp, if (current.isBlank()) colors.border else tint.copy(alpha = 0.55f), RoundedCornerShape(999.dp))
+                .then(if (wide) Modifier.fillMaxWidth() else Modifier)
+                .clip(shape)
+                .background(
+                    if (wide) {
+                        androidx.compose.ui.graphics.Brush.horizontalGradient(
+                            listOf(colors.surface, colors.cardBackground)
+                        )
+                    } else {
+                        androidx.compose.ui.graphics.SolidColor(colors.surface)
+                    }
+                )
+                .border(1.dp, if (current.isBlank()) colors.border else tint.copy(alpha = 0.45f), shape)
                 .clickable { open = true }
-                .padding(horizontal = 10.dp, vertical = 5.dp)
+                .padding(horizontal = 10.dp, vertical = if (wide) 8.dp else 5.dp)
         ) {
-            Icon(Icons.Default.Dns, contentDescription = "Run on", tint = tint, modifier = Modifier.size(12.dp))
-            Spacer(Modifier.width(6.dp))
-            Text("Run on: $label", color = tint, fontSize = 10.5.sp, fontFamily = FontFamily.Monospace)
-            Spacer(Modifier.width(2.dp))
-            Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = tint, modifier = Modifier.size(14.dp))
+            if (wide) {
+                KIconTile(Icons.Default.Dns, tint, 28.dp)
+                Spacer(Modifier.width(8.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "COMPUTE // ROUTE",
+                        color = if (current.isBlank()) colors.textMuted else tint,
+                        fontSize = 8.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                    Text(
+                        label,
+                        color = colors.textPrimary,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                    )
+                }
+                Row(
+                    modifier = Modifier
+                        .clip(CircleShape)
+                        .background(statusTint.copy(alpha = 0.10f))
+                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        Modifier
+                            .size(4.dp)
+                            .clip(CircleShape)
+                            .background(statusTint)
+                    )
+                    Spacer(Modifier.width(3.dp))
+                    Text(
+                        status,
+                        color = statusTint,
+                        fontSize = 7.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 0.5.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+                Spacer(Modifier.width(4.dp))
+                Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = tint, modifier = Modifier.size(15.dp))
+            } else {
+                Icon(Icons.Default.Dns, contentDescription = "Run on", tint = tint, modifier = Modifier.size(12.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Run on: $label", color = tint, fontSize = 10.5.sp, fontFamily = FontFamily.Monospace)
+                Spacer(Modifier.width(2.dp))
+                Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = tint, modifier = Modifier.size(14.dp))
+            }
         }
         KDropdownMenu(expanded = open, onDismissRequest = { open = false }) {
             DropdownMenuItem(

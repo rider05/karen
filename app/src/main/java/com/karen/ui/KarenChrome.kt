@@ -221,46 +221,38 @@ fun KNavigationDock(
         modifier
             .fillMaxWidth()
             .background(colors.background)
-            .padding(top = 2.dp, bottom = 2.dp)
+            .navigationBarsPadding()
+            .padding(start = 12.dp, end = 12.dp, top = 6.dp, bottom = 8.dp)
     ) {
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .height(1.dp)
-                .background(
-                    Brush.horizontalGradient(
-                        listOf(
-                            Color.Transparent,
-                            colors.border,
-                            Color.Transparent
-                        )
-                    )
-                )
-        )
         Row(
             Modifier
                 .fillMaxWidth()
-                .navigationBarsPadding()
-                .height(64.dp),
+                .clip(RoundedCornerShape(22.dp))
+                .background(
+                    Brush.verticalGradient(
+                        listOf(colors.surface, colors.cardBackground)
+                    )
+                )
+                .border(1.dp, colors.accentGreen.copy(alpha = 0.16f), RoundedCornerShape(22.dp))
+                .padding(horizontal = 6.dp, vertical = 5.dp)
+                .height(62.dp),
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically
         ) {
             destinations.forEach { destination ->
                 val selected = currentScreen == destination.route
                 val tint = if (selected) colors.accentGreen else colors.textMuted
-                val boxShape = RoundedCornerShape(12.dp)
+                val boxShape = RoundedCornerShape(11.dp)
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier
-                        .clip(RoundedCornerShape(12.dp))
+                        .clip(RoundedCornerShape(16.dp))
                         .clickable { onSelectScreen(destination.route) }
-                        .padding(horizontal = 8.dp)
+                        .padding(horizontal = 7.dp, vertical = 3.dp)
                 ) {
-                    // Instagram-style selection: the active tab's icon sits in
-                    // a rounded box. Every tab keeps the same footprint so the
-                    // row doesn't jog when the selection moves.
                     Box(
                         modifier = Modifier
+                            .size(34.dp)
                             .clip(boxShape)
                             .background(
                                 if (selected) colors.accentGreen.copy(alpha = 0.16f)
@@ -271,8 +263,7 @@ fun KNavigationDock(
                                 if (selected) colors.accentGreen.copy(alpha = 0.38f)
                                 else Color.Transparent,
                                 boxShape
-                            )
-                            .padding(horizontal = 13.dp, vertical = 6.dp),
+                            ),
                         contentAlignment = Alignment.Center
                     ) {
                         Box(contentAlignment = Alignment.TopEnd) {
@@ -280,13 +271,13 @@ fun KNavigationDock(
                                 destination.icon,
                                 contentDescription = destination.label,
                                 tint = tint,
-                                modifier = Modifier.size(20.dp)
+                                modifier = Modifier.size(19.dp)
                             )
                             if (destination.route == "Workspace" && workspaceBadge > 0) {
                                 Box(
                                     Modifier
-                                        .padding(start = 10.dp)
-                                        .size(14.dp)
+                                        .padding(start = 8.dp)
+                                        .size(13.dp)
                                         .clip(CircleShape)
                                         .background(colors.accentSuccess),
                                     contentAlignment = Alignment.Center
@@ -295,20 +286,30 @@ fun KNavigationDock(
                                         workspaceBadge.toString(),
                                         color = Color.White,
                                         fontFamily = type.mono,
-                                        fontSize = 8.5.sp,
+                                        fontSize = 8.sp,
                                         fontWeight = FontWeight.Bold
                                     )
                                 }
                             }
                         }
                     }
-                    Spacer(Modifier.height(4.dp))
+                    Spacer(Modifier.height(3.dp))
                     Text(
-                        destination.label,
+                        destination.label.uppercase(),
                         color = tint,
-                        fontSize = 10.sp,
-                        lineHeight = 13.sp,
-                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
+                        fontFamily = type.mono,
+                        fontSize = 8.sp,
+                        lineHeight = 10.sp,
+                        letterSpacing = 0.5.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    Box(
+                        Modifier
+                            .width(if (selected) 14.dp else 0.dp)
+                            .height(2.dp)
+                            .clip(CircleShape)
+                            .background(if (selected) colors.accentGreen else Color.Transparent)
                     )
                 }
             }

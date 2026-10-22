@@ -92,7 +92,10 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
         ChatGPTTopAppBar(
             selectedModel = "Settings",
             onBackClick = onBack,
-            showMenu = false
+            showMenu = false,
+            showNewChat = false,
+            showMore = false,
+            showModelChevron = false
         )
 
         LazyColumn(

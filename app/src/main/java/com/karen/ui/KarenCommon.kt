@@ -3004,6 +3004,9 @@ fun ChatGPTDrawerContent(
                             DrawerNavItem("Intelligent Flowchart", Icons.Default.AccountTree, currentScreen == "Flowchart") {
                                 onNavigate("Flowchart"); onCloseDrawer()
                             }
+                            DrawerNavItem("Study Companion", Icons.AutoMirrored.Filled.MenuBook, currentScreen == "StudyBook") {
+                                onNavigate("StudyBook"); onCloseDrawer()
+                            }
                             DrawerNavItem("Knowledge Vault & Files", Icons.Default.SnippetFolder, currentScreen == "Files") {
                                 onNavigate("Files"); onCloseDrawer()
                             }

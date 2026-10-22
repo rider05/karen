@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.SnippetFolder
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.Workspaces
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -213,7 +214,8 @@ fun KNavigationDock(
             NavDestination("Home", "Home", Icons.Default.Home),
             NavDestination("Chat", "Chat", Icons.Default.Assistant),
             NavDestination("Workspace", "Workspace", Icons.Default.Workspaces),
-            NavDestination("Files", "Files", Icons.Default.SnippetFolder)
+            NavDestination("Files", "Files", Icons.Default.SnippetFolder),
+            NavDestination("StudyBook", "Study", Icons.AutoMirrored.Filled.MenuBook)
         )
     }
 

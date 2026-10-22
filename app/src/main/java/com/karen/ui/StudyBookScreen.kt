@@ -222,22 +222,65 @@ fun StudyBookScreen(
             contentPadding = PaddingValues(top = 12.dp, bottom = 80.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
+            item {
+                KHero(
+                    kicker = "Study // flashcards",
+                    title = "Study companion",
+                    subtitle = "Turn a vault document into an on-device deck. Cards, answers and progress stay on this phone.",
+                    icon = Icons.AutoMirrored.Filled.MenuBook,
+                    tone = colors.accentAmber,
+                    status = if (busy) "GENERATING" else if (device.networkUp) "NETWORK UP" else "OFFLINE",
+                    statusTone = if (busy) KTone.Blue else KTone.Success
+                ) {
+                    Spacer(Modifier.height(14.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        KHeroStat(
+                            label = "Deck",
+                            value = "${flashcards.size}",
+                            unit = "cards",
+                            tint = colors.accentGreen,
+                            modifier = Modifier.weight(1f)
+                        )
+                        KHeroStat(
+                            label = "Known",
+                            value = "${known.size}",
+                            unit = "this session",
+                            tint = colors.accentBlue,
+                            modifier = Modifier.weight(1f)
+                        )
+                        KHeroStat(
+                            label = "Sources",
+                            value = "${docs.size}",
+                            unit = "vault docs",
+                            tint = colors.accentAmber,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+            }
+
             // Document source: real vault text documents.
             item {
+                KSectionHeader(
+                    kicker = "Document source",
+                    icon = Icons.Default.Description,
+                    tone = colors.accentAmber,
+                    trailing = "${docs.size} docs"
+                )
+                Spacer(Modifier.height(6.dp))
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
+                        .clip(RoundedCornerShape(18.dp))
                         .background(colors.surface)
-                        .border(1.dp, colors.border, RoundedCornerShape(12.dp))
-                        .padding(12.dp)
+                        .border(1.dp, colors.border, RoundedCornerShape(18.dp))
+                        .padding(14.dp)
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            Icons.AutoMirrored.Filled.MenuBook,
-                            contentDescription = null,
+                        KIconTile(
+                            icon = Icons.AutoMirrored.Filled.MenuBook,
                             tint = colors.accentAmber,
-                            modifier = Modifier.size(20.dp)
+                            size = 32.dp
                         )
                         Spacer(Modifier.width(10.dp))
                         Column(Modifier.weight(1f)) {
@@ -258,8 +301,8 @@ fun StudyBookScreen(
                         }
                         OutlinedButton(
                             onClick = { refreshKey++ },
-                            shape = RoundedCornerShape(8.dp),
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp)
+                            shape = RoundedCornerShape(999.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 2.dp)
                         ) { Text("Rescan", fontSize = 11.5.sp) }
                     }
 
@@ -310,9 +353,12 @@ fun StudyBookScreen(
                                 containerColor = colors.accentGreen,
                                 contentColor = Color.White
                             ),
-                            shape = RoundedCornerShape(8.dp)
+                            shape = RoundedCornerShape(999.dp),
+                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 7.dp)
                         ) {
-                            Text(if (busy) "Generating…" else "Generate flashcards", fontSize = 12.5.sp)
+                            Icon(Icons.Default.AutoAwesome, contentDescription = null, modifier = Modifier.size(14.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text(if (busy) "Generating…" else "Generate flashcards", fontSize = 12.5.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                     if (status != null) {
@@ -324,26 +370,22 @@ fun StudyBookScreen(
 
             // Active flashcard — flip to reveal, mark known, advance.
             item {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
+                KSectionHeader(
+                    kicker = "Active flashcard",
+                    icon = Icons.Default.Style,
+                    tone = colors.accentGreen,
+                    trailing = if (flashcards.isEmpty()) "0 cards" else "${currentCardIndex + 1} / ${flashcards.size}"
+                )
+                if (flashcards.isNotEmpty()) {
                     Text(
-                        "Active Flashcard · ${if (flashcards.isEmpty()) 0 else currentCardIndex + 1} of ${flashcards.size}",
-                        color = colors.textMuted,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold
+                        "Known this session: ${known.size}/${flashcards.size}",
+                        color = colors.accentGreen,
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace,
+                        modifier = Modifier.padding(start = 34.dp, top = 2.dp)
                     )
-                    if (flashcards.isNotEmpty()) {
-                        Text(
-                            "Known this session: ${known.size}/${flashcards.size}",
-                            color = colors.accentGreen,
-                            fontSize = 11.sp
-                        )
-                    }
                 }
-                Spacer(Modifier.height(4.dp))
+                Spacer(Modifier.height(6.dp))
                 if (card == null) {
                     Text(
                         "No deck yet — pick a document above and tap Generate flashcards.",
@@ -354,11 +396,35 @@ fun StudyBookScreen(
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(16.dp))
-                            .background(colors.cardBackground)
-                            .border(1.dp, colors.cardBorder, RoundedCornerShape(16.dp))
+                            .clip(RoundedCornerShape(18.dp))
+                            .background(
+                                androidx.compose.ui.graphics.Brush.verticalGradient(
+                                    listOf(colors.cardBackground, colors.surface)
+                                )
+                            )
+                            .border(1.dp, colors.accentGreen.copy(alpha = 0.3f), RoundedCornerShape(18.dp))
                             .padding(16.dp)
                     ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            KIconTile(Icons.Default.Style, colors.accentGreen, 28.dp)
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                "CARD // QUESTION",
+                                color = colors.accentGreen,
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 1.sp,
+                                fontFamily = FontFamily.Monospace
+                            )
+                            Spacer(Modifier.weight(1f))
+                            Text(
+                                "${currentCardIndex + 1} / ${flashcards.size}",
+                                color = colors.textMuted,
+                                fontSize = 10.sp,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                        Spacer(Modifier.height(10.dp))
                         Text(
                             card.question,
                             color = colors.textPrimary,
@@ -391,10 +457,10 @@ fun StudyBookScreen(
                                     containerColor = colors.accentGreen,
                                     contentColor = Color.White
                                 ),
-                                shape = RoundedCornerShape(8.dp),
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                                shape = RoundedCornerShape(999.dp),
+                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
                             ) {
-                                Text(if (showAnswer) "Hide answer" else "Show answer", fontSize = 12.sp)
+                                Text(if (showAnswer) "Hide answer" else "Show answer", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                             }
                             OutlinedButton(
                                 onClick = {
@@ -402,8 +468,8 @@ fun StudyBookScreen(
                                     showAnswer = false
                                     currentCardIndex = (currentCardIndex + 1) % flashcards.size
                                 },
-                                shape = RoundedCornerShape(8.dp),
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                                shape = RoundedCornerShape(999.dp),
+                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
                             ) {
                                 Text("Knew this", fontSize = 12.sp)
                             }
@@ -412,8 +478,8 @@ fun StudyBookScreen(
                                     showAnswer = false
                                     currentCardIndex = (currentCardIndex + 1) % flashcards.size
                                 },
-                                shape = RoundedCornerShape(8.dp),
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                                shape = RoundedCornerShape(999.dp),
+                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
                             ) {
                                 Text("Next card", fontSize = 12.sp)
                             }
@@ -425,11 +491,11 @@ fun StudyBookScreen(
             // Whole deck.
             if (flashcards.isNotEmpty()) {
                 item {
-                    Text(
-                        "Deck (${flashcards.size} cards)",
-                        color = colors.textMuted,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold
+                    KSectionHeader(
+                        kicker = "Full deck",
+                        icon = Icons.Default.Layers,
+                        tone = colors.accentBlue,
+                        trailing = "${flashcards.size} cards"
                     )
                 }
                 items(flashcards.size) { i ->
@@ -437,12 +503,12 @@ fun StudyBookScreen(
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
+                            .clip(RoundedCornerShape(14.dp))
                             .background(colors.surface)
                             .border(
                                 1.dp,
-                                if (i == currentCardIndex) colors.accentGreen else colors.border,
-                                RoundedCornerShape(12.dp)
+                                if (i == currentCardIndex) colors.accentGreen.copy(alpha = 0.7f) else colors.border,
+                                RoundedCornerShape(14.dp)
                             )
                             .clickable {
                                 currentCardIndex = i

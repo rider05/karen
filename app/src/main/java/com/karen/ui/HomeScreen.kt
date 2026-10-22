@@ -74,64 +74,94 @@ fun HomeScreen(
         contentPadding = PaddingValues(top = 8.dp, bottom = 80.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // Greeting Header
+        // Greeting hero
         item {
-            Column(modifier = Modifier.padding(bottom = 6.dp)) {
+            KHero(
+                kicker = "Home // dashboard",
+                title = "$greeting, ${UserPrefs.name(androidx.compose.ui.platform.LocalContext.current)}",
+                subtitle = "What would you like to build or synthesize today?",
+                icon = Icons.Default.AutoAwesome,
+                tone = colors.accentGreen,
+                status = if (device.networkUp) "NETWORK UP" else "OFFLINE",
+                statusTone = if (device.networkUp) KTone.Amber else KTone.Success
+            ) {
+                Spacer(Modifier.height(14.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    KHeroStat(
+                        label = "RAM",
+                        value = "${device.usedRamPercent}%",
+                        unit = "in use",
+                        tint = colors.accentGreen,
+                        modifier = Modifier.weight(1f)
+                    )
+                    KHeroStat(
+                        label = "Battery",
+                        value = "${device.batteryPercent}%",
+                        unit = String.format("%.1f°C", device.batteryTempC),
+                        tint = colors.accentBlue,
+                        modifier = Modifier.weight(1f)
+                    )
+                    KHeroStat(
+                        label = "Model",
+                        value = if (pinnedModel != null) "READY" else "—",
+                        unit = if (pinnedModel != null) "pinned" else "none pinned",
+                        tint = colors.accentAmber,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                Spacer(Modifier.height(12.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(colors.accentGreen.copy(alpha = 0.15f))
-                                .padding(horizontal = 8.dp, vertical = 3.dp)
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    Icons.Default.Lock,
-                                    contentDescription = "Air-Gapped",
-                                    tint = colors.accentGreen,
-                                    modifier = Modifier.size(12.dp)
-                                )
-                                Spacer(Modifier.width(4.dp))
-                                Text(
-                                    "Air-Gapped Sovereign",
-                                    color = colors.accentGreen,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                            }
-                        }
-                        Spacer(Modifier.width(8.dp))
-                        Text(if (device.networkUp) "Network Up" else "Offline · 0 egress", color = colors.textMuted, fontSize = 11.sp)
-                    }
+                    Icon(
+                        Icons.Default.Lock,
+                        contentDescription = "Air-Gapped",
+                        tint = colors.accentGreen,
+                        modifier = Modifier.size(13.dp)
+                    )
+                    Spacer(Modifier.width(5.dp))
+                    Text(
+                        "Air-Gapped Sovereign",
+                        color = colors.accentGreen,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        if (device.networkUp) "Network up" else "Offline · 0 egress",
+                        color = colors.textMuted,
+                        fontSize = 11.sp
+                    )
                     Spacer(Modifier.weight(1f))
-                    IconButton(onClick = onOpenSettings) {
-                        Icon(Icons.Default.Settings, contentDescription = "Settings", tint = colors.textPrimary)
+                    IconButton(
+                        onClick = onOpenSettings,
+                        modifier = Modifier
+                            .size(32.dp)
+                            .clip(CircleShape)
+                            .background(colors.surfaceHover)
+                            .border(1.dp, colors.border, CircleShape)
+                    ) {
+                        Icon(
+                            Icons.Default.Settings,
+                            contentDescription = "Settings",
+                            tint = colors.textPrimary,
+                            modifier = Modifier.size(17.dp)
+                        )
                     }
                 }
-
-                Spacer(Modifier.height(10.dp))
-                Text(
-                    text = "$greeting, ${UserPrefs.name(androidx.compose.ui.platform.LocalContext.current)}",
-                    color = colors.textPrimary,
-                    fontSize = 26.sp,
-                    fontWeight = FontWeight.Bold,
-                    letterSpacing = (-0.5).sp
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    text = "What would you like to build or synthesize today?",
-                    color = colors.textMuted,
-                    fontSize = 14.sp
-                )
             }
         }
 
         // Quick Prompt Shortcut Grid (2x2)
         item {
+            KSectionHeader(
+                kicker = "Quick actions",
+                icon = Icons.Default.Bolt,
+                tone = colors.accentBlue,
+                trailing = "4 shortcuts"
+            )
+            Spacer(Modifier.height(8.dp))
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -179,27 +209,43 @@ fun HomeScreen(
 
         // Live Execution Task Card
         item {
+            KSectionHeader(
+                kicker = "Live task",
+                icon = Icons.Default.Bolt,
+                tone = colors.accentGreen,
+                trailing = when {
+                    activeDownload != null -> "DOWNLOADING"
+                    pinnedModel != null -> "PINNED"
+                    else -> "IDLE"
+                }
+            )
+            Spacer(Modifier.height(8.dp))
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(colors.cardBackground)
-                    .border(1.dp, colors.cardBorder, RoundedCornerShape(16.dp))
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(
+                        androidx.compose.ui.graphics.Brush.verticalGradient(
+                            listOf(colors.surface, colors.cardBackground)
+                        )
+                    )
+                    .border(1.dp, colors.accentGreen.copy(alpha = 0.28f), RoundedCornerShape(18.dp))
                     .padding(16.dp)
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            modifier = Modifier
-                                .size(8.dp)
-                                .clip(CircleShape)
-                                .background(colors.accentGreen)
+                    KIconTile(Icons.Default.Bolt, colors.accentGreen, 30.dp)
+                    Spacer(Modifier.width(9.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "EXECUTION // LIVE",
+                            color = colors.accentGreen,
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 1.sp
                         )
-                        Spacer(Modifier.width(8.dp))
                         Text(
                             "Memory Pressure",
                             color = colors.textSecondary,
@@ -207,7 +253,7 @@ fun HomeScreen(
                             fontWeight = FontWeight.Medium
                         )
                     }
-                    Text("${device.usedRamPercent}% RAM", color = colors.accentGreen, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    Text("${device.usedRamPercent}% RAM", color = colors.accentGreen, fontSize = 12.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
                 }
 
                 Spacer(Modifier.height(8.dp))
@@ -254,8 +300,10 @@ fun HomeScreen(
                     Text(
                         "RECENTLY OPENED",
                         color = colors.textMuted,
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Bold
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 0.8.sp,
+                        fontFamily = FontFamily.Monospace
                     )
                     recents.forEach { r ->
                         val icon = when (r.type) {
@@ -315,10 +363,12 @@ fun HomeScreen(
                             containerColor = colors.accentGreen,
                             contentColor = Color.White
                         ),
-                        shape = RoundedCornerShape(8.dp),
+                        shape = RoundedCornerShape(999.dp),
                         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
                     ) {
-                        Text(label, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        Text(label, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.width(4.dp))
+                        Icon(Icons.Default.ChevronRight, contentDescription = null, modifier = Modifier.size(15.dp))
                     }
                 }
             }
@@ -355,23 +405,37 @@ fun HomeScreen(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                Box(
+                    modifier = Modifier
+                        .size(26.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(colors.accentAmber.copy(alpha = 0.12f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(Icons.Default.History, contentDescription = null, tint = colors.accentAmber, modifier = Modifier.size(14.dp))
+                }
+                Spacer(Modifier.width(8.dp))
                 Text(
-                    "Recent Knowledge & Vault",
-                    color = colors.textMuted,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.SemiBold,
+                    "RECENT KNOWLEDGE & VAULT",
+                    color = colors.textSecondary,
+                    fontSize = 10.5.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 0.9.sp,
                     modifier = Modifier.weight(1f)
                 )
                 if (recentItems.size > 3) {
                     Text(
-                        if (showAllRecents) "Show Less" else "See More",
+                        if (showAllRecents) "SHOW LESS" else "SEE MORE",
                         color = colors.accentGreen,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 0.6.sp,
                         modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
+                            .clip(RoundedCornerShape(999.dp))
+                            .background(colors.accentGreen.copy(alpha = 0.10f))
+                            .border(1.dp, colors.accentGreen.copy(alpha = 0.35f), RoundedCornerShape(999.dp))
                             .clickable { showAllRecents = !showAllRecents }
-                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                            .padding(horizontal = 9.dp, vertical = 4.dp)
                     )
                 }
             }
@@ -398,19 +462,19 @@ fun HomeScreen(
 
         // System Telemetry Snapshot
         item {
-            Text(
-                "System Diagnostics",
-                color = colors.textMuted,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.SemiBold
+            KSectionHeader(
+                kicker = "System diagnostics",
+                icon = Icons.Default.MonitorHeart,
+                tone = colors.accentBlue,
+                trailing = if (device.networkUp) "NETWORK UP" else "OFFLINE"
             )
-            Spacer(Modifier.height(6.dp))
+            Spacer(Modifier.height(8.dp))
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(14.dp))
+                    .clip(RoundedCornerShape(18.dp))
                     .background(colors.surface)
-                    .border(1.dp, colors.border, RoundedCornerShape(14.dp))
+                    .border(1.dp, colors.border, RoundedCornerShape(18.dp))
                     .padding(14.dp),
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
@@ -434,23 +498,24 @@ private fun PromptShortcutCard(
     val colors = LocalKarenColors.current
     Column(
         modifier = modifier
-            .clip(RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(16.dp))
             .background(colors.surface)
-            .border(1.dp, colors.border, RoundedCornerShape(14.dp))
+            .border(1.dp, iconTint.copy(alpha = 0.24f), RoundedCornerShape(16.dp))
             .clickable { onClick() }
             .padding(14.dp)
     ) {
-        Box(
-            modifier = Modifier
-                .size(32.dp)
-                .clip(RoundedCornerShape(8.dp))
-                .background(colors.surfaceHover),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(icon, contentDescription = title, tint = iconTint, modifier = Modifier.size(18.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            KIconTile(icon, iconTint, 32.dp)
+            Spacer(Modifier.weight(1f))
+            Icon(
+                Icons.Default.ChevronRight,
+                contentDescription = null,
+                tint = colors.textMuted,
+                modifier = Modifier.size(16.dp)
+            )
         }
-        Spacer(Modifier.height(8.dp))
-        Text(title, color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(10.dp))
+        Text(title, color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Bold)
         Text(subtitle, color = colors.textMuted, fontSize = 11.5.sp)
     }
 }
@@ -475,18 +540,18 @@ private fun RecentDocRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(14.dp))
             .background(colors.surface)
-            .border(1.dp, colors.border, RoundedCornerShape(12.dp))
+            .border(1.dp, colors.border, RoundedCornerShape(14.dp))
             .clickable { onClick() }
-            .padding(12.dp),
+            .padding(11.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(icon, contentDescription = title, tint = colors.textSecondary, modifier = Modifier.size(20.dp))
+        KIconTile(icon, colors.accentBlue, 30.dp)
         Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f)) {
-            Text(title, color = colors.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
-            Text(sub, color = colors.textMuted, fontSize = 11.sp)
+            Text(title, color = colors.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(sub, color = colors.textMuted, fontSize = 10.5.sp, fontFamily = FontFamily.Monospace)
         }
         Icon(Icons.Default.ChevronRight, contentDescription = "Open", tint = colors.textMuted, modifier = Modifier.size(16.dp))
     }
@@ -496,9 +561,16 @@ private fun RecentDocRow(
 private fun TelemetryCol(label: String, value: String) {
     val colors = LocalKarenColors.current
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(label, color = colors.textMuted, fontSize = 11.sp)
+        Text(
+            label.uppercase(),
+            color = colors.textMuted,
+            fontSize = 9.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 0.7.sp,
+            fontFamily = FontFamily.Monospace
+        )
         Spacer(Modifier.height(4.dp))
-        Text(value, color = colors.textPrimary, fontSize = 13.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.SemiBold)
+        Text(value, color = colors.textPrimary, fontSize = 12.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
     }
 }
 

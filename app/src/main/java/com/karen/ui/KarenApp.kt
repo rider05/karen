@@ -43,7 +43,11 @@ fun KarenSplashScreen() {
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black),
+            .background(
+                androidx.compose.ui.graphics.Brush.radialGradient(
+                    colors = listOf(Color(0xFF10231D), Color.Black, Color.Black)
+                )
+            ),
         contentAlignment = Alignment.Center
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -51,15 +55,49 @@ fun KarenSplashScreen() {
                 painter = painterResource(id = R.drawable.ic_karen),
                 contentDescription = "Karen logo",
                 modifier = Modifier
-                    .size(120.dp)
+                    .size(110.dp)
                     .scale(pulse)
                     .clip(androidx.compose.foundation.shape.RoundedCornerShape(28.dp))
             )
-            Spacer(Modifier.height(20.dp))
-            Text("Karen", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(22.dp))
+            Text(
+                "SOVEREIGN // ON-DEVICE",
+                color = Color(0xFF10A37F),
+                fontSize = 9.5.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 1.4.sp,
+                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+            )
+            Spacer(Modifier.height(6.dp))
+            Text("Karen", color = Color.White, fontSize = 28.sp, fontWeight = FontWeight.Bold, letterSpacing = (-0.5).sp)
             Spacer(Modifier.height(6.dp))
             Text("Sovereign on-device AI", color = Color(0xFF8E8E93), fontSize = 12.sp)
-            Spacer(Modifier.height(24.dp))
+            Spacer(Modifier.height(18.dp))
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .clip(androidx.compose.foundation.shape.RoundedCornerShape(999.dp))
+                    .background(Color(0xFF10A37F).copy(alpha = 0.10f))
+                    .border(1.dp, Color(0xFF10A37F).copy(alpha = 0.30f), androidx.compose.foundation.shape.RoundedCornerShape(999.dp))
+                    .padding(horizontal = 11.dp, vertical = 5.dp)
+            ) {
+                Box(
+                    Modifier
+                        .size(5.dp)
+                        .clip(androidx.compose.foundation.shape.CircleShape)
+                        .background(Color(0xFF10A37F))
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    "LOCAL BOOT",
+                    color = Color(0xFF10A37F),
+                    fontSize = 8.5.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 0.9.sp,
+                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                )
+            }
+            Spacer(Modifier.height(20.dp))
             CircularProgressIndicator(color = Color(0xFF38BDF8), strokeWidth = 2.dp, modifier = Modifier.size(22.dp))
         }
     }

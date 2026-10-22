@@ -2086,6 +2086,15 @@ fun ChatScreen(
                 contentPadding = PaddingValues(top = 12.dp, bottom = 200.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
+                if (messages.isEmpty()) {
+                    item {
+                        ChatEmptyHero(
+                            model = selectedModel,
+                            autoRoute = autoRoute,
+                            networkUp = device.networkUp
+                        )
+                    }
+                }
                 items(messages, key = { when (it) { is ChatItem.User -> it.id; is ChatItem.Assistant -> it.id } }) { item ->
                     when (item) {
                         is ChatItem.User -> {
@@ -3485,6 +3494,46 @@ private fun SuggestionPill(
             maxLines = 1,
             overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
         )
+    }
+}
+
+/** Empty-chat hero: keeps the first screen consistent with the rest of the app. */
+@Composable
+private fun ChatEmptyHero(model: String, autoRoute: Boolean, networkUp: Boolean) {
+    val colors = LocalKarenColors.current
+    KHero(
+        kicker = "Chat // on-device dialogue",
+        title = "Ask Karen anything",
+        subtitle = "Type below or pick a starter. Voice, files, web search and routing stay under your control.",
+        icon = Icons.Default.Psychology,
+        tone = colors.accentGreen,
+        status = if (networkUp) "NETWORK UP" else "OFFLINE",
+        statusTone = if (networkUp) KTone.Amber else KTone.Success
+    ) {
+        Spacer(Modifier.height(14.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            KHeroStat(
+                label = "Model",
+                value = model.substringBefore(" ").take(12),
+                unit = "active",
+                tint = colors.accentBlue,
+                modifier = Modifier.weight(1f)
+            )
+            KHeroStat(
+                label = "Route",
+                value = if (autoRoute) "AUTO" else "MANUAL",
+                unit = "routing",
+                tint = colors.accentGreen,
+                modifier = Modifier.weight(1f)
+            )
+            KHeroStat(
+                label = "Mode",
+                value = if (networkUp) "HYBRID" else "LOCAL",
+                unit = "privacy",
+                tint = colors.accentAmber,
+                modifier = Modifier.weight(1f)
+            )
+        }
     }
 }
 

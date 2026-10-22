@@ -10,6 +10,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -29,7 +30,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -184,6 +187,191 @@ fun KSectionLabel(label: String, modifier: Modifier = Modifier) {
         letterSpacing = 0.6.sp,
         modifier = modifier.padding(top = 16.dp, bottom = 8.dp)
     )
+}
+
+/** Colored icon tile used by heroes, section headers and compact rows. */
+@Composable
+fun KIconTile(
+    icon: ImageVector,
+    tint: Color,
+    size: Dp = 34.dp,
+    contentDescription: String? = null
+) {
+    val radius = (size.value / 3f).dp
+    Box(
+        Modifier
+            .size(size)
+            .clip(RoundedCornerShape(radius))
+            .background(tint.copy(alpha = 0.12f))
+            .border(1.dp, tint.copy(alpha = 0.26f), RoundedCornerShape(radius)),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            icon,
+            contentDescription = contentDescription,
+            tint = tint,
+            modifier = Modifier.size(size * 0.48f)
+        )
+    }
+}
+
+/**
+ * Shared screen hero: tinted gradient, icon tile, uppercase kicker, title,
+ * status pill and an optional stat strip. Purely presentational.
+ */
+@Composable
+fun KHero(
+    kicker: String,
+    title: String,
+    subtitle: String,
+    icon: ImageVector,
+    tone: Color = LocalKarenColors.current.accentGreen,
+    status: String? = null,
+    statusTone: KTone = KTone.Success,
+    content: @Composable ColumnScope.() -> Unit = {}
+) {
+    val colors = LocalKarenColors.current
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(20.dp))
+            .background(
+                Brush.linearGradient(
+                    listOf(
+                        tone.copy(alpha = if (colors.isDark) 0.10f else 0.06f),
+                        colors.surface,
+                        colors.surface
+                    )
+                )
+            )
+            .border(1.dp, tone.copy(alpha = 0.30f), RoundedCornerShape(20.dp))
+            .padding(16.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            KIconTile(icon, tone, 42.dp)
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    kicker.uppercase(),
+                    color = tone,
+                    fontFamily = LocalKarenType.current.mono,
+                    fontSize = 9.5.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.1.sp,
+                    maxLines = 1
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    title,
+                    color = colors.textPrimary,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    lineHeight = 23.sp,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            if (status != null) {
+                Spacer(Modifier.width(8.dp))
+                KStatusChip(status, statusTone, led = true)
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+        Text(subtitle, color = colors.textSecondary, fontSize = 12.sp, lineHeight = 17.sp)
+        content()
+    }
+}
+
+/** Compact monospaced statistic for use inside [KHero]. */
+@Composable
+fun KHeroStat(
+    label: String,
+    value: String,
+    unit: String = "",
+    tint: Color = LocalKarenColors.current.textPrimary,
+    modifier: Modifier = Modifier
+) {
+    val colors = LocalKarenColors.current
+    Column(
+        modifier
+            .clip(RoundedCornerShape(11.dp))
+            .background(colors.surfaceHover.copy(alpha = 0.45f))
+            .border(1.dp, colors.border.copy(alpha = 0.7f), RoundedCornerShape(11.dp))
+            .padding(horizontal = 9.dp, vertical = 8.dp)
+    ) {
+        Text(
+            label.uppercase(),
+            color = colors.textMuted,
+            fontFamily = LocalKarenType.current.mono,
+            fontSize = 8.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 0.8.sp,
+            maxLines = 1
+        )
+        Spacer(Modifier.height(2.dp))
+        Text(
+            value,
+            color = tint,
+            fontSize = 17.sp,
+            fontWeight = FontWeight.Bold,
+            fontFamily = LocalKarenType.current.mono,
+            maxLines = 1
+        )
+        if (unit.isNotBlank()) {
+            Text(
+                unit,
+                color = colors.textMuted,
+                fontSize = 8.5.sp,
+                fontFamily = LocalKarenType.current.mono,
+                maxLines = 1
+            )
+        }
+    }
+}
+
+/** Section heading with a small colored icon tile and optional right-side data. */
+@Composable
+fun KSectionHeader(
+    kicker: String,
+    icon: ImageVector,
+    tone: Color,
+    trailing: String? = null,
+    modifier: Modifier = Modifier
+) {
+    val colors = LocalKarenColors.current
+    Row(
+        modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            Modifier
+                .size(26.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(tone.copy(alpha = 0.12f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(icon, contentDescription = null, tint = tone, modifier = Modifier.size(14.dp))
+        }
+        Spacer(Modifier.width(8.dp))
+        Text(
+            kicker.uppercase(),
+            color = colors.textSecondary,
+            fontSize = 10.5.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 0.9.sp,
+            modifier = Modifier.weight(1f)
+        )
+        if (!trailing.isNullOrBlank()) {
+            Spacer(Modifier.width(8.dp))
+            Text(
+                trailing,
+                color = colors.textMuted,
+                fontFamily = LocalKarenType.current.mono,
+                fontSize = 10.sp,
+                maxLines = 1
+            )
+        }
+    }
 }
 
 /**

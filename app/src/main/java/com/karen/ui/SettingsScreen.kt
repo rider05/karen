@@ -29,6 +29,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
@@ -88,21 +89,11 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
             .fillMaxSize()
             .background(colors.background)
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                // Scaffold already applies the status-bar inset — keep only a
-                // small margin so the header sits at the same height as the
-                // shared ChatGPTTopAppBar used elsewhere.
-                .padding(top = 6.dp)
-                .padding(horizontal = 8.dp, vertical = 2.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            IconButton(onClick = onBack) {
-                Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = colors.textPrimary)
-            }
-            Text("Settings", color = colors.textPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-        }
+        ChatGPTTopAppBar(
+            selectedModel = "Settings",
+            onBackClick = onBack,
+            showMenu = false
+        )
 
         LazyColumn(
             modifier = Modifier
@@ -112,14 +103,72 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             item {
-                Text("Profile", color = colors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                val keyedProviders = allCloudProviders(context).count { UserPrefs.apiKey(context, it.id).isNotBlank() }
+                KHero(
+                    kicker = "Settings // local control",
+                    title = "Sovereign settings",
+                    subtitle = "Keys, models, voice and routing preferences stay on this phone. Nothing here is synced.",
+                    icon = Icons.Default.Tune,
+                    tone = colors.accentGreen,
+                    status = "LOCAL",
+                    statusTone = KTone.Success
+                ) {
+                    Spacer(Modifier.height(14.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        KHeroStat(
+                            label = "Profile",
+                            value = UserPrefs.name(context),
+                            unit = UserPrefs.type(context),
+                            tint = colors.accentGreen,
+                            modifier = Modifier.weight(1f)
+                        )
+                        KHeroStat(
+                            label = "Theme",
+                            value = when (currentMode) {
+                                KarenThemeMode.OLED -> "OLED"
+                                KarenThemeMode.CHARCOAL -> "Charcoal"
+                                KarenThemeMode.LIGHT -> "Light"
+                            },
+                            unit = "appearance",
+                            tint = colors.accentBlue,
+                            modifier = Modifier.weight(1f)
+                        )
+                        KHeroStat(
+                            label = "Keys",
+                            value = "$keyedProviders",
+                            unit = "providers",
+                            tint = colors.accentAmber,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Default.Lock,
+                            contentDescription = null,
+                            tint = colors.accentGreen,
+                            modifier = Modifier.size(13.dp)
+                        )
+                        Spacer(Modifier.width(5.dp))
+                        Text(
+                            "Encrypted at rest · no telemetry",
+                            color = colors.textSecondary,
+                            fontSize = 11.sp,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                }
+            }
+
+            item {
+                SettingsSectionLabel("Profile", Icons.Default.Person, colors.accentGreen, UserPrefs.type(context))
                 Spacer(Modifier.height(6.dp))
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(14.dp))
+                        .clip(RoundedCornerShape(18.dp))
                         .background(colors.surface)
-                        .border(1.dp, colors.border, RoundedCornerShape(14.dp))
+                        .border(1.dp, colors.border, RoundedCornerShape(18.dp))
                         .padding(14.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
@@ -169,14 +218,19 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
             }
 
             item {
-                Text("Appearance", color = colors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                SettingsSectionLabel(
+                    "Appearance",
+                    Icons.Default.Palette,
+                    colors.accentBlue,
+                    if (currentMode == KarenThemeMode.LIGHT) "LIGHT" else "DARK"
+                )
                 Spacer(Modifier.height(6.dp))
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(14.dp))
+                        .clip(RoundedCornerShape(18.dp))
                         .background(colors.surface)
-                        .border(1.dp, colors.border, RoundedCornerShape(14.dp))
+                        .border(1.dp, colors.border, RoundedCornerShape(18.dp))
                         .padding(14.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
@@ -196,7 +250,7 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
             }
 
             item {
-                Text("Performance", color = colors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                SettingsSectionLabel("Performance", Icons.Default.Speed, colors.accentGreen, "ON-DEVICE")
                 Spacer(Modifier.height(6.dp))
                 var gpuAcceleration by remember { mutableStateOf(true) }
                 var cpuThreads by remember { mutableStateOf(Runtime.getRuntime().availableProcessors().toFloat()) }
@@ -207,9 +261,9 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(14.dp))
+                        .clip(RoundedCornerShape(18.dp))
                         .background(colors.surface)
-                        .border(1.dp, colors.border, RoundedCornerShape(14.dp))
+                        .border(1.dp, colors.border, RoundedCornerShape(18.dp))
                         .padding(14.dp),
                     verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
@@ -646,16 +700,16 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
             }
 
             item {
-                Text("General", color = colors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                SettingsSectionLabel("General", Icons.Default.Tune, colors.accentBlue, "2 SWITCHES")
                 Spacer(Modifier.height(6.dp))
                 var saveHistory by remember { mutableStateOf(true) }
                 var haptics by remember { mutableStateOf(true) }
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(14.dp))
+                        .clip(RoundedCornerShape(18.dp))
                         .background(colors.surface)
-                        .border(1.dp, colors.border, RoundedCornerShape(14.dp))
+                        .border(1.dp, colors.border, RoundedCornerShape(18.dp))
                         .padding(14.dp),
                     verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
@@ -713,7 +767,7 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
             }
 
             item {
-                Text("Privacy", color = colors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                SettingsSectionLabel("Privacy", Icons.Default.Shield, colors.accentGreen, "LOCAL")
                 Spacer(Modifier.height(6.dp))
                 var incognito by remember { mutableStateOf(false) }
                 var wipeOnExit by remember { mutableStateOf(false) }
@@ -721,9 +775,9 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(14.dp))
+                        .clip(RoundedCornerShape(18.dp))
                         .background(colors.surface)
-                        .border(1.dp, colors.border, RoundedCornerShape(14.dp))
+                        .border(1.dp, colors.border, RoundedCornerShape(18.dp))
                         .padding(14.dp),
                     verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
@@ -865,7 +919,7 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
             }
 
             item {
-                Text("Voice & Speech", color = colors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                SettingsSectionLabel("Voice & Speech", Icons.Default.GraphicEq, colors.accentAmber, "ON-DEVICE")
                 Spacer(Modifier.height(6.dp))
                 var speakResponses by remember { mutableStateOf(false) }
                 var continuousListening by remember { mutableStateOf(false) }
@@ -936,9 +990,9 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(14.dp))
+                        .clip(RoundedCornerShape(18.dp))
                         .background(colors.surface)
-                        .border(1.dp, colors.border, RoundedCornerShape(14.dp))
+                        .border(1.dp, colors.border, RoundedCornerShape(18.dp))
                         .padding(14.dp),
                     verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
@@ -1351,7 +1405,7 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
             }
 
             item {
-                Text("Calls", color = colors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                SettingsSectionLabel("Calls", Icons.Default.Phone, colors.accentBlue, "PERMISSIONED")
                 Spacer(Modifier.height(6.dp))
                 var callMode by remember { mutableStateOf(UserPrefs.callBehavior(context)) }
                 var callPermOk by remember {
@@ -1371,9 +1425,9 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(14.dp))
+                        .clip(RoundedCornerShape(18.dp))
                         .background(colors.surface)
-                        .border(1.dp, colors.border, RoundedCornerShape(14.dp))
+                        .border(1.dp, colors.border, RoundedCornerShape(18.dp))
                         .padding(14.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
@@ -1421,16 +1475,16 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
             }
 
             item {
-                Text("Memory", color = colors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                SettingsSectionLabel("Memory", Icons.Default.Memory, colors.accentGreen, "RAM")
                 Spacer(Modifier.height(6.dp))
                 val device = com.karen.rememberDeviceTelemetry()
                 var maxRamMb by remember { mutableStateOf((device.totalRamGb * 1024.0 * 0.5).coerceAtLeast(512.0).toFloat()) }
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(14.dp))
+                        .clip(RoundedCornerShape(18.dp))
                         .background(colors.surface)
-                        .border(1.dp, colors.border, RoundedCornerShape(14.dp))
+                        .border(1.dp, colors.border, RoundedCornerShape(18.dp))
                         .padding(14.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
@@ -1470,7 +1524,7 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
             }
 
             item {
-                Text("Storage", color = colors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                SettingsSectionLabel("Storage", Icons.Default.Folder, colors.accentAmber, "VAULT")
                 Spacer(Modifier.height(6.dp))
                 var autoIndex by remember { mutableStateOf(true) }
                 var workspaceUri by remember { mutableStateOf(UserPrefs.workspaceUri(context)) }
@@ -1488,9 +1542,9 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(14.dp))
+                        .clip(RoundedCornerShape(18.dp))
                         .background(colors.surface)
-                        .border(1.dp, colors.border, RoundedCornerShape(14.dp))
+                        .border(1.dp, colors.border, RoundedCornerShape(18.dp))
                         .padding(14.dp),
                     verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
@@ -1532,15 +1586,15 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
             }
 
             item {
-                Text("Project Manager", color = colors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                SettingsSectionLabel("Project Manager", Icons.Default.Work, colors.accentBlue, "PROJECTS")
                 Spacer(Modifier.height(6.dp))
                 var storedProjects by remember { mutableStateOf(UserPrefs.projects(context)) }
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(14.dp))
+                        .clip(RoundedCornerShape(18.dp))
                         .background(colors.surface)
-                        .border(1.dp, colors.border, RoundedCornerShape(14.dp))
+                        .border(1.dp, colors.border, RoundedCornerShape(18.dp))
                         .padding(14.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
@@ -1572,7 +1626,12 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
             }
 
             item {
-                Text("Local Server", color = colors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                SettingsSectionLabel(
+                    "Local Server",
+                    Icons.Default.Dns,
+                    colors.accentGreen,
+                    if (LocalApiServer.running) "RUNNING" else "STOPPED"
+                )
                 Spacer(Modifier.height(6.dp))
                 var serverOn by remember { mutableStateOf(LocalApiServer.running) }
                 var serverPortText by remember { mutableStateOf(UserPrefs.serverPort(context).toString()) }
@@ -1588,9 +1647,9 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(14.dp))
+                        .clip(RoundedCornerShape(18.dp))
                         .background(colors.surface)
-                        .border(1.dp, colors.border, RoundedCornerShape(14.dp))
+                        .border(1.dp, colors.border, RoundedCornerShape(18.dp))
                         .padding(14.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
@@ -1853,14 +1912,14 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
             }
 
             item {
-                Text("Updates", color = colors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                SettingsSectionLabel("Updates", Icons.Default.SystemUpdate, colors.accentBlue, AppUpdate.currentVersion(context))
                 Spacer(Modifier.height(6.dp))
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(14.dp))
+                        .clip(RoundedCornerShape(18.dp))
                         .background(colors.surface)
-                        .border(1.dp, colors.border, RoundedCornerShape(14.dp))
+                        .border(1.dp, colors.border, RoundedCornerShape(18.dp))
                         .padding(14.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
@@ -2081,14 +2140,14 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
             }
 
             item {
-                Text("About", color = colors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                SettingsSectionLabel("About", Icons.Default.Info, colors.accentAmber, AppUpdate.currentVersion(context))
                 Spacer(Modifier.height(6.dp))
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(14.dp))
+                        .clip(RoundedCornerShape(18.dp))
                         .background(colors.surface)
-                        .border(1.dp, colors.border, RoundedCornerShape(14.dp))
+                        .border(1.dp, colors.border, RoundedCornerShape(18.dp))
                         .padding(14.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
@@ -2291,6 +2350,51 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun SettingsSectionLabel(
+    kicker: String,
+    icon: ImageVector,
+    tint: Color,
+    trailing: String? = null
+) {
+    val colors = LocalKarenColors.current
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(26.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(tint.copy(alpha = 0.12f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(14.dp))
+        }
+        Spacer(Modifier.width(8.dp))
+        Text(
+            kicker.uppercase(),
+            color = colors.textSecondary,
+            fontSize = 10.5.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 0.9.sp,
+            modifier = Modifier.weight(1f)
+        )
+        if (!trailing.isNullOrBlank()) {
+            Spacer(Modifier.width(8.dp))
+            Text(
+                trailing.uppercase(),
+                color = colors.textMuted,
+                fontSize = 9.5.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 0.5.sp,
+                fontFamily = FontFamily.Monospace,
+                maxLines = 1
+            )
         }
     }
 }

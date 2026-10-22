@@ -35,27 +35,16 @@ fun OnboardingScreen(onDone: () -> Unit = {}) {
             .padding(24.dp),
         contentAlignment = Alignment.Center
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(20.dp))
-                .background(colors.surface)
-                .border(1.dp, colors.border, RoundedCornerShape(20.dp))
-                .padding(24.dp)
+        KHero(
+            kicker = "Onboarding // local profile",
+            title = "Welcome to Karen",
+            subtitle = "Tell me a little about yourself — stored only on this device.",
+            icon = Icons.Default.Psychology,
+            tone = colors.accentGreen,
+            status = "LOCAL ONLY",
+            statusTone = KTone.Success
         ) {
-            Box(
-                modifier = Modifier
-                    .size(56.dp)
-                    .clip(CircleShape)
-                    .background(colors.accentGreen.copy(alpha = 0.15f)),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(Icons.Default.Psychology, contentDescription = null, tint = colors.accentGreen, modifier = Modifier.size(28.dp))
-            }
-            Spacer(Modifier.height(16.dp))
-            Text("Welcome to Karen", color = colors.textPrimary, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-            Text("Tell me a little about yourself — stored only on this device.", color = colors.textMuted, fontSize = 12.5.sp, modifier = Modifier.padding(top = 4.dp))
-            Spacer(Modifier.height(20.dp))
+            Spacer(Modifier.height(18.dp))
 
             OutlinedTextField(
                 value = name,
@@ -84,9 +73,9 @@ fun OnboardingScreen(onDone: () -> Unit = {}) {
                             val selected = type == t
                             Box(
                                 modifier = Modifier
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .background(if (selected) colors.accentGreen.copy(alpha = 0.2f) else colors.surfaceHover)
-                                    .border(1.dp, if (selected) colors.accentGreen else colors.border, RoundedCornerShape(10.dp))
+                                    .clip(RoundedCornerShape(999.dp))
+                                    .background(if (selected) colors.accentGreen.copy(alpha = 0.16f) else colors.surfaceHover)
+                                    .border(1.dp, if (selected) colors.accentGreen.copy(alpha = 0.7f) else colors.border, RoundedCornerShape(999.dp))
                                     .clickable { type = t }
                                     .padding(horizontal = 14.dp, vertical = 8.dp)
                             ) {
@@ -105,11 +94,13 @@ fun OnboardingScreen(onDone: () -> Unit = {}) {
                     }
                 },
                 enabled = name.isNotBlank(),
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(46.dp),
+                shape = RoundedCornerShape(999.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = colors.accentGreen, contentColor = Color.White)
             ) {
-                Text("Continue", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                Text("Continue", fontSize = 14.sp, fontWeight = FontWeight.Bold)
             }
         }
     }

@@ -159,6 +159,7 @@ fun KarenHomeBackHandler(
 fun ChatGPTTopAppBar(
     selectedModel: String = "Qwen 3.5 2B",
     onMenuClick: () -> Unit = {},
+    showMenu: Boolean = true,
     onModelClick: () -> Unit = {},
     onNewChatClick: () -> Unit = {},
     onMoreClick: () -> Unit = {},
@@ -207,13 +208,15 @@ fun ChatGPTTopAppBar(
                     }
                 }
 
-                KIconButton(onClick = onMenuClick) {
-                    Icon(
-                        imageVector = Icons.Default.Menu,
-                        contentDescription = "Open navigation",
-                        tint = colors.textSecondary,
-                        modifier = Modifier.size(24.dp)
-                    )
+                if (showMenu) {
+                    KIconButton(onClick = onMenuClick) {
+                        Icon(
+                            imageVector = Icons.Default.Menu,
+                            contentDescription = "Open navigation",
+                            tint = colors.textSecondary,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
                 }
             }
 

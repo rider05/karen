@@ -104,7 +104,12 @@ fun FlowchartScreen(
             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 40.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            item { FlowchartHero() }
+            item {
+                FlowchartHero(
+                    nodeCount = data.nodes.size,
+                    linkCount = data.edges.size
+                )
+            }
 
             item {
                 FlowchartControls(
@@ -155,43 +160,41 @@ fun FlowchartScreen(
 }
 
 @Composable
-private fun FlowchartHero() {
+private fun FlowchartHero(nodeCount: Int, linkCount: Int) {
     val colors = LocalKarenColors.current
-    val type = LocalKarenType.current
-    Column {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                modifier = Modifier
-                    .size(6.dp)
-                    .clip(CircleShape)
-                    .background(colors.accentGreen)
+    KHero(
+        kicker = "Intelligent flow // live map",
+        title = "Task pipeline",
+        subtitle = "A live map of one turn through Karen. Nodes, arrows and branches are rendered from configurable data — nothing is a screenshot.",
+        icon = Icons.Default.AccountTree,
+        tone = colors.accentBlue,
+        status = "LIVE MAP",
+        statusTone = KTone.Blue
+    ) {
+        Spacer(Modifier.height(14.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            KHeroStat(
+                label = "Nodes",
+                value = "$nodeCount",
+                unit = "rendered",
+                tint = colors.accentBlue,
+                modifier = Modifier.weight(1f)
             )
-            Spacer(Modifier.width(7.dp))
-            Text(
-                text = "INTELLIGENT FLOW",
-                color = colors.accentGreen,
-                fontFamily = type.mono,
-                fontSize = 10.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 1.3.sp
+            KHeroStat(
+                label = "Links",
+                value = "$linkCount",
+                unit = "edges",
+                tint = colors.accentGreen,
+                modifier = Modifier.weight(1f)
+            )
+            KHeroStat(
+                label = "Runtime",
+                value = "ON-DEVICE",
+                unit = "no cloud",
+                tint = colors.accentAmber,
+                modifier = Modifier.weight(1f)
             )
         }
-        Spacer(Modifier.height(8.dp))
-        Text(
-            text = "Task pipeline",
-            color = colors.textPrimary,
-            fontSize = 25.sp,
-            lineHeight = 31.sp,
-            fontWeight = FontWeight.SemiBold,
-            letterSpacing = (-0.4).sp
-        )
-        Spacer(Modifier.height(5.dp))
-        Text(
-            text = "A live map of one turn through Karen. Nodes, arrows, and branches are rendered from configurable data — nothing is a screenshot.",
-            color = colors.textSecondary,
-            fontSize = 12.5.sp,
-            lineHeight = 18.sp
-        )
     }
 }
 
@@ -214,7 +217,7 @@ private fun FlowchartControls(
         OutlinedButton(
             onClick = onAnimate,
             enabled = !animating,
-            shape = RoundedCornerShape(12.dp),
+            shape = RoundedCornerShape(999.dp),
             border = BorderStroke(1.dp, colors.accentBlue.copy(alpha = 0.45f)),
             colors = ButtonDefaults.outlinedButtonColors(
                 contentColor = colors.accentBlue,
@@ -256,9 +259,9 @@ private fun OrientationToggle(
     val colors = LocalKarenColors.current
     Row(
         modifier = Modifier
-            .clip(RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(999.dp))
             .background(colors.surface)
-            .border(1.dp, colors.border, RoundedCornerShape(12.dp))
+            .border(1.dp, colors.border, RoundedCornerShape(999.dp))
             .padding(3.dp)
             .selectableGroup()
     ) {
@@ -266,7 +269,7 @@ private fun OrientationToggle(
             val active = mode == orientation
             Box(
                 modifier = Modifier
-                    .clip(RoundedCornerShape(9.dp))
+                    .clip(RoundedCornerShape(999.dp))
                     .background(if (active) colors.accentGreen else Color.Transparent)
                     .selectable(
                         selected = active,
@@ -363,15 +366,13 @@ private fun FlowchartLegend() {
     val colors = LocalKarenColors.current
     val type = LocalKarenType.current
     Column {
-        Text(
-            text = "STATUS",
-            color = colors.textMuted,
-            fontFamily = type.mono,
-            fontSize = 9.5.sp,
-            fontWeight = FontWeight.Bold,
-            letterSpacing = 0.9.sp
+        KSectionHeader(
+            kicker = "Status legend",
+            icon = Icons.Default.Tune,
+            tone = colors.accentGreen,
+            trailing = "${FlowchartNodeStatus.values().size} states"
         )
-        Spacer(Modifier.height(7.dp))
+        Spacer(Modifier.height(8.dp))
         FlowRow(
             horizontalArrangement = Arrangement.spacedBy(14.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp)

@@ -200,7 +200,7 @@ fun KarenApp(startScreen: String = "Home", shakeSignal: Int = 0) {
             drawerContent = {
                 ModalDrawerSheet(
                     drawerContainerColor = colors.drawerBackground,
-                    drawerShape = RoundedCornerShape(topEnd = 16.dp, bottomEnd = 16.dp)
+                    drawerShape = RoundedCornerShape(topEnd = 24.dp, bottomEnd = 24.dp)
                 ) {
                     ChatGPTDrawerContent(
                         currentScreen = currentScreen,

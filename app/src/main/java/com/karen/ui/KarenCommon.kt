@@ -32,7 +32,10 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -2631,9 +2634,7 @@ fun AttachmentSheet(
     }
 }
 
-/**
- * Slide-out Navigation Drawer matching ChatGPT Mobile
- */
+/** Compact mono section rail shared by the drawer's collapsible groups. */
 @Composable
 private fun DrawerSectionHeader(
     title: String,
@@ -2644,20 +2645,31 @@ private fun DrawerSectionHeader(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
+            .clip(RoundedCornerShape(10.dp))
             .clickable { onToggle() }
-            .padding(vertical = 6.dp),
+            .padding(start = 4.dp, end = 4.dp, top = 8.dp, bottom = 6.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(
-            text = title,
-            color = colors.textMuted,
-            fontSize = 11.sp,
-            fontWeight = FontWeight.SemiBold
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier
+                    .size(width = 12.dp, height = 2.dp)
+                    .clip(CircleShape)
+                    .background(colors.accentGreen.copy(alpha = 0.5f))
+            )
+            Spacer(Modifier.width(7.dp))
+            Text(
+                text = title.uppercase(),
+                color = colors.textMuted,
+                fontFamily = LocalKarenType.current.mono,
+                fontSize = 8.5.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 1.sp
+            )
+        }
         Icon(
-            imageVector = if (collapsed) Icons.Default.KeyboardArrowDown else Icons.Default.KeyboardArrowRight,
+            imageVector = if (collapsed) Icons.Default.ExpandMore else Icons.Default.ExpandLess,
             contentDescription = if (collapsed) "Expand $title" else "Collapse $title",
             tint = colors.textMuted,
             modifier = Modifier.size(16.dp)
@@ -2665,9 +2677,7 @@ private fun DrawerSectionHeader(
     }
 }
 
-/**
- * Slide-out Navigation Drawer matching ChatGPT Mobile
- */
+/** Flat local-thread row; deliberately quieter than the capability tiles. */
 @Composable
 private fun DrawerConversationRow(
     convo: ChatConversation,
@@ -2680,36 +2690,53 @@ private fun DrawerConversationRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 2.dp)
+            .padding(vertical = 1.dp)
             .clip(RoundedCornerShape(10.dp))
-            .background(Color.Transparent)
             .clickable {
                 onOpenConversation(convo.id)
                 onCloseDrawer()
             }
-            .padding(start = 10.dp, top = 8.dp, bottom = 8.dp, end = 4.dp),
+            .padding(start = 4.dp, top = 6.dp, bottom = 6.dp, end = 2.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        Box(
+            modifier = Modifier
+                .size(28.dp)
+                .clip(RoundedCornerShape(9.dp))
+                .background(colors.surface.copy(alpha = 0.7f))
+                .border(1.dp, colors.border.copy(alpha = 0.55f), RoundedCornerShape(9.dp)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                Icons.AutoMirrored.Filled.Chat,
+                contentDescription = null,
+                tint = colors.textMuted,
+                modifier = Modifier.size(14.dp)
+            )
+        }
+        Spacer(Modifier.width(9.dp))
         Column(Modifier.weight(1f)) {
             Text(
                 convo.title,
                 color = colors.textSecondary,
-                fontSize = 13.sp,
-                maxLines = 1
+                fontSize = 12.5.sp,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
             )
             Text(
                 dateFmt.format(java.util.Date(convo.updatedAt)),
                 color = colors.textMuted,
                 fontFamily = FontFamily.Monospace,
-                fontSize = 10.sp,
+                fontSize = 9.sp,
                 maxLines = 1
             )
         }
         IconButton(
             onClick = { onDeleteConversation(convo.id) },
-            modifier = Modifier.size(30.dp)
+            modifier = Modifier.size(28.dp)
         ) {
-            Icon(Icons.Default.DeleteOutline, contentDescription = "Delete chat", tint = colors.textMuted, modifier = Modifier.size(15.dp))
+            Icon(Icons.Default.DeleteOutline, contentDescription = "Delete chat", tint = colors.textMuted, modifier = Modifier.size(14.dp))
         }
     }
 }
@@ -2725,11 +2752,23 @@ fun ChatGPTDrawerContent(
     onNewChat: () -> Unit = {}
 ) {
     val colors = LocalKarenColors.current
+    val type = LocalKarenType.current
     val currentMode = LocalKarenThemeMode.current
+    val glowAlpha = if (colors.isDark) 0.10f else 0.04f
     var searchQuery by remember { mutableStateOf("") }
     var toolsCollapsed by remember { mutableStateOf(true) }
     var managersCollapsed by remember { mutableStateOf(true) }
     var historyCollapsed by remember { mutableStateOf(true) }
+    // A deep route must be visible when the drawer opens, even though the
+    // section's default state only previews its first three entries.
+    LaunchedEffect(currentScreen) {
+        when (currentScreen) {
+            "Flowchart", "Files", "Memory", "ModelManager", "Nodes", "Performance", "Hardware" ->
+                toolsCollapsed = false
+            "BackupPackage", "StorageManager", "Migration" ->
+                managersCollapsed = false
+        }
+    }
     val drawerCtx = androidx.compose.ui.platform.LocalContext.current
     val conversations = remember(historyVersion) { ChatHistoryStore.loadConversations(drawerCtx) }
     val visibleConversations = remember(conversations, searchQuery) {
@@ -2737,89 +2776,204 @@ fun ChatGPTDrawerContent(
         else conversations.filter { it.title.contains(searchQuery, ignoreCase = true) }
     }
 
-    Column(
+    Box(
         modifier = Modifier
             .fillMaxHeight()
-            .width(320.dp)
+            .width(328.dp)
             .background(colors.drawerBackground)
-            .statusBarsPadding()
-            .padding(16.dp)
+            .drawBehind {
+                val radius = size.width * 1.05f
+                val center = Offset(size.width * 0.92f, size.height * 0.02f)
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colors = listOf(colors.accentGreen.copy(alpha = glowAlpha), Color.Transparent),
+                        center = center,
+                        radius = radius
+                    ),
+                    radius = radius,
+                    center = center
+                )
+            }
     ) {
-        // Top Header
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                .padding(start = 14.dp, end = 14.dp, top = 12.dp, bottom = 12.dp)
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            // Brand lockup: the drawer reads as a local control surface, not a menu.
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clip(RoundedCornerShape(13.dp))
+                            .background(
+                                Brush.linearGradient(
+                                    listOf(
+                                        colors.accentGreen.copy(alpha = 0.24f),
+                                        colors.accentBlue.copy(alpha = 0.08f)
+                                    )
+                                )
+                            )
+                            .border(
+                                1.dp,
+                                colors.accentGreen.copy(alpha = 0.35f),
+                                RoundedCornerShape(13.dp)
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Psychology,
+                            contentDescription = "Karen Logo",
+                            tint = colors.accentGreen,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+                    Spacer(Modifier.width(10.dp))
+                    Column {
+                        Text(
+                            text = "KAREN",
+                            color = colors.textPrimary,
+                            fontFamily = type.mono,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 2.sp
+                        )
+                        Text(
+                            text = "SOVEREIGN CORE",
+                            color = colors.textMuted,
+                            fontFamily = type.mono,
+                            fontSize = 8.sp,
+                            fontWeight = FontWeight.Medium,
+                            letterSpacing = 1.1.sp
+                        )
+                    }
+                }
+                Box(
+                    modifier = Modifier
+                        .size(32.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(colors.surfaceHover.copy(alpha = 0.4f))
+                        .border(1.dp, colors.border, RoundedCornerShape(10.dp))
+                        .clickable { onCloseDrawer() },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Default.Close,
+                        contentDescription = "Close drawer",
+                        tint = colors.textMuted,
+                        modifier = Modifier.size(17.dp)
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(14.dp))
+
+            // Local conversation search
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(42.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(colors.surface)
+                    .border(1.dp, colors.border, RoundedCornerShape(12.dp))
+                    .padding(start = 11.dp, end = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Icon(
-                    imageVector = Icons.Default.Psychology,
-                    contentDescription = "Karen Logo",
-                    tint = colors.accentGreen,
-                    modifier = Modifier.size(24.dp)
+                    Icons.Default.Search,
+                    contentDescription = "Search",
+                    tint = colors.textMuted,
+                    modifier = Modifier.size(16.dp)
                 )
                 Spacer(Modifier.width(8.dp))
+                BasicTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    singleLine = true,
+                    textStyle = TextStyle(color = colors.textPrimary, fontSize = 12.5.sp),
+                    cursorBrush = SolidColor(colors.accentGreen),
+                    modifier = Modifier.weight(1f),
+                    decorationBox = { innerTextField ->
+                        if (searchQuery.isEmpty()) {
+                            Text("Search local conversations", color = colors.textMuted, fontSize = 12.5.sp)
+                        }
+                        innerTextField()
+                    }
+                )
+                if (searchQuery.isNotEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .size(26.dp)
+                            .clip(CircleShape)
+                            .clickable { searchQuery = "" },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            Icons.Default.Close,
+                            contentDescription = "Clear search",
+                            tint = colors.textMuted,
+                            modifier = Modifier.size(14.dp)
+                        )
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(9.dp))
+
+            // Primary action: solid accent so it reads before the nav rail.
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(44.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(colors.accentGreen)
+                    .clickable {
+                        onNewChat()
+                        onCloseDrawer()
+                    }
+                    .padding(horizontal = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(22.dp)
+                        .clip(RoundedCornerShape(7.dp))
+                        .background(Color.White.copy(alpha = 0.16f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Default.Add,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
+                Spacer(Modifier.width(9.dp))
                 Text(
-                    text = "Karen Intelligence",
-                    color = colors.textPrimary,
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.Bold
+                    "New chat",
+                    color = Color.White,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Spacer(Modifier.weight(1f))
+                Text(
+                    "THREAD",
+                    color = Color.White.copy(alpha = 0.72f),
+                    fontFamily = type.mono,
+                    fontSize = 8.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.sp
                 )
             }
-            IconButton(onClick = onCloseDrawer) {
-                Icon(Icons.Default.Close, contentDescription = "Close drawer", tint = colors.textMuted)
-            }
-        }
 
-        Spacer(Modifier.height(12.dp))
-
-        // Search Bar
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(12.dp))
-                .background(colors.surface)
-                .border(1.dp, colors.border, RoundedCornerShape(12.dp))
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(Icons.Default.Search, contentDescription = "Search", tint = colors.textMuted, modifier = Modifier.size(18.dp))
-            Spacer(Modifier.width(8.dp))
-            BasicTextField(
-                value = searchQuery,
-                onValueChange = { searchQuery = it },
-                textStyle = TextStyle(color = colors.textPrimary, fontSize = 13.5.sp),
-                modifier = Modifier.weight(1f),
-                decorationBox = { innerTextField ->
-                    if (searchQuery.isEmpty()) {
-                        Text("Search conversations...", color = colors.textMuted, fontSize = 13.5.sp)
-                    }
-                    innerTextField()
-                }
-            )
-        }
-
-        Spacer(Modifier.height(10.dp))
-
-        // New Chat Button
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(12.dp))
-                .background(colors.surfaceHover)
-                .clickable {
-                    onNewChat()
-                    onCloseDrawer()
-                }
-                .padding(horizontal = 14.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(Icons.Default.Add, contentDescription = "New chat", tint = colors.textPrimary, modifier = Modifier.size(18.dp))
-            Spacer(Modifier.width(10.dp))
-            Text("New chat", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold)
-        }
-
-        Spacer(Modifier.height(14.dp))
+            Spacer(Modifier.height(12.dp))
 
         // Scrollable Navigation Items
         LazyColumn(
@@ -2912,9 +3066,10 @@ fun ChatGPTDrawerContent(
                     collapsed = historyCollapsed,
                     onToggle = { historyCollapsed = !historyCollapsed }
                 )
-                // Collapsed history still previews the three newest chats.
+                // Collapsed history previews the newest chats; a search always
+                // expands the list so every local match is reachable.
                 Column {
-                    if (historyCollapsed) {
+                    if (historyCollapsed && searchQuery.isBlank()) {
                         val flatFmt = java.text.SimpleDateFormat("dd MMM, HH:mm", java.util.Locale.getDefault())
                         if (visibleConversations.isEmpty()) {
                             Text(
@@ -2935,7 +3090,7 @@ fun ChatGPTDrawerContent(
                             }
                         }
                     } else {
-                AnimatedVisibility(visible = !historyCollapsed) {
+                AnimatedVisibility(visible = true) {
                     Column {
                         if (visibleConversations.isEmpty()) {
                     Text(
@@ -2958,11 +3113,13 @@ fun ChatGPTDrawerContent(
                     groups.forEach { (label, items) ->
                         if (items.isNotEmpty()) {
                             Text(
-                                label,
+                                label.uppercase(),
                                 color = colors.textMuted,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                modifier = Modifier.padding(vertical = 6.dp)
+                                fontFamily = type.mono,
+                                fontSize = 8.sp,
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 0.8.sp,
+                                modifier = Modifier.padding(start = 4.dp, top = 6.dp, bottom = 3.dp)
                             )
                             items.take(30).forEach { convo ->
                                 DrawerConversationRow(
@@ -2984,21 +3141,25 @@ fun ChatGPTDrawerContent(
                 Spacer(Modifier.height(12.dp))
             }
 
-            // Theme Switcher Section
+            // Appearance control, kept as a card so it reads as a display setting.
             item {
                 Text(
-                    "Theme & Appearance",
+                    "APPEARANCE // DISPLAY",
                     color = colors.textMuted,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.padding(vertical = 6.dp)
+                    fontFamily = type.mono,
+                    fontSize = 8.5.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.sp,
+                    modifier = Modifier.padding(start = 4.dp, top = 4.dp, bottom = 6.dp)
                 )
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(colors.surface)
-                        .border(1.dp, colors.border, RoundedCornerShape(12.dp))
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(
+                            Brush.verticalGradient(listOf(colors.surface, colors.cardBackground))
+                        )
+                        .border(1.dp, colors.border, RoundedCornerShape(14.dp))
                         .clickable {
                             if (currentMode == KarenThemeMode.OLED) {
                                 KarenThemeState.setMode(KarenThemeMode.CHARCOAL)
@@ -3008,35 +3169,37 @@ fun ChatGPTDrawerContent(
                                 KarenThemeState.setMode(KarenThemeMode.OLED)
                             }
                         }
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                        .padding(horizontal = 10.dp, vertical = 9.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = if (currentMode == KarenThemeMode.LIGHT) Icons.Default.LightMode else Icons.Default.DarkMode,
-                                contentDescription = "Mode",
-                                tint = colors.accentAmber,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(Modifier.width(6.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        KIconTile(
+                            icon = if (currentMode == KarenThemeMode.LIGHT) Icons.Default.LightMode else Icons.Default.DarkMode,
+                            tint = colors.accentAmber,
+                            size = 28.dp,
+                            contentDescription = "Mode"
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Column {
                             Text(
-                                if (currentMode == KarenThemeMode.LIGHT) "Light Mode" else "Dark Mode",
+                                if (currentMode == KarenThemeMode.LIGHT) "Light surface" else "Dark surface",
                                 color = colors.textPrimary,
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Medium
+                                fontSize = 12.5.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = when (currentMode) {
+                                    KarenThemeMode.OLED -> "OLED BLACK · #000000"
+                                    KarenThemeMode.CHARCOAL -> "CHARCOAL · #212121"
+                                    KarenThemeMode.LIGHT -> "CLEAN LIGHT · #FFFFFF"
+                                },
+                                color = colors.textMuted,
+                                fontFamily = type.mono,
+                                fontSize = 8.5.sp,
+                                letterSpacing = 0.4.sp
                             )
                         }
-                        Text(
-                            text = when (currentMode) {
-                                KarenThemeMode.OLED -> "OLED Black (#000000)"
-                                KarenThemeMode.CHARCOAL -> "Charcoal (#212121)"
-                                KarenThemeMode.LIGHT -> "Clean Light (#FFFFFF)"
-                            },
-                            color = colors.textMuted,
-                            fontSize = 11.sp
-                        )
                     }
 
                     Switch(
@@ -3055,49 +3218,87 @@ fun ChatGPTDrawerContent(
 
         Spacer(Modifier.height(10.dp))
 
-        // Drawer Footer: User Profile Pill
+        // Footer identity card: profile jumps to Memory, gear to Settings.
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(12.dp))
-                .background(colors.surface)
-                .padding(10.dp),
+                .clip(RoundedCornerShape(16.dp))
+                .background(
+                    Brush.verticalGradient(listOf(colors.surface, colors.cardBackground))
+                )
+                .border(1.dp, colors.border, RoundedCornerShape(16.dp))
+                .padding(9.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
             Row(
                 modifier = Modifier
                     .weight(1f)
-                    .clickable { onNavigate("Memory"); onCloseDrawer() },
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable { onNavigate("Memory"); onCloseDrawer() }
+                    .padding(2.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Box(
                     modifier = Modifier
-                        .size(32.dp)
+                        .size(34.dp)
                         .clip(CircleShape)
-                        .background(colors.accentGreen),
+                        .background(
+                            Brush.linearGradient(
+                                listOf(colors.accentGreen, colors.accentBlue)
+                            )
+                        ),
                     contentAlignment = Alignment.Center
                 ) {
                     Text("A", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
                 }
-                Spacer(Modifier.width(8.dp))
+                Spacer(Modifier.width(9.dp))
                 Column {
-                    Text(UserPrefs.name(androidx.compose.ui.platform.LocalContext.current), color = colors.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                    Text("Karen Sovereign · 4B NPU", color = colors.textMuted, fontSize = 11.sp)
+                    Text(
+                        UserPrefs.name(drawerCtx),
+                        color = colors.textPrimary,
+                        fontSize = 12.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            Modifier
+                                .size(4.dp)
+                                .clip(CircleShape)
+                                .background(colors.accentSuccess)
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            "SOVEREIGN NODE · 4B NPU",
+                            color = colors.textMuted,
+                            fontFamily = type.mono,
+                            fontSize = 7.5.sp,
+                            letterSpacing = 0.3.sp,
+                            maxLines = 1
+                        )
+                    }
                 }
             }
-
-            IconButton(onClick = { KarenThemeState.toggleTheme() }, modifier = Modifier.size(32.dp)) {
+            Spacer(Modifier.width(6.dp))
+            Box(
+                modifier = Modifier
+                    .size(32.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(colors.surfaceHover.copy(alpha = 0.4f))
+                    .border(1.dp, colors.border, RoundedCornerShape(10.dp))
+                    .clickable { onNavigate("Settings"); onCloseDrawer() },
+                contentAlignment = Alignment.Center
+            ) {
                 Icon(
-                    imageVector = if (currentMode == KarenThemeMode.LIGHT) Icons.Default.DarkMode else Icons.Default.LightMode,
-                    contentDescription = "Toggle Theme",
-                    tint = colors.textMuted,
-                    modifier = Modifier.size(18.dp)
+                    Icons.Default.Settings,
+                    contentDescription = "Settings",
+                    tint = colors.textSecondary,
+                    modifier = Modifier.size(16.dp)
                 )
             }
-            IconButton(onClick = { onNavigate("Settings"); onCloseDrawer() }, modifier = Modifier.size(32.dp)) {
-                Icon(Icons.Default.Settings, contentDescription = "Settings", tint = colors.textMuted, modifier = Modifier.size(18.dp))
-            }
+        }
         }
     }
 }
@@ -3110,29 +3311,60 @@ private fun DrawerNavItem(
     onClick: () -> Unit
 ) {
     val colors = LocalKarenColors.current
+    val tint = if (isSelected) colors.accentGreen else colors.textMuted
+    val shape = RoundedCornerShape(12.dp)
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 3.dp)
-            .clip(RoundedCornerShape(10.dp))
-            .background(if (isSelected) colors.drawerItemHover else Color.Transparent)
+            .padding(vertical = 1.dp)
+            .clip(shape)
+            .background(if (isSelected) colors.accentGreen.copy(alpha = 0.09f) else Color.Transparent)
+            .border(
+                1.dp,
+                if (isSelected) colors.accentGreen.copy(alpha = 0.26f) else Color.Transparent,
+                shape
+            )
             .clickable { onClick() }
-            .padding(horizontal = 10.dp, vertical = 8.dp),
+            .padding(horizontal = 7.dp, vertical = 5.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = title,
-            tint = if (isSelected) colors.accentGreen else colors.textMuted,
-            modifier = Modifier.size(18.dp)
-        )
-        Spacer(Modifier.width(10.dp))
+        Box(
+            modifier = Modifier
+                .size(29.dp)
+                .clip(RoundedCornerShape(9.dp))
+                .background(tint.copy(alpha = if (isSelected) 0.14f else 0.06f))
+                .border(
+                    1.dp,
+                    tint.copy(alpha = if (isSelected) 0.30f else 0.14f),
+                    RoundedCornerShape(9.dp)
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = title,
+                tint = tint,
+                modifier = Modifier.size(15.dp)
+            )
+        }
+        Spacer(Modifier.width(9.dp))
         Text(
             text = title,
             color = if (isSelected) colors.textPrimary else colors.textSecondary,
-            fontSize = 13.sp,
-            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal
+            fontSize = 12.5.sp,
+            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+            maxLines = 1,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
         )
+        if (isSelected) {
+            Box(
+                Modifier
+                    .size(5.dp)
+                    .clip(CircleShape)
+                    .background(colors.accentGreen)
+            )
+        }
     }
 }
 

@@ -298,8 +298,8 @@ fun KNavigationDock(
                         destination.label.uppercase(),
                         color = tint,
                         fontFamily = type.mono,
-                        fontSize = 8.sp,
-                        lineHeight = 10.sp,
+                        fontSize = 9.sp,
+                        lineHeight = 11.sp,
                         letterSpacing = 0.5.sp,
                         fontWeight = FontWeight.Bold
                     )

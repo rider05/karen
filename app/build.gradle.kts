@@ -70,4 +70,8 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling:1.6.8")
     // ONNX Runtime: executes .onnx voice models on-device (Silero VAD).
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.22.0")
+
+    // Focused JVM tests for the search package (no Android runtime needed).
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
 }

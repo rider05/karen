@@ -71,6 +71,16 @@ object UserPrefs {
         prefs(ctx).edit().putBoolean(KEY_WEB_SEARCH_ENABLED, enabled).apply()
     }
 
+    // Optional SearXNG instance (blank = disabled). There is deliberately no
+    // bundled default: the URL is user-supplied, and many public instances do
+    // not enable the JSON API.
+    private const val KEY_SEARXNG_URL = "searxng_url"
+    fun searxngUrl(ctx: Context): String =
+        prefs(ctx).getString(KEY_SEARXNG_URL, "") ?: ""
+    fun setSearxngUrl(ctx: Context, url: String) {
+        prefs(ctx).edit().putString(KEY_SEARXNG_URL, url.trim().take(300)).apply()
+    }
+
     // Thermal guard: trip point that stops work. Defaults persist on-device.
     private const val KEY_THERMAL_GUARD = "thermal_guard"
     fun thermalGuard(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_THERMAL_GUARD, true)

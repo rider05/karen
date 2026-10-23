@@ -1972,9 +1972,7 @@ fun WorkspaceScreen(
             var web: String? = null
             if (UserPrefs.webSearchEnabled(ctx) && UserPrefs.webSearchAsked(ctx) && WebSearch.needsSearch(t)) {
                 web = try {
-                    WebSearch.searchWithKey(ctx, WebSearch.cleanQuery(t))
-                        .takeIf { it.isNotEmpty() }
-                        ?.let(WebSearch::formatForModel)
+                    WebSearch.agentContext(ctx, WebSearch.cleanQuery(t))
                 } catch (_: Exception) {
                     null
                 }
@@ -2022,7 +2020,7 @@ fun WorkspaceScreen(
                     }
                 }
                 val nodePairs = if (web != null) {
-                    (nodeHistory + ("user" to "Use these fresh web results where they help. ${WebSearch.GROUNDING_GUIDE}\n$web")).takeLast(localLimit)
+                    (nodeHistory + ("user" to "Use this web context where it helps. ${WebSearch.WEB_CONTEXT_RULE} ${WebSearch.GROUNDING_GUIDE}\n$web")).takeLast(localLimit)
                 } else nodeHistory.takeLast(localLimit)
                 val nodeRes = withContext(Dispatchers.IO) {
                     LocalApiServer.runOnWorker(
@@ -2067,7 +2065,7 @@ fun WorkspaceScreen(
                         }
                     }
                     val enriched = if (web != null) {
-                        (history + ("user" to "Use these fresh web results where they help. ${WebSearch.GROUNDING_GUIDE}\n$web")).takeLast(cloudLimit)
+                        (history + ("user" to "Use this web context where it helps. ${WebSearch.WEB_CONTEXT_RULE} ${WebSearch.GROUNDING_GUIDE}\n$web")).takeLast(cloudLimit)
                     } else history.takeLast(cloudLimit)
                     val reply = timedModel(dir.absolutePath, enriched.sumOf { it.second.length }) {
                         cloud.withModelFallback(ctx, UserPrefs.apiModel(ctx, cloud.id)) { useModel ->
@@ -2121,7 +2119,7 @@ fun WorkspaceScreen(
                                 }
                             }
                             val withWeb = if (web != null) {
-                                (pairs + ("user" to "Use these fresh web results where they help. ${WebSearch.GROUNDING_GUIDE}\n$web")).takeLast(localLimit)
+                                (pairs + ("user" to "Use this web context where it helps. ${WebSearch.WEB_CONTEXT_RULE} ${WebSearch.GROUNDING_GUIDE}\n$web")).takeLast(localLimit)
                             } else pairs.takeLast(localLimit)
                             val reply = timedModel(dir.absolutePath, withWeb.sumOf { it.second.length }) {
                                 withContext(Dispatchers.IO) {

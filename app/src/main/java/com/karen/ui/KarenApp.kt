@@ -128,6 +128,7 @@ fun KarenApp(startScreen: String = "Home", shakeSignal: Int = 0) {
         // load a saved conversation, newChatSignal for drawer "New chat" in Chat.
         var historyVersion by remember { mutableStateOf(0) }
         var openChatId by remember { mutableStateOf<String?>(null) }
+        var pendingChatPrompt by remember { mutableStateOf<String?>(null) }
         var newChatSignal by remember { mutableStateOf(0) }
 
         // Shake gesture from MainActivity: close any drawer and land on Karen
@@ -159,6 +160,12 @@ fun KarenApp(startScreen: String = "Home", shakeSignal: Int = 0) {
             if (label != null) {
                 RecentActivity.record(context, RecentActivity.TYPE_SCREEN, currentScreen, label)
             }
+        }
+
+        // A prompt handed off from the Study Hub belongs to Chat only. Clear
+        // it if the user navigates anywhere else before Chat consumes it.
+        LaunchedEffect(currentScreen) {
+            if (currentScreen != "Chat") pendingChatPrompt = null
         }
 
         // Wake-word trigger while the app is alive: jump to Live mode.
@@ -205,14 +212,17 @@ fun KarenApp(startScreen: String = "Home", shakeSignal: Int = 0) {
                     ChatGPTDrawerContent(
                         currentScreen = currentScreen,
                         onNavigate = { screen ->
+                            pendingChatPrompt = null
                             currentScreen = screen
                         },
                         historyVersion = historyVersion,
                         onNewChat = {
+                            pendingChatPrompt = null
                             newChatSignal++
                             currentScreen = "Chat"
                         },
                         onOpenConversation = { id ->
+                            pendingChatPrompt = null
                             openChatId = id
                             currentScreen = "Chat"
                         },
@@ -256,6 +266,7 @@ fun KarenApp(startScreen: String = "Home", shakeSignal: Int = 0) {
                                 onNavigate = { currentScreen = it },
                                 onOpenSettings = { currentScreen = "Settings" },
                                 onOpenConversation = { id ->
+                                    pendingChatPrompt = null
                                     openChatId = id
                                     currentScreen = "Chat"
                                 }
@@ -269,7 +280,9 @@ fun KarenApp(startScreen: String = "Home", shakeSignal: Int = 0) {
                                 openConversationId = openChatId,
                                 newChatSignal = newChatSignal,
                                 onConversationOpened = { openChatId = null },
-                                onHistoryChanged = { historyVersion++ }
+                                onHistoryChanged = { historyVersion++ },
+                                initialPrompt = pendingChatPrompt,
+                                onInitialPromptConsumed = { pendingChatPrompt = null }
                             )
                             "Workspace" -> WorkspaceScreen(
                                 onOpenDrawer = { coroutineScope.launch { drawerState.open() } },
@@ -302,6 +315,16 @@ fun KarenApp(startScreen: String = "Home", shakeSignal: Int = 0) {
                             )
                             "StudyBook" -> StudyBookScreen(
                                 onOpenDrawer = { coroutineScope.launch { drawerState.open() } },
+                                onNavigate = { currentScreen = it },
+                                onOpenConversation = { id ->
+                                    pendingChatPrompt = null
+                                    openChatId = id
+                                    currentScreen = "Chat"
+                                },
+                                onAsk = { prompt ->
+                                    pendingChatPrompt = prompt
+                                    currentScreen = "Chat"
+                                },
                                 onNavigateToHome = { currentScreen = "Home" }
                             )
                             "Flowchart" -> FlowchartScreen(
@@ -340,7 +363,9 @@ fun KarenApp(startScreen: String = "Home", shakeSignal: Int = 0) {
                                 openConversationId = openChatId,
                                 newChatSignal = newChatSignal,
                                 onConversationOpened = { openChatId = null },
-                                onHistoryChanged = { historyVersion++ }
+                                onHistoryChanged = { historyVersion++ },
+                                initialPrompt = pendingChatPrompt,
+                                onInitialPromptConsumed = { pendingChatPrompt = null }
                             )
                         }
                     }

@@ -235,7 +235,9 @@ fun ChatScreen(
     openConversationId: String? = null,
     newChatSignal: Int = 0,
     onConversationOpened: () -> Unit = {},
-    onHistoryChanged: () -> Unit = {}
+    onHistoryChanged: () -> Unit = {},
+    initialPrompt: String? = null,
+    onInitialPromptConsumed: () -> Unit = {}
 ) {
     val colors = LocalKarenColors.current
     val coroutineScope = rememberCoroutineScope()
@@ -968,7 +970,7 @@ fun ChatScreen(
                 }
             }.takeLast(limit)
             val history = if (web != null) {
-                (base + ("user" to "Use these fresh web results where they help. ${WebSearch.GROUNDING_GUIDE}\n$web")).takeLast(limit)
+                (base + ("user" to "Use this web context where it helps. ${WebSearch.WEB_CONTEXT_RULE} ${WebSearch.GROUNDING_GUIDE}\n$web")).takeLast(limit)
             } else base
             val instructed = if (regenerateHint != null) {
                 (history + ("user" to regenerateHint)).takeLast(limit)
@@ -1427,9 +1429,7 @@ fun ChatScreen(
                 if (allowed) {
                     setStreamingText(aid, "Searching the web…")
                     web = try {
-                        WebSearch.searchWithKey(context, WebSearch.cleanQuery(userText))
-                            .takeIf { it.isNotEmpty() }
-                            ?.let(WebSearch::formatForModel)
+                        WebSearch.agentContext(context, WebSearch.cleanQuery(userText))
                     } catch (_: Exception) { null }
                     if (cancelGeneration) {
                         cancelSettle(aid)
@@ -1446,7 +1446,7 @@ fun ChatScreen(
                 }
             }
             val trimmedPairs = if (web != null) {
-                (basePairs + ("user" to "Use these fresh web results where they help. ${WebSearch.GROUNDING_GUIDE}\n$web")).takeLast(pairLimit)
+                (basePairs + ("user" to "Use this web context where it helps. ${WebSearch.WEB_CONTEXT_RULE} ${WebSearch.GROUNDING_GUIDE}\n$web")).takeLast(pairLimit)
             } else basePairs.takeLast(pairLimit)
             val instructedPairs = if (regenerateHint != null) {
                 (trimmedPairs + ("user" to regenerateHint)).takeLast(pairLimit)
@@ -1925,6 +1925,13 @@ fun ChatScreen(
         if (firstAsk.isNotBlank()) {
             RecentActivity.record(context, RecentActivity.TYPE_CHAT, id, firstAsk)
         }
+    }
+
+    // Seed the composer from a Study Hub quick action. The user still taps Send.
+    LaunchedEffect(initialPrompt) {
+        val prompt = initialPrompt ?: return@LaunchedEffect
+        if (prompt.isNotBlank()) setInputEnd(prompt)
+        onInitialPromptConsumed()
     }
 
     // Fresh chat requested from the drawer while already on this screen.

@@ -17,13 +17,18 @@ import android.provider.CalendarContract
 import android.provider.ContactsContract
 import android.provider.Settings
 import androidx.core.content.FileProvider
-import com.karen.formatSize
-import com.karen.readDeviceTelemetry
+import com.karen.utils.formatSize
+import com.karen.utils.readDeviceTelemetry
 import java.io.ByteArrayOutputStream
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import com.karen.ui.AgentObservation
+import com.karen.ui.vaultFiles
+import com.karen.ui.ATTACH_TEXT_EXTS
+import com.karen.ui.VisionImage
+import com.karen.ui.ToolRouter
 
 /**
  * Runtime for tools_spec/tools.json (bundled at app/src/main/assets).

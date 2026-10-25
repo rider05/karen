@@ -26,6 +26,9 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
+import com.karen.prefs.UserPrefs
+import com.karen.ui.isCloudProviderName
+import com.karen.ui.isNonChatModel
 
 /** One device that ever talked to the local server (the app's "nodes"). */
 data class NodeInfo(

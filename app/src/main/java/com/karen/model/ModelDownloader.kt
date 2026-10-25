@@ -10,6 +10,8 @@ import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import com.karen.prefs.UserPrefs
+import com.karen.ui.isCloudProviderName
 
 /**
  * Real GGUF downloads via Android DownloadManager into the app-private

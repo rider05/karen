@@ -30,8 +30,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
-import com.karen.rememberDeviceTelemetry
-import com.karen.formatSize
+import com.karen.utils.rememberDeviceTelemetry
+import com.karen.utils.formatSize
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch

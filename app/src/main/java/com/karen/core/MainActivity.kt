@@ -20,6 +20,10 @@ import androidx.core.app.ActivityCompat
 import com.karen.ui.AppUpdate
 import com.karen.ui.KarenApp
 import com.karen.prefs.UserPrefs
+import com.karen.utils.BirthdayNotifier
+import com.karen.voice.WakeWord
+import com.karen.voice.WakeWordNavigator
+import com.karen.voice.WakeWordService
 import kotlin.math.sqrt
 
 class MainActivity : ComponentActivity() {

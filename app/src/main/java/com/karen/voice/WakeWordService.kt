@@ -19,7 +19,7 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
-import com.karen.ui.UserPrefs
+import com.karen.prefs.UserPrefs
 import java.util.Locale
 
 /**

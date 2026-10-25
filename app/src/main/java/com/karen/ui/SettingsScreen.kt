@@ -8,8 +8,8 @@ import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
-import com.karen.WakeWord
-import com.karen.WakeWordService
+import com.karen.voice.WakeWord
+import com.karen.voice.WakeWordService
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border

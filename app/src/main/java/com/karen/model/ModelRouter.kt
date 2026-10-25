@@ -1,6 +1,10 @@
 package com.karen.model
 
 import android.content.Context
+import com.karen.prefs.UserPrefs
+import com.karen.ui.CloudProvider
+import com.karen.ui.findCloudProviderByName
+import com.karen.ui.isCloudProviderName
 
 /**
  * Task-aware model routing: picks the best available model per message

@@ -2,7 +2,7 @@ package com.karen.prefs
 
 import android.content.Context
 import android.content.SharedPreferences
-import com.karen.WakeWord
+import com.karen.voice.WakeWord
 
 /** Lightweight on-device profile store (name, age, usage type). */
 object UserPrefs {

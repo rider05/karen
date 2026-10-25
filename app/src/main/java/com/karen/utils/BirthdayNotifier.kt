@@ -9,7 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import androidx.core.app.NotificationCompat
-import com.karen.ui.UserPrefs
+import com.karen.prefs.UserPrefs
 import java.util.Calendar
 
 /**

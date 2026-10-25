@@ -23,7 +23,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.karen.R
-import com.karen.WakeWordNavigator
+import com.karen.voice.WakeWordNavigator
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 

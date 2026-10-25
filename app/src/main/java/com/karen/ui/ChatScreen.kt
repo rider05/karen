@@ -29,7 +29,7 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.Dp
-import com.karen.formatSize
+import com.karen.utils.formatSize
 import com.karen.voice.rememberVoiceStt
 import com.karen.prefs.UserPrefs
 import kotlinx.coroutines.launch

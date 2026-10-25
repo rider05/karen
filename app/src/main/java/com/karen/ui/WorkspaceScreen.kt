@@ -42,8 +42,8 @@ import androidx.compose.ui.unit.sp
 import java.io.File
 import android.content.Context
 import android.util.Base64
-import com.karen.rememberDeviceTelemetry
-import com.karen.rememberVoiceStt
+import com.karen.utils.rememberDeviceTelemetry
+import com.karen.voice.rememberVoiceStt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.async

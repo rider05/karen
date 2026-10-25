@@ -27,9 +27,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
-import com.karen.WakeWordService
-import com.karen.rememberDeviceTelemetry
-import com.karen.rememberVoiceStt
+import com.karen.voice.WakeWordService
+import com.karen.utils.rememberDeviceTelemetry
+import com.karen.voice.rememberVoiceStt
 
 /** Spoken-reply instruction: short, human, TTS-safe answers for Live mode. */
 const val VOICE_REPLY_STYLE =

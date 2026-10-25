@@ -39,7 +39,7 @@ import android.content.Intent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.widget.Toast
-import com.karen.rememberDeviceTelemetry
+import com.karen.utils.rememberDeviceTelemetry
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch

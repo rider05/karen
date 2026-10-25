@@ -3,7 +3,7 @@ package com.karen.voice
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import com.karen.ui.UserPrefs
+import com.karen.prefs.UserPrefs
 
 /**
  * Re-arms the wake-word listener after reboot / app update when enabled.

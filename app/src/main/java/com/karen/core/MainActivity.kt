@@ -1,4 +1,4 @@
-package com.karen
+package com.karen.core
 
 import android.Manifest
 import android.content.Intent
@@ -19,7 +19,7 @@ import androidx.compose.runtime.setValue
 import androidx.core.app.ActivityCompat
 import com.karen.ui.AppUpdate
 import com.karen.ui.KarenApp
-import com.karen.ui.UserPrefs
+import com.karen.prefs.UserPrefs
 import kotlin.math.sqrt
 
 class MainActivity : ComponentActivity() {

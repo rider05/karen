@@ -1,4 +1,4 @@
-package com.karen.ui
+package com.karen.utils
 
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat

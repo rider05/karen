@@ -1,4 +1,4 @@
-package com.karen.ui
+package com.karen.model
 
 import android.app.Activity
 import android.content.ClipData

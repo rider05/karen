@@ -30,7 +30,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.Dp
 import com.karen.formatSize
-import com.karen.rememberVoiceStt
+import com.karen.voice.rememberVoiceStt
+import com.karen.prefs.UserPrefs
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.async
 import kotlinx.coroutines.CompletableDeferred

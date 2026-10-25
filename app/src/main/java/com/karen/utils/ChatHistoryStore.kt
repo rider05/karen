@@ -1,4 +1,4 @@
-package com.karen.ui
+package com.karen.utils
 
 import android.content.Context
 import android.util.Base64

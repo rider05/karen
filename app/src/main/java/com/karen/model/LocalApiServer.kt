@@ -1,4 +1,4 @@
-package com.karen.ui
+package com.karen.model
 
 import android.content.Context
 import android.net.ConnectivityManager

@@ -1,4 +1,4 @@
-package com.karen
+package com.karen.utils
 
 import android.app.ActivityManager
 import android.content.Context

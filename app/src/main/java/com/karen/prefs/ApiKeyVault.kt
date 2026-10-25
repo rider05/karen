@@ -1,4 +1,4 @@
-package com.karen.ui
+package com.karen.prefs
 
 import android.content.Context
 import android.net.Uri

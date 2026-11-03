@@ -33,6 +33,8 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -1425,6 +1427,39 @@ private fun WorkspaceMiniPill(text: String, tint: Color) {
 }
 
 @Composable
+private fun WorkspaceStatChip(
+    icon: ImageVector,
+    value: String,
+    tint: Color
+) {
+    val colors = LocalKarenColors.current
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(colors.cardBackground)
+            .border(1.dp, colors.border, RoundedCornerShape(999.dp))
+            .padding(horizontal = 6.dp, vertical = 3.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            icon,
+            contentDescription = null,
+            tint = tint,
+            modifier = Modifier.size(9.dp)
+        )
+        Spacer(Modifier.width(3.dp))
+        Text(
+            value,
+            color = colors.textSecondary,
+            fontSize = 9.sp,
+            fontFamily = FontFamily.Monospace,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1
+        )
+    }
+}
+
+@Composable
 private fun WorkspaceChatEmpty(projectName: String) {
     val colors = LocalKarenColors.current
     Row(
@@ -2671,10 +2706,9 @@ fun WorkspaceScreen(
         DisposableEffect(project) {
             onDispose { saveProjectState(project) }
         }
-        // Active project header + last-turn stats (inside the project/repo)
-        val headerStats = project.chat.asReversed()
+        // Active project header (last finished turn feeds the stat chips below).
+        val lastTurn = project.chat.asReversed()
             .firstOrNull { it.role == "assistant" && it.tookMs > 0 }
-            ?.let { turnStats(it.tookMs, it.tokEst) }
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -2725,29 +2759,55 @@ fun WorkspaceScreen(
                     overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                 )
                 Spacer(Modifier.height(4.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        headerStats ?: "No runs yet",
-                        color = if (headerStats != null) colors.accentGreen else colors.textMuted,
-                        fontSize = 10.sp,
-                        fontFamily = FontFamily.Monospace,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 2,
-                        lineHeight = 13.sp,
-                        modifier = Modifier.weight(1f)
-                    )
+                // Telemetry chips: duration, tokens, throughput — mono values,
+                // one icon per metric, pill shape, hairline border. Full-width
+                // row so chips never get squeezed; actions live on their own line.
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    if (lastTurn == null) {
+                        Text(
+                            "No runs yet",
+                            color = colors.textMuted,
+                            fontSize = 10.sp,
+                            fontFamily = FontFamily.Monospace,
+                            maxLines = 1
+                        )
+                    } else {
+                        val perSec = (lastTurn.tokEst * 1000L / lastTurn.tookMs.coerceAtLeast(1)).toInt()
+                        WorkspaceStatChip(Icons.Default.Schedule, formatDuration(lastTurn.tookMs), colors.textMuted)
+                        WorkspaceStatChip(Icons.Default.Token, "~${lastTurn.tokEst}", colors.accentBlue)
+                        WorkspaceStatChip(Icons.Default.Bolt, "$perSec tk/s", colors.accentGreen)
+                    }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.End
+                ) {
                     TextButton(
                         onClick = { showSessions = true },
-                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                        modifier = Modifier.semantics { contentDescription = "Sessions" },
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
                     ) {
                         val sessionCount = remember(project.sessionTick.value) {
                             project.sessionStore.size +
                                 (if (project.activeSessionId in project.sessionStore) 0 else 1)
                         }
+                        Icon(
+                            Icons.Default.History,
+                            contentDescription = null,
+                            tint = colors.accentBlue,
+                            modifier = Modifier.size(13.dp)
+                        )
+                        Spacer(Modifier.width(4.dp))
                         Text(
-                            "Sessions ($sessionCount)",
-                            color = colors.accentBlue,
+                            "$sessionCount",
+                            color = colors.textSecondary,
                             fontSize = 10.5.sp,
+                            fontFamily = FontFamily.Monospace,
                             fontWeight = FontWeight.Medium,
                             maxLines = 1
                         )
@@ -2755,9 +2815,23 @@ fun WorkspaceScreen(
                     TextButton(
                         onClick = { confirmNewSession = true },
                         enabled = !chatBusy,
-                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                        modifier = Modifier.semantics { contentDescription = "New session" },
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
                     ) {
-                        Text("New session", color = if (chatBusy) colors.textMuted else colors.accentGreen, fontSize = 10.5.sp, fontWeight = FontWeight.Medium, maxLines = 1)
+                        Icon(
+                            Icons.Default.Add,
+                            contentDescription = null,
+                            tint = if (chatBusy) colors.textMuted else colors.accentGreen,
+                            modifier = Modifier.size(13.dp)
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            "New",
+                            color = if (chatBusy) colors.textMuted else colors.accentGreen,
+                            fontSize = 10.5.sp,
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 1
+                        )
                     }
                 }
             }

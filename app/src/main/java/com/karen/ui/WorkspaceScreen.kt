@@ -32,6 +32,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -2978,6 +2979,9 @@ fun WorkspaceScreen(
             }
         }
 
+    // Collapse the canvas floor while the keyboard is up so the composer can
+    // never be pushed below the screen on short/large-keyboard devices.
+    val imeShowing = WindowInsets.ime.getBottom(LocalDensity.current) > 0
         // Artifact panel: shares the thread area 50/50, with a floor so the
         // tab toolbars and controls stay on screen. The expand toggle gives it
         // the full height; the composer below always stays visible.
@@ -2985,7 +2989,7 @@ fun WorkspaceScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1.5f)
-                .heightIn(min = 180.dp)
+                .heightIn(min = if (imeShowing) 0.dp else 180.dp)
                 .padding(horizontal = 16.dp)
                 .clip(RoundedCornerShape(16.dp))
                 .background(

@@ -38,7 +38,7 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
         <activity
-            android:name=".MainActivity"
+            android:name="com.karen.core.MainActivity"
             android:exported="true"
             android:launchMode="singleTop"
             android:showWhenLocked="true"
@@ -50,11 +50,11 @@
             </intent-filter>
         </activity>
         <service
-            android:name=".WakeWordService"
+            android:name="com.karen.voice.WakeWordService"
             android:exported="false"
             android:foregroundServiceType="microphone" />
         <receiver
-            android:name=".WakeWordBootReceiver"
+            android:name="com.karen.voice.WakeWordBootReceiver"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
@@ -71,7 +71,7 @@
             </intent-filter>
         </receiver>
         <receiver
-            android:name=".BirthdayReceiver"
+            android:name="com.karen.utils.BirthdayReceiver"
             android:exported="true">
             <intent-filter>
                 <action android:name="com.karen.BIRTHDAY_WISH" />

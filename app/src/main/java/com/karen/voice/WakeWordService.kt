@@ -289,6 +289,12 @@ class WakeWordService : Service() {
     }
 
     private fun checkPhrase(heard: String) {
+        // "go sleep" (or any utterance asking to stop listening) parks the
+        // wake listener: mic released, wake restarts cancelled.
+        if (heard.contains("sleep", ignoreCase = true)) {
+            parkForVoice()
+            return
+        }
         if (!WakeWord.matches(heard, wakePhrase)) return
         val now = System.currentTimeMillis()
         if (now - lastTriggerAt < WakeWord.TRIGGER_COOLDOWN_MS) return

@@ -10,6 +10,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -250,7 +251,11 @@ fun KarenApp(startScreen: String = "Home", shakeSignal: Int = 0) {
             } else {
                 Scaffold(
                     bottomBar = {
-                        if (currentScreen != "Chat") {
+                        // Hide the dock while the keyboard is up: its fixed slot
+                        // otherwise sits between the composer and the IME as a
+                        // black band on typing screens (Workspace/Files/Study).
+                        val imeShowing = WindowInsets.ime.getBottom(LocalDensity.current) > 0
+                        if (currentScreen != "Chat" && !imeShowing) {
                             KNavigationDock(
                                 currentScreen = currentScreen,
                                 onSelectScreen = { currentScreen = it }

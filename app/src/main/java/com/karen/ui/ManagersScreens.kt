@@ -1,5 +1,9 @@
 package com.karen.ui
 
+import com.karen.model.ModelDownloader
+import com.karen.prefs.UserPrefs
+import com.karen.utils.ChatHistoryStore
+
 import android.content.Context
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts

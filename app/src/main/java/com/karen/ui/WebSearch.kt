@@ -1,5 +1,7 @@
 package com.karen.ui
 
+import com.karen.prefs.UserPrefs
+
 import android.content.Context
 import com.karen.search.AndroidSearchCaches
 import com.karen.search.DateParser

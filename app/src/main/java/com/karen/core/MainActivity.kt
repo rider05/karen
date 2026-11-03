@@ -86,7 +86,7 @@ class MainActivity : ComponentActivity() {
         // Cold start via wake trigger: keep the listener alive while in use.
         maybeRestartWakeListener()
         // Birthday: wish today if it's the birthday, and keep the alarm armed.
-        com.karen.BirthdayNotifier.checkToday(this)
+        com.karen.utils.BirthdayNotifier.checkToday(this)
         // Post-install: clean up pending APK if an update was just installed.
         if (AppUpdate.checkPostInstall(this)) {
             android.widget.Toast.makeText(this, "Update installed successfully", android.widget.Toast.LENGTH_SHORT).show()

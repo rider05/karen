@@ -1,5 +1,18 @@
 package com.karen.ui
 
+import com.karen.model.KarenLlama
+import com.karen.model.LocalApiServer
+import com.karen.model.ModelDownloader
+import com.karen.model.isNonChatModel
+import com.karen.model.isReasoningModel
+import com.karen.model.isSelectableModel
+import com.karen.model.modelCatalog
+import com.karen.model.reasoningEffortHint
+import com.karen.model.routeModel
+import com.karen.prefs.UserPrefs
+import com.karen.utils.RecentActivity
+import com.karen.voice.TtsManager
+
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -228,6 +241,21 @@ fun parseScaffold(text: String): List<Pair<String, String>> {
     return results
 }
 
+private val READ_HEADER = Regex("(?m)^[ \t]*///[ \t]*READ[ \t]*:(.+)$", RegexOption.IGNORE_CASE)
+
+/** Paths the model asked for via ///READ lines: deduped, capped at 4 per reply. */
+internal fun parseReads(text: String): List<String> =
+    READ_HEADER.findAll(text)
+        .map { it.groupValues[1].trim().replace('\\', '/') }
+        .filter { it.isNotBlank() }
+        .distinct()
+        .take(4)
+        .toList()
+
+/** Read one ///READ target for the model; null when missing/binary/too large. */
+private fun readForModel(project: Project, rel: String): String? =
+    safeScaffoldPath(project, rel)?.let { readTextFileSafe(it, maxChars = 6000) }
+
 private fun stripWrappingFence(content: String): String {
     val lines = content.lines()
     if (lines.size >= 2 && lines.first().trimStart().startsWith("```") && lines.last().trim() == "```") {
@@ -244,6 +272,8 @@ private val SCAFFOLD_DIR_RENAME = mapOf("lib/main/java" to "src/main/java")
  */
 internal fun stripCodeForChat(text: String): String {
     var out = text
+    // 0. ///READ lines are tool traffic, never prose.
+    out = READ_HEADER.replace(out, "")
     // 1. ///FILE blocks (to ///END, the next header, or end of text).
     val matches = SCAFFOLD_HEADER.findAll(out).toList()
     if (matches.isNotEmpty()) {
@@ -1817,8 +1847,16 @@ fun WorkspaceScreen(
                 project.filesVersion = System.currentTimeMillis()
                 return "Applied to ${project.name}: $summary\n${filesSummary(files)}"
             }
+            /**
+             * Follow-up model call for ///READ requests: the app reads the
+             * files, hands the contents back, and the reply may then ///FILE:
+             * them (write/edit lands in the same send). Set by each routing
+             * path (node/cloud/local) before its first call.
+             */
+            var readCall: (suspend (String) -> String?)? = null
+
             /** Files land in the Code tab; the thread keeps prose + notes. */
-            suspend fun recordReply(reply: String) {
+            suspend fun recordReply(reply: String, readDepth: Int = 0) {
                 val applied = applyModelFiles(reply)
                 if (applied != null) note(applied)
                 if (answerProse == null) {
@@ -1827,6 +1865,44 @@ fun WorkspaceScreen(
                     }
                 }
                 if (applied == null && answerProse == null) note("Answered directly — no file changes.")
+                // ///READ round-trip: read now, feed contents back for one more
+                // turn so read + edit complete in the same send. One hop max.
+                val reads = parseReads(reply)
+                if (reads.isEmpty()) return
+                if (readDepth >= 1) {
+                    note("Read skipped — round limit reached.")
+                    return
+                }
+                val call = readCall
+                if (call == null) {
+                    note("///READ ignored — no model available to continue.")
+                    return
+                }
+                val blocks = withContext(Dispatchers.IO) {
+                    reads.mapNotNull { rel -> readForModel(project, rel)?.let { rel to it } }
+                }
+                if (blocks.isEmpty()) {
+                    note("///READ requested but no file could be read.")
+                    return
+                }
+                WorkspaceUsage.forDir(dir.absolutePath).filesRead += blocks.size
+                project.terminalLog.add(
+                    "[tool] read ${blocks.size} file(s)\n" +
+                        blocks.joinToString("\n") { (r, c) -> "--- $r ---\n${c.take(1200)}" }
+                )
+                val msg = "Requested file contents:\n" +
+                    blocks.joinToString("\n\n") { (r, c) -> "--- $r ---\n$c" } +
+                    "\n\nContinue from these files: answer the question, or change files " +
+                    "by emitting ///FILE: relative/path blocks (full new content)."
+                val follow = try { call(msg) } catch (e: Exception) { null }
+                if (follow.isNullOrBlank()) {
+                    note("Read follow-up returned nothing — files unchanged.")
+                    return
+                }
+                project.chat.add(ProjectChat("user", "Read: ${blocks.joinToString(", ") { it.first }}"))
+                // The follow-up prose is the real answer; drop the transition line.
+                answerProse = null
+                recordReply(follow, readDepth + 1)
             }
             // 3. SCAFFOLD tool: the model writes a full multi-file scaffold
             //    into the project. Files land on real paths.
@@ -1995,7 +2071,9 @@ fun WorkspaceScreen(
                 "You are Karen's workspace builder for project \"${project.name}\". " +
                     "Maintain the existing file structure. When changing code, output each changed file as " +
                     "///FILE: relative/path\n<complete file content>\n///END (up to 8 files, no fences, no prose inside blocks), " +
-                    "then a 1-2 line summary. For discussion-only replies, answer normally with no ///FILE blocks." +
+                    "then a 1-2 line summary. To read files first, put ///READ: relative/path on its own line " +
+                    "(max 4) — the app sends the contents back so you can continue in the same turn. " +
+                    "For discussion-only replies, answer normally with no ///FILE or ///READ blocks." +
                     if (isReasoningModel(sendModel)) reasoningEffortHint(effort) else "" +
                     if (wantsExplainer(t, ctx)) " $EXPLAINER_STYLE_GUIDE" else "" +
                     UserPrefs.customInstructions(ctx).trim().take(500).let { if (it.isBlank()) "" else " User instructions: $it" }
@@ -2022,6 +2100,19 @@ fun WorkspaceScreen(
                 val nodePairs = if (web != null) {
                     (nodeHistory + ("user" to "Use this web context where it helps. ${WebSearch.WEB_CONTEXT_RULE} ${WebSearch.GROUNDING_GUIDE}\n$web")).takeLast(localLimit)
                 } else nodeHistory.takeLast(localLimit)
+                readCall = { msg ->
+                    val follow = (nodePairs + ("user" to msg)).takeLast(localLimit)
+                    withContext(Dispatchers.IO) {
+                        LocalApiServer.runOnWorker(
+                            sel = nodeRoute,
+                            system = "",
+                            pairs = follow,
+                            temperature = 0.7,
+                            maxTokens = maxTokensFor(effort),
+                            model = if (nodeRoute == "auto") "" else UserPrefs.nodeModel(ctx, nodeRoute)
+                        ).text
+                    }
+                }
                 val nodeRes = withContext(Dispatchers.IO) {
                     LocalApiServer.runOnWorker(
                         sel = nodeRoute,
@@ -2067,6 +2158,19 @@ fun WorkspaceScreen(
                     val enriched = if (web != null) {
                         (history + ("user" to "Use this web context where it helps. ${WebSearch.WEB_CONTEXT_RULE} ${WebSearch.GROUNDING_GUIDE}\n$web")).takeLast(cloudLimit)
                     } else history.takeLast(cloudLimit)
+                    readCall = { msg ->
+                        val follow = (history + ("user" to msg)).takeLast(cloudLimit)
+                        cloud.withModelFallback(ctx, UserPrefs.apiModel(ctx, cloud.id)) { useModel ->
+                            cloud.complete(
+                                cloudKey,
+                                follow,
+                                maxTokensFor(effort),
+                                thinkingBudget = if (cloud.reasoning) thinkingBudgetFor(effort) else null,
+                                historyLimit = cloudLimit,
+                                model = useModel
+                            )
+                        }
+                    }
                     val reply = timedModel(dir.absolutePath, enriched.sumOf { it.second.length }) {
                         cloud.withModelFallback(ctx, UserPrefs.apiModel(ctx, cloud.id)) { useModel ->
                             cloud.complete(
@@ -2121,6 +2225,17 @@ fun WorkspaceScreen(
                             val withWeb = if (web != null) {
                                 (pairs + ("user" to "Use this web context where it helps. ${WebSearch.WEB_CONTEXT_RULE} ${WebSearch.GROUNDING_GUIDE}\n$web")).takeLast(localLimit)
                             } else pairs.takeLast(localLimit)
+                            readCall = { msg ->
+                                val follow = (withWeb + ("user" to msg)).takeLast(localLimit)
+                                withContext(Dispatchers.IO) {
+                                    KarenLlama.complete(
+                                        buildInstruction,
+                                        follow.map { it.first }.toTypedArray(),
+                                        follow.map { it.second }.toTypedArray(),
+                                        maxTokensFor(effort)
+                                    )
+                                }
+                            }
                             val reply = timedModel(dir.absolutePath, withWeb.sumOf { it.second.length }) {
                                 withContext(Dispatchers.IO) {
                                     KarenLlama.complete(

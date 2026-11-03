@@ -1,5 +1,12 @@
 package com.karen.ui
 
+import com.karen.model.LocalApiServer
+import com.karen.model.isNonChatModel
+import com.karen.prefs.UserPrefs
+import com.karen.utils.BirthdayNotifier
+import com.karen.utils.rememberDeviceTelemetry
+import com.karen.voice.CloudTts
+
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -1480,7 +1487,7 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
             item {
                 SettingsSectionLabel("Memory", Icons.Default.Memory, colors.accentGreen, "RAM")
                 Spacer(Modifier.height(6.dp))
-                val device = com.karen.rememberDeviceTelemetry()
+                val device = com.karen.utils.rememberDeviceTelemetry()
                 var maxRamMb by remember { mutableStateOf((device.totalRamGb * 1024.0 * 0.5).coerceAtLeast(512.0).toFloat()) }
                 Column(
                     modifier = Modifier
@@ -2304,7 +2311,7 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                 onSave = { millis ->
                     UserPrefs.setDob(context, millis)
                     dobMillis = millis
-                    com.karen.BirthdayNotifier.schedule(context)
+                    com.karen.utils.BirthdayNotifier.schedule(context)
                 }
             )
         }

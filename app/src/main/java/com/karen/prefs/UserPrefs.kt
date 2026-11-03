@@ -1,5 +1,8 @@
 package com.karen.prefs
 
+import com.karen.ui.CloudProtocol
+import com.karen.ui.CloudProvider
+
 import android.content.Context
 import android.content.SharedPreferences
 import com.karen.voice.WakeWord

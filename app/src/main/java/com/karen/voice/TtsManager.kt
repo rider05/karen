@@ -1,5 +1,7 @@
 package com.karen.voice
 
+import com.karen.prefs.UserPrefs
+
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFormat

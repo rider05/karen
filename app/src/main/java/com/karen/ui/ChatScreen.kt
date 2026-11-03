@@ -1,5 +1,45 @@
 package com.karen.ui
 
+import com.karen.model.ExecResult
+import com.karen.model.KarenLlama
+import com.karen.model.LocalApiServer
+import com.karen.model.ModelDownloader
+import com.karen.model.PendingTool
+import com.karen.model.ToolSettle
+import com.karen.model.ToolSpec
+import com.karen.model.ToolSpecs
+import com.karen.model.detectIntent
+import com.karen.model.digitsOf
+import com.karen.model.directArgs
+import com.karen.model.expandSlash
+import com.karen.model.extractToolCalls
+import com.karen.model.executePhoneTool
+import com.karen.model.isEmbeddingModel
+import com.karen.model.isNonChatModel
+import com.karen.model.isProjectorModel
+import com.karen.model.isReasoningModel
+import com.karen.model.isSelectableModel
+import com.karen.model.matchSlash
+import com.karen.model.modelCatalog
+import com.karen.model.queryContacts
+import com.karen.model.reasoningEffortHint
+import com.karen.model.resolveMentions
+import com.karen.model.routeModel
+import com.karen.model.runsDirect
+import com.karen.model.scoreCloud
+import com.karen.model.stripToolCalls
+import com.karen.model.summarizeArgs
+import com.karen.model.validateToolCall
+import com.karen.utils.ChatHistoryStore
+import com.karen.utils.PlanCard
+import com.karen.utils.PlanStep
+import com.karen.utils.RecentActivity
+import com.karen.utils.planGuide
+import com.karen.utils.rememberDeviceTelemetry
+import com.karen.utils.splitPlan
+import com.karen.utils.wantsPlan
+import com.karen.voice.TtsManager
+
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
@@ -275,7 +315,7 @@ fun ChatScreen(
     var resettingNewChat by remember { mutableStateOf(false) }
     var temporaryChat by remember { mutableStateOf(false) }
     val karenCtx = androidx.compose.ui.platform.LocalContext.current
-    val device = com.karen.rememberDeviceTelemetry()
+    val device = com.karen.utils.rememberDeviceTelemetry()
     var effort by remember { mutableStateOf(UserPrefs.defaultEffort(karenCtx)) }
     // Compute route for this chat: "" = this phone, "auto" = fastest joined
     // node, else a worker id (w_xxxxxx). Survives restarts via UserPrefs.

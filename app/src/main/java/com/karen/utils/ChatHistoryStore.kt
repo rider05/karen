@@ -1,5 +1,8 @@
 package com.karen.utils
 
+import com.karen.ui.Attachment
+import com.karen.ui.ChatItem
+
 import android.content.Context
 import android.util.Base64
 import java.io.File

@@ -1,5 +1,7 @@
 package com.karen.utils
 
+import com.karen.ui.LocalKarenColors
+
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable

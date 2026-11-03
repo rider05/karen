@@ -1,5 +1,7 @@
 package com.karen.voice
 
+import com.karen.core.MainActivity
+
 import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel

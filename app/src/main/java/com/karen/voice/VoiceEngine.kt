@@ -1,5 +1,7 @@
 package com.karen.voice
 
+import com.karen.model.ModelDownloader
+
 import android.content.Context
 import java.io.File
 

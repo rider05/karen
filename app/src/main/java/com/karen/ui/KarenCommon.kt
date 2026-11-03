@@ -1,5 +1,16 @@
 package com.karen.ui
 
+import com.karen.model.DownloadEvent
+import com.karen.model.LocalApiServer
+import com.karen.model.ModelDownloader
+import com.karen.model.isEmbeddingModel
+import com.karen.model.isNonChatModel
+import com.karen.model.isReasoningModel
+import com.karen.model.isSelectableModel
+import com.karen.prefs.UserPrefs
+import com.karen.utils.ChatConversation
+import com.karen.utils.ChatHistoryStore
+
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background

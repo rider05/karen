@@ -1,5 +1,7 @@
 package com.karen.ui
 
+import com.karen.utils.ChatHistoryStore
+
 import android.content.Context
 import android.content.SharedPreferences
 

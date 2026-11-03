@@ -1,5 +1,12 @@
 package com.karen.ui
 
+import com.karen.model.KarenLlama
+import com.karen.model.ModelDownloader
+import com.karen.model.isNonChatModel
+import com.karen.prefs.UserPrefs
+import com.karen.utils.ChatConversation
+import com.karen.utils.ChatHistoryStore
+
 import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border

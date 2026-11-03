@@ -28,7 +28,13 @@ import com.karen.ui.AgentObservation
 import com.karen.ui.vaultFiles
 import com.karen.ui.ATTACH_TEXT_EXTS
 import com.karen.ui.VisionImage
-import com.karen.ui.ToolRouter
+import com.karen.ui.ToolRouting
+import com.karen.prefs.UserPrefs
+import com.karen.ui.WebSearch
+import com.karen.ui.cloudProviders
+import com.karen.ui.mimeFor
+import com.karen.ui.readPreview
+import com.karen.ui.complete
 
 /**
  * Runtime for tools_spec/tools.json (bundled at app/src/main/assets).

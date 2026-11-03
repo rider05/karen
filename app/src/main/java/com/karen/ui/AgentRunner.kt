@@ -1,5 +1,12 @@
 package com.karen.ui
 
+import com.karen.model.ExecResult
+import com.karen.model.extractToolCalls
+import com.karen.model.executePhoneTool
+import com.karen.model.validateToolCall
+import com.karen.utils.PlanStatus
+import com.karen.utils.PlanStep
+
 import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject

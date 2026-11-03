@@ -1,5 +1,9 @@
 package com.karen.ui
 
+import com.karen.prefs.UserPrefs
+import com.karen.utils.ChatHistoryStore
+import com.karen.utils.RecentActivity
+
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background

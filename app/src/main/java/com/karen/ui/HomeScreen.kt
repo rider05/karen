@@ -1,5 +1,11 @@
 package com.karen.ui
 
+import com.karen.model.ModelDownloader
+import com.karen.model.isSelectableModel
+import com.karen.prefs.UserPrefs
+import com.karen.utils.ChatHistoryStore
+import com.karen.utils.RecentActivity
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable

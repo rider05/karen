@@ -1,5 +1,8 @@
 package com.karen.ui
 
+import com.karen.model.ToolSpec
+import com.karen.model.ToolSpecs
+
 import android.content.Context
 import java.io.File
 import kotlinx.coroutines.Dispatchers

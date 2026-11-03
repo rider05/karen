@@ -148,10 +148,19 @@ static size_t utf8_valid_prefix(const std::string & s) {
     return ok;
 }
 
+static std::string format_chat_prompt(const std::vector<llama_chat_message> & msgs) {
+    int req_len = llama_chat_apply_template(nullptr, msgs.data(), msgs.size(), true, nullptr, 0);
+    if (req_len < 0) return "";
+    std::vector<char> buf((size_t) req_len + 1);
+    int tlen = llama_chat_apply_template(nullptr, msgs.data(), msgs.size(), true, buf.data(), (int32_t) buf.size());
+    if (tlen < 0) return "";
+    return std::string(buf.data(), (size_t) tlen);
+}
+
 extern "C" {
 
 JNIEXPORT jlong JNICALL
-Java_com_karen_ui_KarenLlama_nativeInit(JNIEnv * env, jobject, jstring jpath, jint n_ctx, jint n_threads) {
+Java_com_karen_model_KarenLlama_nativeInit(JNIEnv * env, jobject, jstring jpath, jint n_ctx, jint n_threads) {
     static bool backend_on = false;
     if (!backend_on) { llama_backend_init(); backend_on = true; }
 
@@ -176,7 +185,7 @@ Java_com_karen_ui_KarenLlama_nativeInit(JNIEnv * env, jobject, jstring jpath, ji
 }
 
 JNIEXPORT jstring JNICALL
-Java_com_karen_ui_KarenLlama_nativeComplete(JNIEnv * env, jobject, jlong ptr,
+Java_com_karen_model_KarenLlama_nativeComplete(JNIEnv * env, jobject, jlong ptr,
         jstring jsys, jobjectArray jroles, jobjectArray jtexts, jint max_tokens) {
     Handle * h = (Handle *) ptr;
     if (!h || !h->model) { throw_err(env, "model not loaded"); return nullptr; }
@@ -204,11 +213,8 @@ Java_com_karen_ui_KarenLlama_nativeComplete(JNIEnv * env, jobject, jlong ptr,
         msgs.push_back({ role, owned.back().c_str() });
     }
 
-    char tmpl[16384];
-    int tlen = llama_chat_apply_template(nullptr, msgs.data(), msgs.size(), true, tmpl, sizeof(tmpl));
-    if (tlen < 0) { throw_err(env, "chat template failed"); return nullptr; }
-    if (tlen >= (int) sizeof(tmpl)) { throw_err(env, "conversation too long, start a new chat"); return nullptr; }
-    std::string prompt(tmpl, (size_t) tlen);
+    std::string prompt = format_chat_prompt(msgs);
+    if (prompt.empty()) { throw_err(env, "chat template failed"); return nullptr; }
 
     const llama_vocab * vocab = llama_model_get_vocab(h->model);
     const int n_prompt = -llama_tokenize(vocab, prompt.c_str(), (int32_t) prompt.size(), nullptr, 0, true, true);
@@ -284,7 +290,7 @@ Java_com_karen_ui_KarenLlama_nativeComplete(JNIEnv * env, jobject, jlong ptr,
 }
 
 JNIEXPORT jstring JNICALL
-Java_com_karen_ui_KarenLlama_nativeCompleteStream(JNIEnv * env, jobject, jlong ptr,
+Java_com_karen_model_KarenLlama_nativeCompleteStream(JNIEnv * env, jobject, jlong ptr,
         jstring jsys, jobjectArray jroles, jobjectArray jtexts, jint max_tokens, jobject listener) {
     Handle * h = (Handle *) ptr;
     if (!h || !h->model) { throw_err(env, "model not loaded"); return nullptr; }
@@ -316,11 +322,8 @@ Java_com_karen_ui_KarenLlama_nativeCompleteStream(JNIEnv * env, jobject, jlong p
         msgs.push_back({ role, owned.back().c_str() });
     }
 
-    char tmpl[16384];
-    int tlen = llama_chat_apply_template(nullptr, msgs.data(), msgs.size(), true, tmpl, sizeof(tmpl));
-    if (tlen < 0) { throw_err(env, "chat template failed"); return nullptr; }
-    if (tlen >= (int) sizeof(tmpl)) { throw_err(env, "conversation too long, start a new chat"); return nullptr; }
-    std::string prompt(tmpl, (size_t) tlen);
+    std::string prompt = format_chat_prompt(msgs);
+    if (prompt.empty()) { throw_err(env, "chat template failed"); return nullptr; }
 
     const llama_vocab * vocab = llama_model_get_vocab(h->model);
     const int n_prompt = -llama_tokenize(vocab, prompt.c_str(), (int32_t) prompt.size(), nullptr, 0, true, true);
@@ -411,13 +414,13 @@ Java_com_karen_ui_KarenLlama_nativeCompleteStream(JNIEnv * env, jobject, jlong p
 }
 
 JNIEXPORT void JNICALL
-Java_com_karen_ui_KarenLlama_nativeCancel(JNIEnv *, jobject, jlong ptr) {
+Java_com_karen_model_KarenLlama_nativeCancel(JNIEnv *, jobject, jlong ptr) {
     Handle * h = (Handle *) ptr;
     if (h) h->abort.store(true);
 }
 
 JNIEXPORT void JNICALL
-Java_com_karen_ui_KarenLlama_nativeFree(JNIEnv *, jobject, jlong ptr) {
+Java_com_karen_model_KarenLlama_nativeFree(JNIEnv *, jobject, jlong ptr) {
     Handle * h = (Handle *) ptr;
     if (!h) return;
     if (h->model) llama_model_free(h->model);

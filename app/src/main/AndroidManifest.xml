@@ -36,7 +36,8 @@
         android:label="Karen"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
-        android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+        android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
+        android:allowBackup="false">
         <activity
             android:name="com.karen.core.MainActivity"
             android:exported="true"

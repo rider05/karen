@@ -412,7 +412,7 @@ fun directArgs(spec: ToolSpec, rest: String): JSONObject? {
     }
 }
 
-private fun parseTimerArg(r: String): JSONObject? {
+internal fun parseTimerArg(r: String): JSONObject? {
     val m = Regex("(\\d+)\\s*(hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)?")
         .find(r.lowercase()) ?: return null
     val n = m.groupValues[1].toLongOrNull() ?: return null
@@ -430,7 +430,7 @@ private fun parseTimerArg(r: String): JSONObject? {
     }
 }
 
-private fun parseAlarmArg(r: String): JSONObject? {
+internal fun parseAlarmArg(r: String): JSONObject? {
     val m = Regex("^(\\d{1,2})(?::(\\d{2}))?\\s*(am|pm)?$")
         .matchEntire(r.lowercase().trim()) ?: return null
     var h = m.groupValues[1].toIntOrNull() ?: return null
@@ -697,7 +697,7 @@ private fun argLong(args: JSONObject, name: String, def: Long = 0L): Long {
 }
 
 /** Exact arithmetic without an engine (shunting-yard over BigDecimal doubles). */
-private fun evalExpr(raw: String): Double {
+internal fun evalExpr(raw: String): Double {
     val s = raw.replace("\\s".toRegex(), "")
     if (s.isEmpty() || s.length > 200) throw IllegalArgumentException("bad expression")
     if (!s.matches(Regex("[0-9+\\-*/%^().]+"))) throw IllegalArgumentException("only numbers and + - * / % ^ ( ) allowed")

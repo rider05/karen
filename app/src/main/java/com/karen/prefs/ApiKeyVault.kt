@@ -35,103 +35,38 @@ object ApiKeyVault {
         return b
     }
 
-    private fun escape(s: String): String = s
-        .replace("\\", "\\\\")
-        .replace("\"", "\\\"")
-        .replace("\n", "\\n")
-
-    private fun unescape(s: String): String {
-        val sb = StringBuilder()
-        var i = 0
-        while (i < s.length) {
-            val c = s[i]
-            if (c == '\\' && i + 1 < s.length) {
-                when (s[i + 1]) {
-                    '\\' -> sb.append('\\')
-                    '"' -> sb.append('"')
-                    'n' -> sb.append('\n')
-                    else -> sb.append(s[i + 1])
-                }
-                i += 2
-            } else {
-                sb.append(c)
-                i++
-            }
+    internal fun toJson(entries: Map<String, Pair<String, String>>): String {
+        val root = org.json.JSONObject().put("v", 1)
+        val keysObj = org.json.JSONObject()
+        entries.forEach { (id, pair) ->
+            keysObj.put(id, org.json.JSONObject().apply {
+                put("key", pair.first)
+                put("model", pair.second)
+            })
         }
-        return sb.toString()
+        root.put("keys", keysObj)
+        return root.toString()
     }
 
-    private fun toJson(entries: Map<String, Pair<String, String>>): String = buildString {
-        append("{\"v\":1,\"keys\":{")
-        entries.entries.forEachIndexed { i, (id, pair) ->
-            if (i > 0) append(",")
-            append("\"${escape(id)}\":{\"key\":\"${escape(pair.first)}\",\"model\":\"${escape(pair.second)}\"}")
-        }
-        append("}}")
-    }
-
-    /** Minimal JSON reader for our own envelope (objects, strings only). */
-    private fun parseKeys(json: String): Map<String, Pair<String, String>>? {
+    /** Parses the keys envelope using standard JSONObject. */
+    internal fun parseKeys(json: String): Map<String, Pair<String, String>>? {
         return try {
-        val keysIdx = json.indexOf("\"keys\"")
-        if (keysIdx < 0) return null
-        var i = json.indexOf('{', keysIdx + 6)
-        if (i < 0) return null
-        val out = linkedMapOf<String, Pair<String, String>>()
-        i++ // past keys {
-        fun skipWs() { while (i < json.length && json[i].isWhitespace()) i++ }
-        fun readStr(): String? {
-            skipWs()
-            if (i >= json.length || json[i] != '"') return null
-            i++
-            val sb = StringBuilder()
-            while (i < json.length && json[i] != '"') {
-                if (json[i] == '\\' && i + 1 < json.length) {
-                    sb.append(json[i])
-                    sb.append(json[i + 1])
-                    i += 2
-                } else {
-                    sb.append(json[i])
-                    i++
+            val root = org.json.JSONObject(json)
+            val keysObj = root.optJSONObject("keys") ?: return null
+            val out = linkedMapOf<String, Pair<String, String>>()
+            val keys = keysObj.keys()
+            while (keys.hasNext()) {
+                val id = keys.next()
+                val entry = keysObj.optJSONObject(id)
+                if (entry != null) {
+                    val key = entry.optString("key", "")
+                    val model = entry.optString("model", "")
+                    if (key.isNotBlank()) {
+                        out[id] = key to model
+                    }
                 }
             }
-            if (i >= json.length) return null
-            i++ // closing quote
-            return unescape(sb.toString())
-        }
-        while (true) {
-            skipWs()
-            if (i >= json.length) return null
-            if (json[i] == '}') break
-            val id = readStr() ?: return null
-            skipWs()
-            if (i >= json.length || json[i] != ':') return null
-            i++
-            skipWs()
-            if (i >= json.length || json[i] != '{') return null
-            i++
-            var key = ""
-            var model = ""
-            while (true) {
-                skipWs()
-                if (i < json.length && json[i] == '}') {
-                    i++
-                    break
-                }
-                val k = readStr() ?: return null
-                skipWs()
-                if (i >= json.length || json[i] != ':') return null
-                i++
-                val v = readStr() ?: return null
-                if (k == "key") key = v else if (k == "model") model = v
-                skipWs()
-                if (i < json.length && json[i] == ',') i++
-            }
-            if (key.isNotBlank()) out[id] = key to model
-            skipWs()
-            if (i < json.length && json[i] == ',') i++
-        }
-        out
+            out
         } catch (_: Exception) {
             null
         }

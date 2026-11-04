@@ -1504,25 +1504,27 @@ private fun WorkspaceProjectTile(name: String, index: Int, size: Int = 42) {
     )
     val tint = palette[Math.floorMod(name.hashCode() + index, palette.size)]
     val monogram = name.filter { it.isLetterOrDigit() }.take(2).uppercase().ifBlank { "PR" }
+    val radius = if (size <= 28) 7.dp else (size / 3).dp
+    val fontSz = if (size <= 28) 10.sp else (size * 0.33f).sp
     Box(
         modifier = Modifier
             .size(size.dp)
-            .clip(RoundedCornerShape((size / 3).dp))
+            .clip(RoundedCornerShape(radius))
             .background(
                 Brush.linearGradient(
                     listOf(tint.copy(alpha = 0.25f), tint.copy(alpha = 0.08f))
                 )
             )
-            .border(1.dp, tint.copy(alpha = 0.38f), RoundedCornerShape((size / 3).dp)),
+            .border(1.dp, tint.copy(alpha = 0.38f), RoundedCornerShape(radius)),
         contentAlignment = Alignment.Center
     ) {
         Text(
             monogram,
             color = tint,
-            fontSize = (size * 0.33f).sp,
+            fontSize = fontSz,
             fontWeight = FontWeight.Bold,
             fontFamily = FontFamily.Monospace,
-            letterSpacing = 0.6.sp
+            letterSpacing = 0.5.sp
         )
     }
 }
@@ -1559,21 +1561,21 @@ private fun WorkspaceStatChip(
         modifier = Modifier
             .clip(RoundedCornerShape(999.dp))
             .background(colors.cardBackground)
-            .border(1.dp, colors.border, RoundedCornerShape(999.dp))
-            .padding(horizontal = 7.dp, vertical = 3.dp),
+            .border(0.75.dp, colors.border, RoundedCornerShape(999.dp))
+            .padding(horizontal = 6.dp, vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(
             icon,
             contentDescription = null,
             tint = tint,
-            modifier = Modifier.size(10.dp)
+            modifier = Modifier.size(9.dp)
         )
-        Spacer(Modifier.width(4.dp))
+        Spacer(Modifier.width(3.dp))
         Text(
             value,
             color = colors.textSecondary,
-            fontSize = 9.5.sp,
+            fontSize = 9.sp,
             fontFamily = FontFamily.Monospace,
             fontWeight = FontWeight.Medium,
             maxLines = 1
@@ -2925,60 +2927,83 @@ fun WorkspaceScreen(
         DisposableEffect(project) {
             onDispose { saveProjectState(project) }
         }
-        // Active project header (last finished turn feeds the stat chips below).
+        // Active project header (compact studio toolbar with live stats & session capsule).
         val lastTurn = project.chat.asReversed()
             .firstOrNull { it.role == "assistant" && it.tookMs > 0 }
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = 16.dp, end = 16.dp, top = 10.dp, bottom = 6.dp)
-                .clip(RoundedCornerShape(18.dp))
+                .padding(start = 14.dp, end = 14.dp, top = 6.dp, bottom = 4.dp)
+                .clip(RoundedCornerShape(14.dp))
                 .background(
                     Brush.verticalGradient(
                         listOf(colors.surface, colors.cardBackground)
                     )
                 )
-                .border(1.dp, colors.accentBlue.copy(alpha = 0.28f), RoundedCornerShape(18.dp))
-                .padding(12.dp),
+                .border(1.dp, colors.border, RoundedCornerShape(14.dp))
+                .padding(horizontal = 10.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box(
                 modifier = Modifier
-                    .size(36.dp)
-                    .clip(RoundedCornerShape(10.dp))
+                    .size(28.dp)
+                    .clip(RoundedCornerShape(8.dp))
                     .background(colors.surfaceHover)
+                    .border(0.75.dp, colors.border, RoundedCornerShape(8.dp))
                     .clickable { selected = null },
                 contentAlignment = Alignment.Center
             ) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Projects", tint = colors.textPrimary, modifier = Modifier.size(18.dp))
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "Projects",
+                    tint = colors.textPrimary,
+                    modifier = Modifier.size(15.dp)
+                )
             }
-            Spacer(Modifier.width(10.dp))
-            WorkspaceProjectTile(project.name, 0, 38)
-            Spacer(Modifier.width(10.dp))
-            Column(Modifier.weight(1f)) {
+            Spacer(Modifier.width(8.dp))
+            WorkspaceProjectTile(project.name, 0, 28)
+            Spacer(Modifier.width(8.dp))
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.Center
+            ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         project.name,
                         color = colors.textPrimary,
-                        fontSize = 14.sp,
+                        fontSize = 13.sp,
                         fontWeight = FontWeight.Bold,
                         maxLines = 1,
                         overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f, fill = false)
                     )
-                    Spacer(Modifier.width(6.dp))
-                    WorkspaceMiniPill("ACTIVE", colors.accentGreen)
+                    Spacer(Modifier.width(5.dp))
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(999.dp))
+                            .background(colors.accentGreen.copy(alpha = 0.12f))
+                            .border(0.75.dp, colors.accentGreen.copy(alpha = 0.35f), RoundedCornerShape(999.dp))
+                            .padding(horizontal = 5.dp, vertical = 1.5.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(4.5.dp)
+                                .clip(CircleShape)
+                                .background(colors.accentGreen)
+                        )
+                        Spacer(Modifier.width(3.dp))
+                        Text(
+                            "ACTIVE",
+                            color = colors.accentGreen,
+                            fontSize = 7.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace,
+                            letterSpacing = 0.5.sp
+                        )
+                    }
                 }
-                Spacer(Modifier.height(1.dp))
-                Text(
-                    project.dir,
-                    color = colors.textMuted,
-                    fontSize = 9.5.sp,
-                    fontFamily = FontFamily.Monospace,
-                    maxLines = 1,
-                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
-                )
-                Spacer(Modifier.height(4.dp))
+                Spacer(Modifier.height(2.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
@@ -2986,11 +3011,12 @@ fun WorkspaceScreen(
                 ) {
                     if (lastTurn == null) {
                         Text(
-                            "Ready · No runs yet",
+                            "Ready · ~/${File(project.dir).name}",
                             color = colors.textMuted,
-                            fontSize = 9.5.sp,
+                            fontSize = 9.sp,
                             fontFamily = FontFamily.Monospace,
-                            maxLines = 1
+                            maxLines = 1,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                         )
                     } else {
                         val perSec = (lastTurn.tokEst * 1000L / lastTurn.tookMs.coerceAtLeast(1)).toInt()
@@ -3000,38 +3026,65 @@ fun WorkspaceScreen(
                     }
                 }
             }
-            Spacer(Modifier.width(6.dp))
-            Column(horizontalAlignment = Alignment.End) {
-                val sessionCount = remember(project.sessionTick.value) {
-                    project.sessionStore.size +
-                        (if (project.activeSessionId in project.sessionStore) 0 else 1)
-                }
+            Spacer(Modifier.width(8.dp))
+            val sessionCount = remember(project.sessionTick.value) {
+                project.sessionStore.size +
+                    (if (project.activeSessionId in project.sessionStore) 0 else 1)
+            }
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(colors.cardBackground)
+                    .border(1.dp, colors.border, RoundedCornerShape(8.dp))
+                    .height(28.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Row(
                     modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(colors.accentBlue.copy(alpha = 0.10f))
-                        .border(1.dp, colors.accentBlue.copy(alpha = 0.25f), RoundedCornerShape(8.dp))
                         .clickable { showSessions = true }
                         .padding(horizontal = 7.dp, vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(Icons.Default.History, contentDescription = "Sessions", tint = colors.accentBlue, modifier = Modifier.size(12.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text("$sessionCount", color = colors.accentBlue, fontSize = 10.5.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+                    Icon(
+                        Icons.Default.History,
+                        contentDescription = "Sessions",
+                        tint = colors.accentBlue,
+                        modifier = Modifier.size(11.dp)
+                    )
+                    Spacer(Modifier.width(3.dp))
+                    Text(
+                        "$sessionCount",
+                        color = colors.textPrimary,
+                        fontSize = 10.5.sp,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold
+                    )
                 }
-                Spacer(Modifier.height(4.dp))
+                Box(
+                    modifier = Modifier
+                        .width(1.dp)
+                        .height(14.dp)
+                        .background(colors.border)
+                )
                 Row(
                     modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(if (chatBusy) colors.surfaceHover else colors.accentGreen.copy(alpha = 0.10f))
-                        .border(1.dp, if (chatBusy) colors.border else colors.accentGreen.copy(alpha = 0.25f), RoundedCornerShape(8.dp))
                         .clickable(enabled = !chatBusy) { confirmNewSession = true }
                         .padding(horizontal = 7.dp, vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(Icons.Default.Add, contentDescription = "New session", tint = if (chatBusy) colors.textMuted else colors.accentGreen, modifier = Modifier.size(12.dp))
-                    Spacer(Modifier.width(3.dp))
-                    Text("New", color = if (chatBusy) colors.textMuted else colors.accentGreen, fontSize = 10.5.sp, fontWeight = FontWeight.SemiBold)
+                    Icon(
+                        Icons.Default.Add,
+                        contentDescription = "New session",
+                        tint = if (chatBusy) colors.textMuted else colors.accentGreen,
+                        modifier = Modifier.size(11.dp)
+                    )
+                    Spacer(Modifier.width(2.dp))
+                    Text(
+                        "New",
+                        color = if (chatBusy) colors.textMuted else colors.accentGreen,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
                 }
             }
         }

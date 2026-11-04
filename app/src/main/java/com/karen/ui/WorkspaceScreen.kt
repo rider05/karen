@@ -538,7 +538,20 @@ private fun fileIconFor(name: String, isDir: Boolean): androidx.compose.ui.graph
         "mp3", "wav", "ogg", "m4a" -> Icons.Default.AudioFile
         "mp4", "mkv", "webm" -> Icons.Default.VideoFile
         "sh" -> Icons.Default.Terminal
-        else -> Icons.Default.InsertDriveFile
+        else -> Icons.AutoMirrored.Filled.InsertDriveFile
+    }
+}
+
+private fun fileTintFor(name: String, isDir: Boolean, colors: KarenColors): Color {
+    if (isDir) return colors.accentAmber
+    return when (name.substringAfterLast('.', "").lowercase()) {
+        "kt", "kts", "java", "scala" -> Color(0xFFA78BFA)
+        "js", "ts", "tsx", "jsx", "py", "rs", "go" -> colors.accentBlue
+        "xml", "json", "toml", "gradle", "yaml", "yml", "properties" -> colors.accentAmber
+        "md", "txt", "pdf" -> colors.accentBlue.copy(alpha = 0.85f)
+        "png", "jpg", "jpeg", "gif", "webp", "svg" -> Color(0xFFF472B6)
+        "sh", "bash", "zsh" -> colors.accentSuccess
+        else -> colors.textMuted
     }
 }
 
@@ -1202,60 +1215,76 @@ private fun WorkspaceProjectsHero(
             .fillMaxWidth()
             .clip(RoundedCornerShape(20.dp))
             .background(
-                Brush.verticalGradient(
-                    listOf(colors.surface, colors.cardBackground)
+                Brush.linearGradient(
+                    listOf(
+                        colors.accentGreen.copy(alpha = if (colors.isDark) 0.12f else 0.08f),
+                        colors.surface,
+                        colors.cardBackground
+                    )
                 )
             )
-            .border(1.dp, colors.accentBlue.copy(alpha = 0.3f), RoundedCornerShape(20.dp))
+            .border(1.dp, colors.accentGreen.copy(alpha = 0.35f), RoundedCornerShape(20.dp))
             .padding(16.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
                 modifier = Modifier
-                    .size(42.dp)
-                    .clip(RoundedCornerShape(13.dp))
-                    .background(colors.accentBlue.copy(alpha = 0.13f))
-                    .border(1.dp, colors.accentBlue.copy(alpha = 0.28f), RoundedCornerShape(13.dp)),
+                    .size(44.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(colors.accentGreen.copy(alpha = 0.14f))
+                    .border(1.dp, colors.accentGreen.copy(alpha = 0.32f), RoundedCornerShape(14.dp)),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(Icons.Default.Code, contentDescription = null, tint = colors.accentBlue, modifier = Modifier.size(21.dp))
+                Icon(Icons.Default.Terminal, contentDescription = null, tint = colors.accentGreen, modifier = Modifier.size(22.dp))
             }
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(
-                    "DEV WORKSPACE // LOCAL CANVAS",
-                    color = colors.accentBlue,
+                    "DEV STUDIO // ON-DEVICE RUNNER",
+                    color = colors.accentGreen,
+                    fontFamily = FontFamily.Monospace,
                     fontSize = 9.sp,
                     fontWeight = FontWeight.Bold,
-                    letterSpacing = 1.05.sp
+                    letterSpacing = 1.1.sp
                 )
                 Spacer(Modifier.height(2.dp))
-                Text("Projects", color = colors.textPrimary, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+                Text("Development Studio", color = colors.textPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold)
                 Text(
-                    "Scaffold, run, and diff on device",
-                    color = colors.textMuted,
-                    fontSize = 11.sp,
-                    maxLines = 1
+                    "Scaffold, test, run bash checks, and inspect diffs locally.",
+                    color = colors.textSecondary,
+                    fontSize = 11.5.sp,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                 )
             }
-            WorkspaceMiniPill("ON-DEVICE", colors.accentGreen)
+            Spacer(Modifier.width(6.dp))
+            WorkspaceMiniPill("SANDBOX READY", colors.accentSuccess)
         }
         Spacer(Modifier.height(14.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            WorkspaceHeroStat("PROJECTS", "$projectCount", colors.accentAmber, Modifier.weight(0.7f))
-            WorkspaceHeroStat("MODEL", selectedModel.ifBlank { "none" }, colors.accentGreen, Modifier.weight(1.3f))
-            WorkspaceHeroStat("HOST", "local", colors.accentBlue, Modifier.weight(0.7f))
+            WorkspaceHeroStat("PROJECTS", "$projectCount", colors.accentAmber, Modifier.weight(0.9f))
+            WorkspaceHeroStat("MODEL", selectedModel.ifBlank { "Auto" }, colors.accentGreen, Modifier.weight(1.3f))
+            WorkspaceHeroStat("SHELL", "sh sandbox", colors.accentBlue, Modifier.weight(0.9f))
         }
         Spacer(Modifier.height(12.dp))
-        Button(
-            onClick = onNew,
-            colors = ButtonDefaults.buttonColors(containerColor = colors.accentGreen, contentColor = Color.White),
-            shape = RoundedCornerShape(999.dp),
-            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
-        ) {
-            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-            Spacer(Modifier.width(5.dp))
-            Text("New project", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Button(
+                onClick = onNew,
+                colors = ButtonDefaults.buttonColors(containerColor = colors.accentGreen, contentColor = Color.White),
+                shape = RoundedCornerShape(999.dp),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
+            ) {
+                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("New project", fontSize = 12.5.sp, fontWeight = FontWeight.Bold)
+            }
+            Spacer(Modifier.width(8.dp))
+            Text(
+                "Offline execution",
+                color = colors.textMuted,
+                fontFamily = FontFamily.Monospace,
+                fontSize = 10.5.sp
+            )
         }
     }
 }
@@ -1271,16 +1300,23 @@ private fun WorkspaceHeroStat(
     Column(
         modifier = modifier
             .clip(RoundedCornerShape(11.dp))
-            .background(colors.surfaceHover.copy(alpha = 0.45f))
-            .border(1.dp, colors.border.copy(alpha = 0.7f), RoundedCornerShape(11.dp))
-            .padding(horizontal = 9.dp, vertical = 8.dp)
+            .background(colors.surfaceHover.copy(alpha = 0.50f))
+            .border(1.dp, colors.border.copy(alpha = 0.75f), RoundedCornerShape(11.dp))
+            .padding(horizontal = 10.dp, vertical = 8.dp)
     ) {
-        Text(label, color = colors.textMuted, fontSize = 8.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp)
-        Spacer(Modifier.height(3.dp))
+        Text(
+            label.uppercase(),
+            color = colors.textMuted,
+            fontSize = 8.sp,
+            fontWeight = FontWeight.Bold,
+            fontFamily = FontFamily.Monospace,
+            letterSpacing = 0.8.sp
+        )
+        Spacer(Modifier.height(2.dp))
         Text(
             value,
             color = tint,
-            fontSize = 11.sp,
+            fontSize = 12.sp,
             fontWeight = FontWeight.Bold,
             fontFamily = FontFamily.Monospace,
             maxLines = 1,
@@ -1305,7 +1341,8 @@ private fun WorkspaceSectionLabel(
             modifier = Modifier
                 .size(26.dp)
                 .clip(RoundedCornerShape(8.dp))
-                .background(tint.copy(alpha = 0.12f)),
+                .background(tint.copy(alpha = 0.12f))
+                .border(1.dp, tint.copy(alpha = 0.28f), RoundedCornerShape(8.dp)),
             contentAlignment = Alignment.Center
         ) {
             Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(14.dp))
@@ -1314,58 +1351,143 @@ private fun WorkspaceSectionLabel(
         Text(
             kicker.uppercase(),
             color = colors.textSecondary,
+            fontFamily = FontFamily.Monospace,
             fontSize = 10.5.sp,
             fontWeight = FontWeight.Bold,
             letterSpacing = 0.9.sp,
             modifier = Modifier.weight(1f)
         )
         if (!trailing.isNullOrBlank()) {
-            Text(trailing, color = colors.textMuted, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+            Text(
+                trailing,
+                color = colors.textMuted,
+                fontSize = 10.sp,
+                fontFamily = FontFamily.Monospace
+            )
         }
     }
 }
 
 @Composable
-private fun WorkspaceEmptyProjects(onNew: () -> Unit) {
+private fun WorkspaceEmptyProjects(
+    onNew: () -> Unit,
+    onStarter: ((title: String, file: String, content: String) -> Unit)? = null
+) {
     val colors = LocalKarenColors.current
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
+            .clip(RoundedCornerShape(18.dp))
             .background(colors.surface)
-            .border(1.dp, colors.border, RoundedCornerShape(16.dp))
+            .border(1.dp, colors.border, RoundedCornerShape(18.dp))
             .padding(20.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Box(
             modifier = Modifier
-                .size(44.dp)
-                .clip(RoundedCornerShape(13.dp))
-                .background(colors.accentBlue.copy(alpha = 0.12f)),
+                .size(48.dp)
+                .clip(RoundedCornerShape(14.dp))
+                .background(colors.accentBlue.copy(alpha = 0.12f))
+                .border(1.dp, colors.accentBlue.copy(alpha = 0.3f), RoundedCornerShape(14.dp)),
             contentAlignment = Alignment.Center
         ) {
-            Icon(Icons.Default.Code, contentDescription = null, tint = colors.accentBlue, modifier = Modifier.size(21.dp))
+            Icon(Icons.Default.Terminal, contentDescription = null, tint = colors.accentBlue, modifier = Modifier.size(24.dp))
         }
-        Spacer(Modifier.height(10.dp))
-        Text("No projects yet", color = colors.textPrimary, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-        Spacer(Modifier.height(3.dp))
+        Spacer(Modifier.height(12.dp))
+        Text("No projects yet", color = colors.textPrimary, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(4.dp))
         Text(
-            "Create a project to scaffold files, write code, and run it locally.",
+            "Start from a pre-configured template or create a custom project to run code and shell commands on-device.",
             color = colors.textMuted,
             fontSize = 11.5.sp,
             lineHeight = 16.sp,
             textAlign = androidx.compose.ui.text.style.TextAlign.Center
         )
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(16.dp))
+
+        // Quick starter templates
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(colors.surfaceHover.copy(alpha = 0.6f))
+                    .border(1.dp, colors.border, RoundedCornerShape(12.dp))
+                    .clickable {
+                        onStarter?.invoke(
+                            "kotlin-app",
+                            "src/Main.kt",
+                            "fun main() {\n    println(\"Hello from on-device Karen Kotlin Workspace!\")\n}\n"
+                        ) ?: onNew()
+                    }
+                    .padding(10.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(Icons.Default.Code, contentDescription = null, tint = Color(0xFFA78BFA), modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.height(4.dp))
+                    Text("Kotlin CLI", color = colors.textPrimary, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                }
+            }
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(colors.surfaceHover.copy(alpha = 0.6f))
+                    .border(1.dp, colors.border, RoundedCornerShape(12.dp))
+                    .clickable {
+                        onStarter?.invoke(
+                            "shell-tools",
+                            "run.sh",
+                            "#!/bin/sh\necho \"Running system checks...\"\nuname -a\ndate\n"
+                        ) ?: onNew()
+                    }
+                    .padding(10.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(Icons.Default.Terminal, contentDescription = null, tint = colors.accentSuccess, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.height(4.dp))
+                    Text("Shell Tool", color = colors.textPrimary, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                }
+            }
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(colors.surfaceHover.copy(alpha = 0.6f))
+                    .border(1.dp, colors.border, RoundedCornerShape(12.dp))
+                    .clickable {
+                        onStarter?.invoke(
+                            "workspace-docs",
+                            "README.md",
+                            "# Workspace Notes\n\nOffline-first architecture and developer logs.\n"
+                        ) ?: onNew()
+                    }
+                    .padding(10.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(Icons.Default.Description, contentDescription = null, tint = colors.accentBlue, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.height(4.dp))
+                    Text("Docs", color = colors.textPrimary, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
+
+        Spacer(Modifier.height(14.dp))
         Button(
             onClick = onNew,
             colors = ButtonDefaults.buttonColors(containerColor = colors.accentGreen, contentColor = Color.White),
             shape = RoundedCornerShape(999.dp),
-            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 7.dp)
         ) {
-            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(14.dp))
-            Spacer(Modifier.width(4.dp))
-            Text("New project", fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
+            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(15.dp))
+            Spacer(Modifier.width(5.dp))
+            Text("Custom project", fontSize = 12.sp, fontWeight = FontWeight.Bold)
         }
     }
 }
@@ -1388,19 +1510,19 @@ private fun WorkspaceProjectTile(name: String, index: Int, size: Int = 42) {
             .clip(RoundedCornerShape((size / 3).dp))
             .background(
                 Brush.linearGradient(
-                    listOf(tint.copy(alpha = 0.28f), tint.copy(alpha = 0.09f))
+                    listOf(tint.copy(alpha = 0.25f), tint.copy(alpha = 0.08f))
                 )
             )
-            .border(1.dp, tint.copy(alpha = 0.35f), RoundedCornerShape((size / 3).dp)),
+            .border(1.dp, tint.copy(alpha = 0.38f), RoundedCornerShape((size / 3).dp)),
         contentAlignment = Alignment.Center
     ) {
         Text(
             monogram,
             color = tint,
-            fontSize = (size * 0.31f).sp,
+            fontSize = (size * 0.33f).sp,
             fontWeight = FontWeight.Bold,
             fontFamily = FontFamily.Monospace,
-            letterSpacing = 0.5.sp
+            letterSpacing = 0.6.sp
         )
     }
 }
@@ -1410,17 +1532,17 @@ private fun WorkspaceMiniPill(text: String, tint: Color) {
     Box(
         modifier = Modifier
             .clip(RoundedCornerShape(999.dp))
-            .background(tint.copy(alpha = 0.10f))
+            .background(tint.copy(alpha = 0.12f))
             .border(1.dp, tint.copy(alpha = 0.38f), RoundedCornerShape(999.dp))
-            .padding(horizontal = 7.dp, vertical = 3.dp)
+            .padding(horizontal = 8.dp, vertical = 3.dp)
     ) {
         Text(
             text,
             color = tint,
-            fontSize = 7.5.sp,
+            fontSize = 8.sp,
             fontWeight = FontWeight.Bold,
             fontFamily = FontFamily.Monospace,
-            letterSpacing = 0.5.sp,
+            letterSpacing = 0.6.sp,
             maxLines = 1
         )
     }
@@ -1438,20 +1560,20 @@ private fun WorkspaceStatChip(
             .clip(RoundedCornerShape(999.dp))
             .background(colors.cardBackground)
             .border(1.dp, colors.border, RoundedCornerShape(999.dp))
-            .padding(horizontal = 6.dp, vertical = 3.dp),
+            .padding(horizontal = 7.dp, vertical = 3.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(
             icon,
             contentDescription = null,
             tint = tint,
-            modifier = Modifier.size(9.dp)
+            modifier = Modifier.size(10.dp)
         )
-        Spacer(Modifier.width(3.dp))
+        Spacer(Modifier.width(4.dp))
         Text(
             value,
             color = colors.textSecondary,
-            fontSize = 9.sp,
+            fontSize = 9.5.sp,
             fontFamily = FontFamily.Monospace,
             fontWeight = FontWeight.Medium,
             maxLines = 1
@@ -1460,36 +1582,72 @@ private fun WorkspaceStatChip(
 }
 
 @Composable
-private fun WorkspaceChatEmpty(projectName: String) {
+private fun WorkspaceChatEmpty(
+    projectName: String,
+    onPromptClick: ((String) -> Unit)? = null
+) {
     val colors = LocalKarenColors.current
-    Row(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(16.dp))
             .background(colors.surface)
-            .border(1.dp, colors.border, RoundedCornerShape(14.dp))
-            .padding(12.dp),
-        verticalAlignment = Alignment.Top
+            .border(1.dp, colors.border, RoundedCornerShape(16.dp))
+            .padding(14.dp)
     ) {
-        Box(
-            modifier = Modifier
-                .size(32.dp)
-                .clip(RoundedCornerShape(9.dp))
-                .background(colors.accentGreen.copy(alpha = 0.12f)),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(Icons.Default.Terminal, contentDescription = null, tint = colors.accentGreen, modifier = Modifier.size(16.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .size(34.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(colors.accentGreen.copy(alpha = 0.14f))
+                    .border(1.dp, colors.accentGreen.copy(alpha = 0.30f), RoundedCornerShape(10.dp)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(Icons.Default.Terminal, contentDescription = null, tint = colors.accentGreen, modifier = Modifier.size(18.dp))
+            }
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text("Blank Project Canvas", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Bold)
+                Text(
+                    "Prompt Karen to scaffold code, build tools, or run checks in $projectName.",
+                    color = colors.textMuted,
+                    fontSize = 11.sp,
+                    lineHeight = 15.sp
+                )
+            }
         }
-        Spacer(Modifier.width(9.dp))
-        Column {
-            Text("Blank canvas", color = colors.textPrimary, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
-            Spacer(Modifier.height(2.dp))
-            Text(
-                "Ask Karen to build something in $projectName. The reply, files, and plan show up here and in the canvas.",
-                color = colors.textMuted,
-                fontSize = 11.sp,
-                lineHeight = 15.sp
-            )
+        Spacer(Modifier.height(10.dp))
+        Text(
+            "QUICK ACTIONS",
+            color = colors.textMuted,
+            fontFamily = FontFamily.Monospace,
+            fontSize = 8.5.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 0.8.sp
+        )
+        Spacer(Modifier.height(6.dp))
+        val suggestions = listOf(
+            "✨ Scaffold project structure" to "Create a complete, modular project structure in $projectName",
+            "🧪 Run syntax & test checks" to "Run compilation checks and verify syntax in $projectName",
+            "🔍 Inspect project files" to "List and summarize the files in $projectName"
+        )
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            suggestions.forEach { (label, prompt) ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(colors.surfaceHover.copy(alpha = 0.6f))
+                        .border(1.dp, colors.border.copy(alpha = 0.8f), RoundedCornerShape(10.dp))
+                        .clickable { onPromptClick?.invoke(prompt) }
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(label, color = colors.accentGreen, fontSize = 11.5.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+                    Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null, tint = colors.textMuted, modifier = Modifier.size(12.dp))
+                }
+            }
         }
     }
 }
@@ -1715,6 +1873,7 @@ fun WorkspaceScreen(
     var selected by remember { mutableStateOf<Project?>(null) }
     var showNewProject by remember { mutableStateOf(false) }
     var newName by remember { mutableStateOf("") }
+    var searchQuery by remember { mutableStateOf("") }
     // Per-card overflow menu + rename/delete state (keyed by project dir).
     var cardMenuDir by remember { mutableStateOf<String?>(null) }
     var renamingDir by remember { mutableStateOf<String?>(null) }
@@ -1797,6 +1956,25 @@ fun WorkspaceScreen(
         chatInput = ""
         saveProjectState(project)
         android.widget.Toast.makeText(ctx, "New session started in ${project.name}", android.widget.Toast.LENGTH_SHORT).show()
+    }
+
+    /** Instant starter templates for new workspaces. */
+    fun createProjectWithFiles(name: String, relPath: String, fileContent: String) {
+        var finalName = name
+        var count = 2
+        while (projects.any { it.name.equals(finalName, ignoreCase = true) }) {
+            finalName = "$name-$count"
+            count++
+        }
+        val dir = File(ctx.filesDir, "projects/$finalName").apply { mkdirs() }
+        val sample = File(dir, relPath)
+        sample.parentFile?.mkdirs()
+        try { sample.writeText(fileContent) } catch (_: Exception) {}
+        val p = Project(finalName, dir.absolutePath)
+        projects.add(p)
+        UserPrefs.saveProjects(ctx, projects.map { it.name to it.dir })
+        selected = p
+        activeTab = "Code"
     }
     // Voice input (dictation) + output (read the last reply aloud).
     val voiceStt = rememberVoiceStt(
@@ -2445,133 +2623,174 @@ fun WorkspaceScreen(
                 )
                 Spacer(Modifier.height(8.dp))
                 if (projects.isEmpty()) {
-                    WorkspaceEmptyProjects(onNew = { showNewProject = true })
+                    WorkspaceEmptyProjects(
+                        onNew = { showNewProject = true },
+                        onStarter = { title, file, content ->
+                            createProjectWithFiles(title, file, content)
+                        }
+                    )
                 } else {
-                    LazyColumn(
-                        modifier = Modifier.weight(1f),
-                        verticalArrangement = Arrangement.spacedBy(9.dp),
-                        contentPadding = PaddingValues(bottom = 16.dp)
-                    ) {
-                        items(projects.size) { pIndex ->
-                            val p = projects[pIndex]
-                            val cardStats = p.chat.asReversed()
-                                .firstOrNull { it.role == "assistant" && it.tookMs > 0 }
-                                ?.let { turnStats(it.tookMs, it.tokEst) }
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(16.dp))
-                                    .background(
-                                        Brush.verticalGradient(
-                                            listOf(colors.surface, colors.cardBackground)
+                    val filteredProjects = remember(projects.toList(), searchQuery) {
+                        if (searchQuery.isBlank()) projects
+                        else projects.filter {
+                            it.name.contains(searchQuery, ignoreCase = true) ||
+                            it.dir.contains(searchQuery, ignoreCase = true)
+                        }
+                    }
+                    OutlinedTextField(
+                        value = searchQuery,
+                        onValueChange = { searchQuery = it },
+                        placeholder = { Text("Filter projects by name or path…", color = colors.textMuted, fontSize = 12.sp) },
+                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = colors.textMuted, modifier = Modifier.size(16.dp)) },
+                        trailingIcon = {
+                            if (searchQuery.isNotEmpty()) {
+                                IconButton(onClick = { searchQuery = "" }, modifier = Modifier.size(24.dp)) {
+                                    Icon(Icons.Default.Clear, contentDescription = "Clear", tint = colors.textMuted, modifier = Modifier.size(14.dp))
+                                }
+                            }
+                        },
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp),
+                        textStyle = androidx.compose.ui.text.TextStyle(color = colors.textPrimary, fontSize = 12.5.sp),
+                        colors = karenFieldColors(colors)
+                    )
+                    if (filteredProjects.isEmpty()) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(colors.surface)
+                                .border(1.dp, colors.border, RoundedCornerShape(14.dp))
+                                .padding(24.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("No projects matching “$searchQuery”", color = colors.textMuted, fontSize = 12.sp)
+                        }
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(9.dp),
+                            contentPadding = PaddingValues(bottom = 16.dp)
+                        ) {
+                            items(filteredProjects.size) { pIndex ->
+                                val p = filteredProjects[pIndex]
+                                val cardStats = p.chat.asReversed()
+                                    .firstOrNull { it.role == "assistant" && it.tookMs > 0 }
+                                    ?.let { turnStats(it.tookMs, it.tokEst) }
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(16.dp))
+                                        .background(
+                                            Brush.verticalGradient(
+                                                listOf(colors.surface, colors.cardBackground)
+                                            )
                                         )
-                                    )
-                                    .border(1.dp, colors.border, RoundedCornerShape(16.dp))
-                                    .clickable {
-                                        selected = p
-                                        activeTab = "Code"
-                                    }
-                                    .padding(12.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                WorkspaceProjectTile(p.name, pIndex)
-                                Spacer(Modifier.width(10.dp))
-                                Column(Modifier.weight(1f)) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        .border(1.dp, colors.border, RoundedCornerShape(16.dp))
+                                        .clickable {
+                                            selected = p
+                                            activeTab = "Code"
+                                        }
+                                        .padding(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    WorkspaceProjectTile(p.name, pIndex)
+                                    Spacer(Modifier.width(10.dp))
+                                    Column(Modifier.weight(1f)) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Text(
+                                                p.name,
+                                                color = colors.textPrimary,
+                                                fontSize = 13.5.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                maxLines = 1,
+                                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                                modifier = Modifier.weight(1f, fill = false)
+                                            )
+                                            Spacer(Modifier.width(6.dp))
+                                            WorkspaceMiniPill("LOCAL", colors.accentGreen)
+                                        }
+                                        Spacer(Modifier.height(2.dp))
                                         Text(
-                                            p.name,
-                                            color = colors.textPrimary,
-                                            fontSize = 13.5.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            maxLines = 1,
-                                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                                            modifier = Modifier.weight(1f, fill = false)
-                                        )
-                                        Spacer(Modifier.width(6.dp))
-                                        WorkspaceMiniPill("LOCAL", colors.accentGreen)
-                                    }
-                                    Spacer(Modifier.height(2.dp))
-                                    Text(
-                                        p.dir,
-                                        color = colors.textMuted,
-                                        fontSize = 9.5.sp,
-                                        fontFamily = FontFamily.Monospace,
-                                        maxLines = 1,
-                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
-                                    )
-                                    if (cardStats != null) {
-                                        Spacer(Modifier.height(3.dp))
-                                        Text(
-                                            cardStats,
-                                            color = colors.accentGreen.copy(alpha = 0.85f),
+                                            p.dir,
+                                            color = colors.textMuted,
                                             fontSize = 9.5.sp,
                                             fontFamily = FontFamily.Monospace,
                                             maxLines = 1,
                                             overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                                         )
-                                    }
-                                }
-                                Box {
-                                    IconButton(
-                                        onClick = { cardMenuDir = p.dir },
-                                        modifier = Modifier.size(32.dp)
-                                    ) {
-                                        Icon(Icons.Default.MoreVert, contentDescription = "Project options", tint = colors.textMuted, modifier = Modifier.size(17.dp))
-                                    }
-                                    KDropdownMenu(
-                                        expanded = cardMenuDir == p.dir,
-                                        onDismissRequest = { cardMenuDir = null }
-                                    ) {
-                                        DropdownMenuItem(
-                                            text = { Text("Rename", color = colors.textPrimary, fontSize = 13.sp) },
-                                            leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null, tint = colors.textSecondary, modifier = Modifier.size(16.dp)) },
-                                            onClick = {
-                                                cardMenuDir = null
-                                                renameInput = p.name
-                                                renamingDir = p.dir
+                                        Spacer(Modifier.height(4.dp))
+                                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            if (cardStats != null) {
+                                                WorkspaceStatChip(Icons.Default.Bolt, cardStats, colors.accentGreen)
+                                            } else {
+                                                WorkspaceStatChip(Icons.Default.Terminal, "ready", colors.textMuted)
                                             }
-                                        )
-                                        DropdownMenuItem(
-                                            text = { Text("Duplicate", color = colors.textPrimary, fontSize = 13.sp) },
-                                            leadingIcon = { Icon(Icons.Default.ContentCopy, contentDescription = null, tint = colors.textSecondary, modifier = Modifier.size(16.dp)) },
-                                            onClick = {
-                                                cardMenuDir = null
-                                                scope.launch {
-                                                    val src = withContext(Dispatchers.IO) { File(p.dir) }
-                                                    val base = "${p.name} copy"
-                                                    var target = base
-                                                    var n = 2
-                                                    while (projects.any { it.name == target }) {
-                                                        target = "$base $n"
-                                                        n++
-                                                    }
-                                                    val dst = File(src.parentFile, target)
-                                                    val ok = withContext(Dispatchers.IO) {
-                                                        try {
-                                                            src.copyRecursively(dst, overwrite = false)
-                                                            File(dst, ".karen").deleteRecursively()
-                                                            true
-                                                        } catch (_: Exception) { false }
-                                                    }
-                                                    if (ok) {
-                                                        projects.add(Project(target, dst.absolutePath))
-                                                        UserPrefs.saveProjects(ctx, projects.map { it.name to it.dir })
-                                                        android.widget.Toast.makeText(ctx, "Duplicated as $target", android.widget.Toast.LENGTH_SHORT).show()
-                                                    } else {
-                                                        android.widget.Toast.makeText(ctx, "Duplicate failed", android.widget.Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                    Box {
+                                        IconButton(
+                                            onClick = { cardMenuDir = p.dir },
+                                            modifier = Modifier.size(32.dp)
+                                        ) {
+                                            Icon(Icons.Default.MoreVert, contentDescription = "Project options", tint = colors.textMuted, modifier = Modifier.size(17.dp))
+                                        }
+                                        KDropdownMenu(
+                                            expanded = cardMenuDir == p.dir,
+                                            onDismissRequest = { cardMenuDir = null }
+                                        ) {
+                                            DropdownMenuItem(
+                                                text = { Text("Rename", color = colors.textPrimary, fontSize = 13.sp) },
+                                                leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null, tint = colors.textSecondary, modifier = Modifier.size(16.dp)) },
+                                                onClick = {
+                                                    cardMenuDir = null
+                                                    renameInput = p.name
+                                                    renamingDir = p.dir
+                                                }
+                                            )
+                                            DropdownMenuItem(
+                                                text = { Text("Duplicate", color = colors.textPrimary, fontSize = 13.sp) },
+                                                leadingIcon = { Icon(Icons.Default.ContentCopy, contentDescription = null, tint = colors.textSecondary, modifier = Modifier.size(16.dp)) },
+                                                onClick = {
+                                                    cardMenuDir = null
+                                                    scope.launch {
+                                                        val src = withContext(Dispatchers.IO) { File(p.dir) }
+                                                        val base = "${p.name} copy"
+                                                        var target = base
+                                                        var n = 2
+                                                        while (projects.any { it.name == target }) {
+                                                            target = "$base $n"
+                                                            n++
+                                                        }
+                                                        val dst = File(src.parentFile, target)
+                                                        val ok = withContext(Dispatchers.IO) {
+                                                            try {
+                                                                src.copyRecursively(dst, overwrite = false)
+                                                                File(dst, ".karen").deleteRecursively()
+                                                                true
+                                                            } catch (_: Exception) { false }
+                                                        }
+                                                        if (ok) {
+                                                            projects.add(Project(target, dst.absolutePath))
+                                                            UserPrefs.saveProjects(ctx, projects.map { it.name to it.dir })
+                                                            android.widget.Toast.makeText(ctx, "Duplicated as $target", android.widget.Toast.LENGTH_SHORT).show()
+                                                        } else {
+                                                            android.widget.Toast.makeText(ctx, "Duplicate failed", android.widget.Toast.LENGTH_SHORT).show()
+                                                        }
                                                     }
                                                 }
-                                            }
-                                        )
-                                        KMenuDivider()
-                                        DropdownMenuItem(
-                                            text = { Text("Delete", color = colors.accentRed, fontSize = 13.sp) },
-                                            leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null, tint = colors.accentRed, modifier = Modifier.size(16.dp)) },
-                                            onClick = {
-                                                cardMenuDir = null
-                                                deletingDir = p.dir
-                                            }
-                                        )
+                                            )
+                                            KMenuDivider()
+                                            DropdownMenuItem(
+                                                text = { Text("Delete", color = colors.accentRed, fontSize = 13.sp) },
+                                                leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null, tint = colors.accentRed, modifier = Modifier.size(16.dp)) },
+                                                onClick = {
+                                                    cardMenuDir = null
+                                                    deletingDir = p.dir
+                                                }
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -2712,7 +2931,7 @@ fun WorkspaceScreen(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 6.dp)
+                .padding(start = 16.dp, end = 16.dp, top = 10.dp, bottom = 6.dp)
                 .clip(RoundedCornerShape(18.dp))
                 .background(
                     Brush.verticalGradient(
@@ -2720,28 +2939,28 @@ fun WorkspaceScreen(
                     )
                 )
                 .border(1.dp, colors.accentBlue.copy(alpha = 0.28f), RoundedCornerShape(18.dp))
-                .padding(12.dp)
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
             Box(
                 modifier = Modifier
-                    .align(Alignment.Top)
-                    .size(32.dp)
+                    .size(36.dp)
                     .clip(RoundedCornerShape(10.dp))
                     .background(colors.surfaceHover)
                     .clickable { selected = null },
                 contentAlignment = Alignment.Center
             ) {
-                Icon(Icons.Default.ArrowBack, contentDescription = "Projects", tint = colors.textPrimary, modifier = Modifier.size(17.dp))
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Projects", tint = colors.textPrimary, modifier = Modifier.size(18.dp))
             }
-            Spacer(Modifier.width(9.dp))
-            WorkspaceProjectTile(project.name, 0, 36)
-            Spacer(Modifier.width(9.dp))
+            Spacer(Modifier.width(10.dp))
+            WorkspaceProjectTile(project.name, 0, 38)
+            Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         project.name,
                         color = colors.textPrimary,
-                        fontSize = 13.5.sp,
+                        fontSize = 14.sp,
                         fontWeight = FontWeight.Bold,
                         maxLines = 1,
                         overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
@@ -2750,6 +2969,7 @@ fun WorkspaceScreen(
                     Spacer(Modifier.width(6.dp))
                     WorkspaceMiniPill("ACTIVE", colors.accentGreen)
                 }
+                Spacer(Modifier.height(1.dp))
                 Text(
                     project.dir,
                     color = colors.textMuted,
@@ -2759,9 +2979,6 @@ fun WorkspaceScreen(
                     overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                 )
                 Spacer(Modifier.height(4.dp))
-                // Telemetry chips: duration, tokens, throughput — mono values,
-                // one icon per metric, pill shape, hairline border. Full-width
-                // row so chips never get squeezed; actions live on their own line.
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
@@ -2769,70 +2986,52 @@ fun WorkspaceScreen(
                 ) {
                     if (lastTurn == null) {
                         Text(
-                            "No runs yet",
+                            "Ready · No runs yet",
                             color = colors.textMuted,
-                            fontSize = 10.sp,
+                            fontSize = 9.5.sp,
                             fontFamily = FontFamily.Monospace,
                             maxLines = 1
                         )
                     } else {
                         val perSec = (lastTurn.tokEst * 1000L / lastTurn.tookMs.coerceAtLeast(1)).toInt()
                         WorkspaceStatChip(Icons.Default.Schedule, formatDuration(lastTurn.tookMs), colors.textMuted)
-                        WorkspaceStatChip(Icons.Default.Token, "~${lastTurn.tokEst}", colors.accentBlue)
+                        WorkspaceStatChip(Icons.Default.Token, "~${lastTurn.tokEst} tok", colors.accentBlue)
                         WorkspaceStatChip(Icons.Default.Bolt, "$perSec tk/s", colors.accentGreen)
                     }
                 }
+            }
+            Spacer(Modifier.width(6.dp))
+            Column(horizontalAlignment = Alignment.End) {
+                val sessionCount = remember(project.sessionTick.value) {
+                    project.sessionStore.size +
+                        (if (project.activeSessionId in project.sessionStore) 0 else 1)
+                }
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.End
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(colors.accentBlue.copy(alpha = 0.10f))
+                        .border(1.dp, colors.accentBlue.copy(alpha = 0.25f), RoundedCornerShape(8.dp))
+                        .clickable { showSessions = true }
+                        .padding(horizontal = 7.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    TextButton(
-                        onClick = { showSessions = true },
-                        modifier = Modifier.semantics { contentDescription = "Sessions" },
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
-                    ) {
-                        val sessionCount = remember(project.sessionTick.value) {
-                            project.sessionStore.size +
-                                (if (project.activeSessionId in project.sessionStore) 0 else 1)
-                        }
-                        Icon(
-                            Icons.Default.History,
-                            contentDescription = null,
-                            tint = colors.accentBlue,
-                            modifier = Modifier.size(13.dp)
-                        )
-                        Spacer(Modifier.width(4.dp))
-                        Text(
-                            "$sessionCount",
-                            color = colors.textSecondary,
-                            fontSize = 10.5.sp,
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.Medium,
-                            maxLines = 1
-                        )
-                    }
-                    TextButton(
-                        onClick = { confirmNewSession = true },
-                        enabled = !chatBusy,
-                        modifier = Modifier.semantics { contentDescription = "New session" },
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
-                    ) {
-                        Icon(
-                            Icons.Default.Add,
-                            contentDescription = null,
-                            tint = if (chatBusy) colors.textMuted else colors.accentGreen,
-                            modifier = Modifier.size(13.dp)
-                        )
-                        Spacer(Modifier.width(4.dp))
-                        Text(
-                            "New",
-                            color = if (chatBusy) colors.textMuted else colors.accentGreen,
-                            fontSize = 10.5.sp,
-                            fontWeight = FontWeight.Medium,
-                            maxLines = 1
-                        )
-                    }
+                    Icon(Icons.Default.History, contentDescription = "Sessions", tint = colors.accentBlue, modifier = Modifier.size(12.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("$sessionCount", color = colors.accentBlue, fontSize = 10.5.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+                }
+                Spacer(Modifier.height(4.dp))
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(if (chatBusy) colors.surfaceHover else colors.accentGreen.copy(alpha = 0.10f))
+                        .border(1.dp, if (chatBusy) colors.border else colors.accentGreen.copy(alpha = 0.25f), RoundedCornerShape(8.dp))
+                        .clickable(enabled = !chatBusy) { confirmNewSession = true }
+                        .padding(horizontal = 7.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = "New session", tint = if (chatBusy) colors.textMuted else colors.accentGreen, modifier = Modifier.size(12.dp))
+                    Spacer(Modifier.width(3.dp))
+                    Text("New", color = if (chatBusy) colors.textMuted else colors.accentGreen, fontSize = 10.5.sp, fontWeight = FontWeight.SemiBold)
                 }
             }
         }
@@ -2891,7 +3090,12 @@ fun WorkspaceScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             if (project.chat.isEmpty()) {
-                item { WorkspaceChatEmpty(project.name) }
+                item {
+                    WorkspaceChatEmpty(
+                        projectName = project.name,
+                        onPromptClick = { prompt -> chatInput = prompt }
+                    )
+                }
             }
             items(project.chat.size) { i ->
                 val m = project.chat[i]
@@ -2910,14 +3114,18 @@ fun WorkspaceScreen(
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Box(
                                 modifier = Modifier
-                                    .size(22.dp)
+                                    .size(24.dp)
                                     .clip(CircleShape)
-                                    .background(colors.accentGreen),
+                                    .background(
+                                        Brush.linearGradient(
+                                            listOf(colors.accentGreen, colors.accentBlue)
+                                        )
+                                    ),
                                 contentAlignment = Alignment.Center
                             ) {
-                                Icon(Icons.Default.Psychology, contentDescription = "Karen", tint = Color.White, modifier = Modifier.size(14.dp))
+                                Icon(Icons.Default.Psychology, contentDescription = "Karen", tint = Color.White, modifier = Modifier.size(15.dp))
                             }
-                            Spacer(Modifier.width(7.dp))
+                            Spacer(Modifier.width(8.dp))
                             Text("Karen", color = colors.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                             Spacer(Modifier.weight(1f))
                             IconButton(
@@ -2975,14 +3183,18 @@ fun WorkspaceScreen(
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Box(
                                 modifier = Modifier
-                                    .size(22.dp)
+                                    .size(24.dp)
                                     .clip(CircleShape)
-                                    .background(colors.accentGreen),
+                                    .background(
+                                        Brush.linearGradient(
+                                            listOf(colors.accentGreen, colors.accentBlue)
+                                        )
+                                    ),
                                 contentAlignment = Alignment.Center
                             ) {
-                                Icon(Icons.Default.Psychology, contentDescription = "Karen", tint = Color.White, modifier = Modifier.size(14.dp))
+                                Icon(Icons.Default.Psychology, contentDescription = "Karen", tint = Color.White, modifier = Modifier.size(15.dp))
                             }
-                            Spacer(Modifier.width(7.dp))
+                            Spacer(Modifier.width(8.dp))
                             Text("Karen", color = colors.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                         }
                         ThinkingIndicator(label = "Thinking")
@@ -3002,17 +3214,24 @@ fun WorkspaceScreen(
                 .padding(4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            val stepBadge = remember(project.steps.size, project.steps.count { it.done }) {
+                if (project.steps.isNotEmpty()) "${project.steps.count { it.done }}/${project.steps.size}" else null
+            }
             tabs.forEach { tab ->
                 val isSelected = activeTab == tab
                 val tint = workspaceTabTint(tab, colors)
+                val badgeText = when (tab) {
+                    "Plan" -> stepBadge
+                    else -> null
+                }
                 Row(
                     modifier = Modifier
                         .weight(1f)
                         .clip(RoundedCornerShape(12.dp))
-                        .background(if (isSelected) tint.copy(alpha = 0.12f) else Color.Transparent)
+                        .background(if (isSelected) tint.copy(alpha = 0.14f) else Color.Transparent)
                         .border(
                             1.dp,
-                            if (isSelected) tint.copy(alpha = 0.42f) else Color.Transparent,
+                            if (isSelected) tint.copy(alpha = 0.45f) else Color.Transparent,
                             RoundedCornerShape(12.dp)
                         )
                         .clickable { activeTab = tab }
@@ -3034,6 +3253,10 @@ fun WorkspaceScreen(
                         fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
                         maxLines = 1
                     )
+                    if (badgeText != null) {
+                        Spacer(Modifier.width(4.dp))
+                        WorkspaceMiniPill(badgeText, if (isSelected) tint else colors.textMuted)
+                    }
                 }
             }
             // Focus mode: give the canvas the whole thread area (and back).
@@ -3045,10 +3268,10 @@ fun WorkspaceScreen(
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
-                    if (canvasExpanded) Icons.Default.UnfoldLess else Icons.Default.UnfoldMore,
+                    if (canvasExpanded) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
                     contentDescription = if (canvasExpanded) "Restore chat" else "Expand canvas",
                     tint = if (canvasExpanded) colors.accentGreen else colors.textMuted,
-                    modifier = Modifier.size(18.dp)
+                    modifier = Modifier.size(19.dp)
                 )
             }
         }
@@ -3102,6 +3325,42 @@ fun WorkspaceScreen(
                 route = workerRoute,
                 modifier = Modifier.padding(start = 14.dp)
             )
+
+            // Quick action suggestion chips
+            val samplePrompts = listOf(
+                "✨ Scaffold architecture",
+                "🧪 Run checks & tests",
+                "🔍 Explain files",
+                "📝 Add README docs"
+            )
+            androidx.compose.foundation.lazy.LazyRow(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 2.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                items(samplePrompts.size) { pIdx ->
+                    val promptText = samplePrompts[pIdx]
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(999.dp))
+                            .background(colors.surfaceHover.copy(alpha = 0.65f))
+                            .border(1.dp, colors.border, RoundedCornerShape(999.dp))
+                            .clickable {
+                                chatInput = when (pIdx) {
+                                    0 -> "Scaffold a complete, robust project structure in ${project.name}"
+                                    1 -> "Run compile checks and test verification in ${project.name}"
+                                    2 -> "Explain the main files and entry point in ${project.name}"
+                                    else -> "Add a comprehensive README.md documentation for ${project.name}"
+                                }
+                            }
+                            .padding(horizontal = 10.dp, vertical = 4.dp)
+                    ) {
+                        Text(promptText, color = colors.textSecondary, fontSize = 10.5.sp, maxLines = 1)
+                    }
+                }
+            }
+
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -3234,7 +3493,7 @@ fun WorkspaceScreen(
                 if (chatBusy) {
                     Icon(Icons.Default.Stop, contentDescription = "Stop", tint = Color.White, modifier = Modifier.size(19.dp))
                 } else {
-                    Icon(Icons.Default.Send, contentDescription = "Send", tint = Color.White, modifier = Modifier.size(19.dp))
+                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send", tint = Color.White, modifier = Modifier.size(19.dp))
                 }
             }
         }
@@ -3454,36 +3713,38 @@ private fun CodeCanvasView(project: Project) {
         ) {
             Box(
                 modifier = Modifier
-                    .size(26.dp)
+                    .size(28.dp)
                     .clip(RoundedCornerShape(8.dp))
-                    .background(colors.accentBlue.copy(alpha = 0.12f)),
+                    .background(colors.accentBlue.copy(alpha = 0.12f))
+                    .border(1.dp, colors.accentBlue.copy(alpha = 0.28f), RoundedCornerShape(8.dp)),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(Icons.Default.Code, contentDescription = null, tint = colors.accentBlue, modifier = Modifier.size(14.dp))
+                Icon(Icons.Default.Code, contentDescription = null, tint = colors.accentBlue, modifier = Modifier.size(15.dp))
             }
-            Spacer(Modifier.width(7.dp))
+            Spacer(Modifier.width(8.dp))
             Column(Modifier.weight(1f)) {
                 Text(
-                    if (dirty) "CODE // UNSAVED" else "CODE // EDITOR",
+                    if (dirty) "CODE // UNSAVED EDITS" else "CODE // EXPLORER & EDITOR",
                     color = if (dirty) colors.accentAmber else colors.accentBlue,
+                    fontFamily = FontFamily.Monospace,
                     fontSize = 8.sp,
                     fontWeight = FontWeight.Bold,
-                    letterSpacing = 0.7.sp
+                    letterSpacing = 0.8.sp
                 )
                 Text(
-                    currentRel ?: "No file selected",
+                    currentRel ?: "No file open",
                     color = if (currentRel != null) colors.textPrimary else colors.textMuted,
-                    fontSize = 10.5.sp,
+                    fontSize = 11.sp,
                     fontFamily = FontFamily.Monospace,
                     maxLines = 1,
                     overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                 )
             }
             if (dirty) {
-                Box(Modifier.padding(end = 4.dp).size(7.dp).clip(CircleShape).background(colors.accentAmber))
+                Box(Modifier.padding(end = 4.dp).size(8.dp).clip(CircleShape).background(colors.accentAmber))
             }
             IconButton(onClick = { nameInput = ""; showNewFile = true }, modifier = Modifier.size(30.dp)) {
-                Icon(Icons.Default.NoteAdd, contentDescription = "New file", tint = colors.textSecondary, modifier = Modifier.size(16.dp))
+                Icon(Icons.AutoMirrored.Filled.NoteAdd, contentDescription = "New file", tint = colors.textSecondary, modifier = Modifier.size(16.dp))
             }
             IconButton(onClick = { nameInput = ""; showNewFolder = true }, modifier = Modifier.size(30.dp)) {
                 Icon(Icons.Default.CreateNewFolder, contentDescription = "New folder", tint = colors.textSecondary, modifier = Modifier.size(16.dp))
@@ -3493,14 +3754,14 @@ private fun CodeCanvasView(project: Project) {
                 enabled = currentFile != null,
                 modifier = Modifier.size(30.dp)
             ) {
-                Icon(Icons.Default.Edit, contentDescription = "Rename", tint = colors.textSecondary, modifier = Modifier.size(15.dp))
+                Icon(Icons.Default.Edit, contentDescription = "Rename", tint = if (currentFile != null) colors.textSecondary else colors.textMuted.copy(alpha = 0.5f), modifier = Modifier.size(15.dp))
             }
             IconButton(
                 onClick = { confirmDeleteRel = currentRel },
                 enabled = currentRel != null,
                 modifier = Modifier.size(30.dp)
             ) {
-                Icon(Icons.Default.Delete, contentDescription = "Delete", tint = colors.textSecondary, modifier = Modifier.size(15.dp))
+                Icon(Icons.Default.Delete, contentDescription = "Delete", tint = if (currentRel != null) colors.accentRed else colors.textMuted.copy(alpha = 0.5f), modifier = Modifier.size(15.dp))
             }
             IconButton(onClick = { refreshTick = System.currentTimeMillis() }, modifier = Modifier.size(30.dp)) {
                 Icon(Icons.Default.Refresh, contentDescription = "Refresh", tint = colors.textSecondary, modifier = Modifier.size(15.dp))
@@ -3536,7 +3797,7 @@ private fun CodeCanvasView(project: Project) {
                     if (visible.isEmpty()) {
                         item {
                             Text(
-                                "Empty — ask the model to scaffold or tap +",
+                                "No files yet — prompt Karen to scaffold or tap +",
                                 color = colors.textMuted,
                                 fontSize = 11.sp,
                                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
@@ -3549,17 +3810,18 @@ private fun CodeCanvasView(project: Project) {
                         val depth = depthOf(root, f)
                         val isDir = f.isDirectory
                         val isSel = rel == currentRel
+                        val itemTint = fileTintFor(f.name, isDir, colors)
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 4.dp)
-                                .clip(RoundedCornerShape(7.dp))
+                                .padding(horizontal = 4.dp, vertical = 1.dp)
+                                .clip(RoundedCornerShape(8.dp))
                                 .background(if (isSel) colors.accentGreen.copy(alpha = 0.16f) else Color.Transparent)
                                 .border(
                                     1.dp,
-                                    if (isSel) colors.accentGreen.copy(alpha = 0.35f) else Color.Transparent,
-                                    RoundedCornerShape(7.dp)
+                                    if (isSel) colors.accentGreen.copy(alpha = 0.40f) else Color.Transparent,
+                                    RoundedCornerShape(8.dp)
                                 )
                                 .clickable {
                                     if (isDir) {
@@ -3569,11 +3831,11 @@ private fun CodeCanvasView(project: Project) {
                                         scope.launch { loadRel(rel) }
                                     }
                                 }
-                                .padding(start = (6 + depth * 12).dp, end = 6.dp, top = 5.dp, bottom = 5.dp)
+                                .padding(start = (6 + depth * 11).dp, end = 6.dp, top = 5.dp, bottom = 5.dp)
                         ) {
                             if (isDir) {
                                 Icon(
-                                    if (expanded.contains(rel)) Icons.Default.KeyboardArrowDown else Icons.Default.KeyboardArrowRight,
+                                    if (expanded.contains(rel)) Icons.Default.KeyboardArrowDown else Icons.AutoMirrored.Filled.KeyboardArrowRight,
                                     contentDescription = null,
                                     tint = colors.textMuted,
                                     modifier = Modifier.size(14.dp)
@@ -3589,7 +3851,7 @@ private fun CodeCanvasView(project: Project) {
                                 Icon(
                                     fileIconFor(f.name, false),
                                     contentDescription = null,
-                                    tint = if (isSel) colors.accentGreen else colors.textMuted,
+                                    tint = itemTint,
                                     modifier = Modifier.size(14.dp)
                                 )
                             }
@@ -3604,6 +3866,14 @@ private fun CodeCanvasView(project: Project) {
                                 overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                                 modifier = Modifier.weight(1f)
                             )
+                            if (!isDir && f.length() > 0) {
+                                Text(
+                                    formatFileSize(f.length()),
+                                    color = colors.textMuted,
+                                    fontSize = 8.5.sp,
+                                    fontFamily = FontFamily.Monospace
+                                )
+                            }
                         }
                     }
                 }
@@ -3611,23 +3881,25 @@ private fun CodeCanvasView(project: Project) {
             Spacer(Modifier.width(8.dp))
             // Editor
             Column(modifier = Modifier.weight(1.5f).fillMaxHeight()) {
+                val clipboard = LocalClipboardManager.current
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(bottom = 6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    val fileTint = if (currentFile != null) fileTintFor(currentFile.name, false, colors) else colors.accentGreen
                     Box(
                         modifier = Modifier
                             .size(24.dp)
                             .clip(RoundedCornerShape(7.dp))
-                            .background(colors.accentGreen.copy(alpha = 0.12f)),
+                            .background(fileTint.copy(alpha = 0.14f)),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
                             if (currentFile != null) fileIconFor(currentFile.name, false) else Icons.Default.Description,
                             contentDescription = null,
-                            tint = colors.accentGreen,
+                            tint = fileTint,
                             modifier = Modifier.size(13.dp)
                         )
                     }
@@ -3635,25 +3907,36 @@ private fun CodeCanvasView(project: Project) {
                     Text(
                         currentFile?.name ?: "Editor",
                         color = if (currentFile != null) colors.textPrimary else colors.textMuted,
-                        fontSize = 10.5.sp,
+                        fontSize = 11.sp,
                         fontWeight = FontWeight.SemiBold,
                         fontFamily = FontFamily.Monospace,
                         maxLines = 1,
                         overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f)
                     )
+                    if (currentFile != null && content.isNotEmpty()) {
+                        IconButton(
+                            onClick = {
+                                clipboard.setText(AnnotatedString(content))
+                            },
+                            modifier = Modifier.size(24.dp)
+                        ) {
+                            Icon(Icons.Default.ContentCopy, contentDescription = "Copy code", tint = colors.textMuted, modifier = Modifier.size(13.dp))
+                        }
+                        Spacer(Modifier.width(4.dp))
+                    }
                     if (currentFile != null) {
                         WorkspaceMiniPill(if (previewMode) "PREVIEW" else "EDIT", if (previewMode) colors.accentBlue else colors.accentGreen)
                     }
                 }
                 if (currentFile == null) {
                     Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
-                        Text("Select a file to read & edit", color = colors.textMuted, fontSize = 12.sp)
+                        Text("Select a file from the explorer to view & edit", color = colors.textMuted, fontSize = 12.sp)
                     }
                 } else if (binaryNote != null) {
                     Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(Icons.Default.InsertDriveFile, contentDescription = null, tint = colors.textMuted, modifier = Modifier.size(28.dp))
+                            Icon(Icons.AutoMirrored.Filled.InsertDriveFile, contentDescription = null, tint = colors.textMuted, modifier = Modifier.size(28.dp))
                             Spacer(Modifier.height(8.dp))
                             Text(binaryNote!!, color = colors.textMuted, fontSize = 12.sp)
                             Spacer(Modifier.height(4.dp))
@@ -3677,24 +3960,31 @@ private fun CodeCanvasView(project: Project) {
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .padding(horizontal = 10.dp, vertical = 1.dp)
+                                        .padding(horizontal = 8.dp, vertical = 1.dp)
                                 ) {
                                     Text(
                                         "${idx + 1}",
-                                        color = colors.textMuted,
-                                        fontSize = 11.5.sp,
+                                        color = colors.textMuted.copy(alpha = 0.7f),
+                                        fontSize = 11.sp,
                                         fontFamily = FontFamily.Monospace,
-                                        modifier = Modifier.width(28.dp)
+                                        modifier = Modifier.width(26.dp)
                                     )
+                                    Box(
+                                        modifier = Modifier
+                                            .width(1.dp)
+                                            .height(18.dp)
+                                            .background(colors.border.copy(alpha = 0.5f))
+                                    )
+                                    Spacer(Modifier.width(8.dp))
                                     Text(
                                         highlightCodeLine(
                                             previewLines[idx].ifBlank { " " },
                                             colors.textPrimary,
                                             colors.textMuted
                                         ),
-                                        fontSize = 12.sp,
+                                        fontSize = 11.5.sp,
                                         fontFamily = FontFamily.Monospace,
-                                        lineHeight = 18.sp,
+                                        lineHeight = 17.sp,
                                         modifier = Modifier.weight(1f)
                                     )
                                 }
@@ -3712,8 +4002,7 @@ private fun CodeCanvasView(project: Project) {
                     )
                 }
                 Spacer(Modifier.height(6.dp))
-                // Wraps instead of clipping: on a narrow editor column the
-                // Compile & Test action drops to a second line.
+                // Action buttons: Preview / Edit toggle, Save, Compile & Test
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp)
@@ -3762,9 +4051,12 @@ private fun CodeCanvasView(project: Project) {
                         },
                         enabled = currentFile != null && binaryNote == null && content.length <= 15000,
                         colors = ButtonDefaults.buttonColors(containerColor = colors.accentGreen, contentColor = Color.White),
-                        shape = RoundedCornerShape(8.dp)
+                        shape = RoundedCornerShape(8.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
                     ) {
-                        Text("Save", fontSize = 12.sp)
+                        Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(13.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Save", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     }
                     OutlinedButton(
                         onClick = {
@@ -3774,8 +4066,11 @@ private fun CodeCanvasView(project: Project) {
                                 statusOk = !out.startsWith("Error") && !out.contains("FAIL")
                             }
                         },
-                        shape = RoundedCornerShape(8.dp)
+                        shape = RoundedCornerShape(8.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
                     ) {
+                        Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(13.dp))
+                        Spacer(Modifier.width(4.dp))
                         Text("Compile & Test", fontSize = 11.5.sp)
                     }
                 }
@@ -4485,6 +4780,19 @@ private fun TerminalCanvasView(project: Project) {
     val termText = if (colors.isDark) Color(0xFFECECEC) else Color(0xFF1C1C1E)
     val termMuted = if (colors.isDark) Color(0xFF8E8E93) else Color(0xFF6B6B70)
 
+    fun executeCommand(toRun: String) {
+        val c = toRun.trim()
+        if (c.isBlank() || busy) return
+        busy = true
+        scope.launch {
+            project.terminalLog.add("$ $c")
+            val out = runShell(c, File(project.dir))
+            project.terminalLog.add(out)
+            cmd = ""
+            busy = false
+        }
+    }
+
     if (showRemoteDialog || showCommitDialog) {
         androidx.activity.compose.BackHandler {
             showRemoteDialog = false
@@ -4492,28 +4800,60 @@ private fun TerminalCanvasView(project: Project) {
         }
     }
 
-    Column(modifier = Modifier.fillMaxSize().background(termBg).padding(12.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+    Column(modifier = Modifier.fillMaxSize().background(termBg).padding(10.dp)) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp)
+        ) {
             Box(Modifier.size(8.dp).clip(CircleShape).background(Color(0xFFEF4444)))
             Spacer(Modifier.width(6.dp))
             Box(Modifier.size(8.dp).clip(CircleShape).background(Color(0xFFF59E0B)))
             Spacer(Modifier.width(6.dp))
-            Box(Modifier.size(8.dp).clip(CircleShape).background(Color(0xFF34D399)))
-            Spacer(Modifier.width(12.dp))
+            Box(Modifier.size(8.dp).clip(CircleShape).background(Color(0xFF10B981)))
+            Spacer(Modifier.width(10.dp))
             Text(
-                "local-sandbox: ~/${project.name}",
+                "karen-sandbox: ~/${project.name}",
                 color = termMuted,
-                fontSize = 11.sp,
+                fontSize = 10.5.sp,
                 fontFamily = FontFamily.Monospace,
                 maxLines = 1,
                 overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f)
             )
             WorkspaceMiniPill("SANDBOX", colors.accentGreen)
+            Spacer(Modifier.width(4.dp))
+            IconButton(
+                onClick = { project.terminalLog.clear(); result = null },
+                modifier = Modifier.size(26.dp)
+            ) {
+                Icon(Icons.Default.ClearAll, contentDescription = "Clear terminal", tint = termMuted, modifier = Modifier.size(15.dp))
+            }
         }
-        Spacer(Modifier.height(6.dp))
+        Spacer(Modifier.height(4.dp))
         HorizontalDivider(color = if (colors.isDark) Color(0xFF262626) else Color(0xFFE0E0E0), thickness = 0.5.dp)
         Spacer(Modifier.height(6.dp))
+
+        // Quick command pills
+        val quickCmds = listOf("ls -la", "pwd", "git status", "git log -n 3", "uname -a")
+        androidx.compose.foundation.lazy.LazyRow(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            items(quickCmds.size) { qIdx ->
+                val qCmd = quickCmds[qIdx]
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(if (colors.isDark) Color(0xFF18181B) else Color(0xFFE4E4E7))
+                        .border(1.dp, termMuted.copy(alpha = 0.25f), RoundedCornerShape(999.dp))
+                        .clickable { executeCommand(qCmd) }
+                        .padding(horizontal = 9.dp, vertical = 3.dp)
+                ) {
+                    Text(qCmd, color = colors.accentBlue, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                }
+            }
+        }
+
         LazyColumn(
             modifier = Modifier
                 .weight(1f)
@@ -4522,13 +4862,20 @@ private fun TerminalCanvasView(project: Project) {
                 .background(termBg)
                 .border(1.dp, termMuted.copy(alpha = 0.22f), RoundedCornerShape(10.dp))
                 .padding(8.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
+            verticalArrangement = Arrangement.spacedBy(3.dp)
         ) {
             if (project.terminalLog.isEmpty()) {
-                item { Text("> no output yet — run a command", color = termMuted, fontSize = 12.sp, fontFamily = FontFamily.Monospace) }
+                item { Text("❯ local terminal ready. Run a command or tap a quick chip above.", color = termMuted, fontSize = 11.5.sp, fontFamily = FontFamily.Monospace) }
             }
             items(project.terminalLog.size) { i ->
-                Text(project.terminalLog[i], color = termText, fontSize = 11.5.sp, fontFamily = FontFamily.Monospace)
+                val lineText = project.terminalLog[i]
+                val lineFg = when {
+                    lineText.startsWith("$") -> colors.accentBlue
+                    "FAIL" in lineText || "Error" in lineText -> colors.accentRed
+                    "PASS" in lineText || "(exit 0)" in lineText || "Done" in lineText -> colors.accentSuccess
+                    else -> termText
+                }
+                Text(lineText, color = lineFg, fontSize = 11.5.sp, fontFamily = FontFamily.Monospace, lineHeight = 16.sp)
             }
             if (result != null) {
                 item {
@@ -4536,31 +4883,23 @@ private fun TerminalCanvasView(project: Project) {
                 }
             }
         }
+        Spacer(Modifier.height(6.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("❯", color = colors.accentGreen, fontSize = 13.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.width(6.dp))
             OutlinedTextField(
                 value = cmd,
                 onValueChange = { cmd = it },
-                placeholder = { Text("run command…", color = termMuted) },
+                placeholder = { Text("run bash command…", color = termMuted) },
                 modifier = Modifier.weight(1f),
                 singleLine = true,
                 shape = RoundedCornerShape(999.dp),
-                textStyle = androidx.compose.ui.text.TextStyle(color = termText, fontFamily = FontFamily.Monospace),
+                textStyle = androidx.compose.ui.text.TextStyle(color = termText, fontFamily = FontFamily.Monospace, fontSize = 12.sp),
                 colors = karenFieldColors(colors)
             )
             Spacer(Modifier.width(6.dp))
             Button(
-                onClick = {
-                    val c = cmd.trim()
-                    if (c.isBlank() || busy) return@Button
-                    busy = true
-                    scope.launch {
-                        project.terminalLog.add("$ $c")
-                        val out = runShell(c, File(project.dir))
-                        project.terminalLog.add(out)
-                        cmd = ""
-                        busy = false
-                    }
-                },
+                onClick = { executeCommand(cmd) },
                 colors = ButtonDefaults.buttonColors(containerColor = colors.accentGreen, contentColor = Color.White),
                 shape = RoundedCornerShape(999.dp),
                 contentPadding = PaddingValues(horizontal = 14.dp, vertical = 7.dp)
@@ -4581,9 +4920,9 @@ private fun TerminalCanvasView(project: Project) {
             )
             Spacer(Modifier.width(6.dp))
             Text(
-                if (gitRemoteUrl.isBlank()) "No remote" else maskRemote(gitRemoteUrl),
+                if (gitRemoteUrl.isBlank()) "No remote configured" else maskRemote(gitRemoteUrl),
                 color = termMuted,
-                fontSize = 10.5.sp,
+                fontSize = 10.sp,
                 fontFamily = FontFamily.Monospace,
                 maxLines = 1,
                 overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
@@ -4625,7 +4964,7 @@ private fun TerminalCanvasView(project: Project) {
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
             ) { Text(if (gitBusy) "…" else "Push", fontSize = 11.sp) }
         }
-        Spacer(Modifier.height(6.dp))
+        Spacer(Modifier.height(4.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(
                 onClick = {
@@ -4636,12 +4975,10 @@ private fun TerminalCanvasView(project: Project) {
                         project.terminalLog.add("[compile & test]\n$out")
                     }
                 },
-                shape = RoundedCornerShape(999.dp)
+                shape = RoundedCornerShape(999.dp),
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 3.dp)
             ) {
                 Text("Compile & Test", fontSize = 11.sp)
-            }
-            TextButton(onClick = { project.terminalLog.clear(); result = null }) {
-                Text("Clear", color = termMuted, fontSize = 11.sp)
             }
         }
     }
@@ -4727,7 +5064,7 @@ private fun DiffCanvasView(project: Project) {
     val added = lines.count { it.first == '+' }
     val removed = lines.count { it.first == '-' }
     LazyColumn(
-        modifier = Modifier.fillMaxSize().padding(12.dp),
+        modifier = Modifier.fillMaxSize().padding(10.dp),
         verticalArrangement = Arrangement.spacedBy(2.dp)
     ) {
         item {
@@ -4750,23 +5087,32 @@ private fun DiffCanvasView(project: Project) {
                 else -> colors.textMuted
             }
             Row(
-                modifier = Modifier.fillMaxWidth()
-                    .clip(RoundedCornerShape(5.dp))
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(6.dp))
                     .background(bg)
                     .border(
                         1.dp,
-                        if (mark == '-' || mark == '+') fg.copy(alpha = 0.18f) else Color.Transparent,
-                        RoundedCornerShape(5.dp)
+                        if (mark == '-' || mark == '+') fg.copy(alpha = 0.22f) else Color.Transparent,
+                        RoundedCornerShape(6.dp)
                     )
-                    .padding(horizontal = 8.dp, vertical = 2.dp)
+                    .padding(horizontal = 8.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
+                Text(
+                    "${i + 1}",
+                    color = colors.textMuted.copy(alpha = 0.6f),
+                    fontSize = 10.5.sp,
+                    fontFamily = FontFamily.Monospace,
+                    modifier = Modifier.width(26.dp)
+                )
                 Text(
                     mark.toString(),
                     color = fg,
                     fontSize = 11.5.sp,
                     fontFamily = FontFamily.Monospace,
                     fontWeight = FontWeight.Bold,
-                    modifier = Modifier.width(12.dp)
+                    modifier = Modifier.width(14.dp)
                 )
                 Text(text.ifBlank { " " }, color = fg, fontSize = 11.5.sp, fontFamily = FontFamily.Monospace)
             }
@@ -4781,47 +5127,52 @@ private fun DiffHero(added: Int, removed: Int) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(16.dp))
             .background(
-                Brush.verticalGradient(
-                    listOf(colors.surface, colors.cardBackground)
+                Brush.linearGradient(
+                    listOf(
+                        tint.copy(alpha = if (colors.isDark) 0.14f else 0.08f),
+                        colors.surface,
+                        colors.cardBackground
+                    )
                 )
             )
-            .border(1.dp, tint.copy(alpha = 0.32f), RoundedCornerShape(14.dp))
-            .padding(12.dp)
+            .border(1.dp, tint.copy(alpha = 0.35f), RoundedCornerShape(16.dp))
+            .padding(14.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
                 modifier = Modifier
-                    .size(32.dp)
-                    .clip(RoundedCornerShape(9.dp))
+                    .size(36.dp)
+                    .clip(RoundedCornerShape(10.dp))
                     .background(tint.copy(alpha = 0.14f))
-                    .border(1.dp, tint.copy(alpha = 0.25f), RoundedCornerShape(9.dp)),
+                    .border(1.dp, tint.copy(alpha = 0.28f), RoundedCornerShape(10.dp)),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(Icons.Default.Difference, contentDescription = null, tint = tint, modifier = Modifier.size(16.dp))
+                Icon(Icons.Default.Difference, contentDescription = null, tint = tint, modifier = Modifier.size(18.dp))
             }
-            Spacer(Modifier.width(9.dp))
+            Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
                 Text(
-                    "DIFF // SNAPSHOT",
+                    "DIFF // SNAPSHOT INSPECTOR",
                     color = tint,
+                    fontFamily = FontFamily.Monospace,
                     fontSize = 8.5.sp,
                     fontWeight = FontWeight.Bold,
                     letterSpacing = 0.9.sp
                 )
-                Text("Previous vs current", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Bold)
+                Text("Previous vs Current State", color = colors.textPrimary, fontSize = 14.sp, fontWeight = FontWeight.Bold)
             }
-            WorkspaceMiniPill("$added ADDED", colors.accentGreen)
+            WorkspaceMiniPill("+$added", colors.accentGreen)
             Spacer(Modifier.width(4.dp))
-            WorkspaceMiniPill("$removed REMOVED", colors.accentRed)
+            WorkspaceMiniPill("-$removed", colors.accentRed)
         }
-        Spacer(Modifier.height(7.dp))
+        Spacer(Modifier.height(8.dp))
         Text(
-            "The diff appears after an edit is applied to the selected file.",
+            "Comparing the previous on-disk snapshot with current saved edits.",
             color = colors.textMuted,
-            fontSize = 10.5.sp,
-            lineHeight = 14.sp
+            fontSize = 11.sp,
+            lineHeight = 15.sp
         )
     }
 }
@@ -4832,19 +5183,19 @@ private fun DiffEmptyState() {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(14.dp))
             .background(colors.surface)
-            .border(1.dp, colors.border, RoundedCornerShape(12.dp))
-            .padding(12.dp),
+            .border(1.dp, colors.border, RoundedCornerShape(14.dp))
+            .padding(14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(Icons.Default.Difference, contentDescription = null, tint = Color(0xFFA78BFA), modifier = Modifier.size(17.dp))
-        Spacer(Modifier.width(8.dp))
+        Icon(Icons.Default.Difference, contentDescription = null, tint = Color(0xFFA78BFA), modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(10.dp))
         Text(
-            "No differences yet — edit and save a file to compare snapshots.",
+            "No differences detected — modify and save a file to inspect snapshot diffs.",
             color = colors.textMuted,
             fontSize = 11.5.sp,
-            lineHeight = 15.sp
+            lineHeight = 16.sp
         )
     }
 }

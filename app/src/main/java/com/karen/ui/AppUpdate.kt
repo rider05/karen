@@ -507,7 +507,13 @@ object AppUpdate {
         val installedCert = installedSigningCert(ctx)
         val apkCert = apkSigningCert(ctx, file)
         if (installedCert == null || apkCert == null || !installedCert.contentEquals(apkCert)) {
-            return ApkValidation(false, reason = "Signing certificate mismatch")
+            // Android refuses cross-certificate updates, so name the only way out.
+            return ApkValidation(
+                false,
+                reason = "Signing certificate mismatch - the installed app was signed with a " +
+                    "different key. Export a Backup Package, uninstall Karen, then install " +
+                    "apks/karen.apk from the repo."
+            )
         }
         return ApkValidation(true, vCode, info.versionName.orEmpty())
     }

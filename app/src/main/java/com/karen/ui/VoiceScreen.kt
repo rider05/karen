@@ -949,7 +949,7 @@ fun VoiceScreen(
                             brush = Brush.radialGradient(
                                 colors = listOf(
                                     Color(0xFF38BDF8).copy(alpha = 0.35f),
-                                    Color(0xFF10A37F).copy(alpha = 0.20f),
+                                    Color(0xFF60A5FA).copy(alpha = 0.20f),
                                     Color.Transparent
                                 ),
                                 center = center,
@@ -966,10 +966,10 @@ fun VoiceScreen(
                             drawCircle(
                                 brush = Brush.sweepGradient(
                                     colors = listOf(
-                                        Color(0xFF10A37F),
+                                        Color(0xFF60A5FA),
                                         Color(0xFF38BDF8),
                                         Color(0xFF6366F1),
-                                        Color(0xFF10A37F)
+                                        Color(0xFF60A5FA)
                                     ),
                                     center = center
                                 ),

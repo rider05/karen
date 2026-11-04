@@ -11,13 +11,17 @@ cd D:\karen; .\gradlew.bat :app:compileDebugKotlin --offline
 
 SDK path is in `local.properties`. Always recompile after UI edits; `-q` hides success.
 
-## Theme (old ChatGPT style — do not "upgrade" unprompted)
+## Theme (Professional Workspace — per `docs/DESIGN.md`)
 
-`ui/KarenTheme.kt` is the source of truth: OLED `#000000` / Charcoal `#212121` /
-Light `#FFFFFF`, `accentGreen #10A37F` (primary), `accentBlue #38BDF8` (secondary).
-Shared chrome lives in `ui/KarenCommon.kt` (`ChatGPTTopAppBar`, `KScreen`,
-`Section`, `KV`, `KCard`), `ui/KarenChrome.kt`, `ui/KarenComponents.kt`.
-White (`Color.White`) icon/text on accent fills — never dark-on-accent.
+`ui/KarenTheme.kt` is the source of truth: canvas `#0F1115` / raised `#1F2530`
+(dark), canvas `#F8FAFC` / surface `#FFFFFF` (light), slate text `#E5E9F0` /
+`#0F172A`, borders `#2B3342` / `#E2E8F0`. `accentGreen` carries the **primary
+blue** `#2563EB` (most call sites use it for primary actions), `accentBlue`
+`#60A5FA` is the secondary tint, `accentSuccess` `#34D399`/`#059669` is the
+green status color. Shared chrome lives in `ui/KarenCommon.kt`
+(`ChatGPTTopAppBar`, `KScreen`, `Section`, `KV`, `KCard`), `ui/KarenChrome.kt`,
+`ui/KarenComponents.kt`. White (`Color.White`) icon/text on accent fills — never
+dark-on-accent.
 
 ## Standing rule: every screen navigates Home
 

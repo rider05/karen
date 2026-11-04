@@ -4498,7 +4498,7 @@ private fun TerminalCanvasView(project: Project) {
             Spacer(Modifier.width(6.dp))
             Box(Modifier.size(8.dp).clip(CircleShape).background(Color(0xFFF59E0B)))
             Spacer(Modifier.width(6.dp))
-            Box(Modifier.size(8.dp).clip(CircleShape).background(Color(0xFF10A37F)))
+            Box(Modifier.size(8.dp).clip(CircleShape).background(Color(0xFF34D399)))
             Spacer(Modifier.width(12.dp))
             Text(
                 "local-sandbox: ~/${project.name}",

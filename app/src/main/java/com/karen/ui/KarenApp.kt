@@ -67,7 +67,7 @@ fun KarenSplashScreen() {
             Spacer(Modifier.height(22.dp))
             Text(
                 "SOVEREIGN // ON-DEVICE",
-                color = Color(0xFF10A37F),
+                color = Color(0xFF60A5FA),
                 fontSize = 9.5.sp,
                 fontWeight = FontWeight.Bold,
                 letterSpacing = 1.4.sp,
@@ -82,20 +82,20 @@ fun KarenSplashScreen() {
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
                     .clip(androidx.compose.foundation.shape.RoundedCornerShape(999.dp))
-                    .background(Color(0xFF10A37F).copy(alpha = 0.10f))
-                    .border(1.dp, Color(0xFF10A37F).copy(alpha = 0.30f), androidx.compose.foundation.shape.RoundedCornerShape(999.dp))
+                    .background(Color(0xFF60A5FA).copy(alpha = 0.10f))
+                    .border(1.dp, Color(0xFF60A5FA).copy(alpha = 0.30f), androidx.compose.foundation.shape.RoundedCornerShape(999.dp))
                     .padding(horizontal = 11.dp, vertical = 5.dp)
             ) {
                 Box(
                     Modifier
                         .size(5.dp)
                         .clip(androidx.compose.foundation.shape.CircleShape)
-                        .background(Color(0xFF10A37F))
+                        .background(Color(0xFF60A5FA))
                 )
                 Spacer(Modifier.width(6.dp))
                 Text(
                     "LOCAL BOOT",
-                    color = Color(0xFF10A37F),
+                    color = Color(0xFF60A5FA),
                     fontSize = 8.5.sp,
                     fontWeight = FontWeight.Bold,
                     letterSpacing = 0.9.sp,

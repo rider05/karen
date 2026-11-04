@@ -82,9 +82,15 @@ fun NodesScreen(onNavigateToHome: () -> Unit = {}) {
     var pendingDisconnect by remember { mutableStateOf<NodeInfo?>(null) }
     var confirmClear by remember { mutableStateOf(false) }
     var confirmDisconnectAll by remember { mutableStateOf(false) }
+    var showScanner by remember { mutableStateOf(false) }
+    var pairedWorkers by remember { mutableStateOf(UserPrefs.workerTokens(context)) }
 
     KarenHomeBackHandler(onNavigateToHome = onNavigateToHome) {
         when {
+            showScanner -> {
+                showScanner = false
+                true
+            }
             pendingDisconnect != null -> {
                 pendingDisconnect = null
                 true
@@ -140,6 +146,18 @@ fun NodesScreen(onNavigateToHome: () -> Unit = {}) {
                     workersTotal = workers.size,
                     nodesTotal = nodes.size,
                     now = now
+                )
+            }
+
+            item {
+                PairWorkerPanel(
+                    tokens = pairedWorkers,
+                    onScan = { showScanner = true },
+                    onRemove = { token ->
+                        UserPrefs.removeWorkerToken(context, token)
+                        pairedWorkers = UserPrefs.workerTokens(context)
+                        Toast.makeText(context, "Worker token removed", Toast.LENGTH_SHORT).show()
+                    }
                 )
             }
 
@@ -294,6 +312,30 @@ fun NodesScreen(onNavigateToHome: () -> Unit = {}) {
             }
         )
     }
+
+    if (showScanner) {
+        WorkerQrScanner(
+            onDismiss = { showScanner = false },
+            onScanned = { raw ->
+                val parsed = parsePairPayload(raw)
+                if (parsed == null) {
+                    Toast.makeText(context, "Not a worker pairing code — use the QR on the worker page", Toast.LENGTH_SHORT).show()
+                    false
+                } else {
+                    val (id, label, token) = parsed
+                    UserPrefs.addWorkerToken(context, id, label, token)
+                    pairedWorkers = UserPrefs.workerTokens(context)
+                    showScanner = false
+                    Toast.makeText(
+                        context,
+                        "Paired ${label.ifBlank { "worker" }} — it joins within a few seconds",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                    true
+                }
+            }
+        )
+    }
 }
 
 /** Stops and starts the local server — used by the master panel button and the header menu. */
@@ -302,6 +344,96 @@ private fun restartKarenServer(context: Context) {
     val ok = LocalApiServer.start(context)
     if (!ok) {
         Toast.makeText(context, "Could not start the server — check the port in Settings", Toast.LENGTH_SHORT).show()
+    }
+}
+
+/** `karen://pair?t=<token>&n=<label>&i=<workerId>` → (id, label, token). */
+private fun parsePairPayload(raw: String): Triple<String, String, String>? {
+    val uri = runCatching { Uri.parse(raw) }.getOrNull() ?: return null
+    if (uri.scheme != "karen" || uri.host != "pair") return null
+    val token = uri.getQueryParameter("t")?.trim().orEmpty()
+    if (!Regex("[A-Za-z0-9_-]{16,128}").matches(token)) return null
+    return Triple(
+        uri.getQueryParameter("i")?.take(40).orEmpty(),
+        uri.getQueryParameter("n")?.take(60).orEmpty(),
+        token
+    )
+}
+
+/**
+ * Worker pairing: the worker page mints its own token and shows a QR code;
+ * the phone scans it and stores that token. Removing one revokes the worker
+ * on its next call, since the server checks this list per request.
+ */
+@Composable
+private fun PairWorkerPanel(
+    tokens: List<Triple<String, String, String>>,
+    onScan: () -> Unit,
+    onRemove: (String) -> Unit
+) {
+    val colors = LocalKarenColors.current
+    KPanel(
+        title = "Pair a worker",
+        subtitle = if (tokens.isEmpty()) "no worker tokens stored" else "${tokens.size} worker token(s) stored",
+        icon = {
+            Icon(
+                Icons.Default.QrCodeScanner,
+                contentDescription = null,
+                tint = colors.accentBlue,
+                modifier = Modifier.size(18.dp)
+            )
+        }
+    ) {
+        Text(
+            "The worker page shows its own QR code. Scan it with this phone — the phone stores that " +
+                "device's token and the worker joins by itself, no typing.",
+            color = colors.textSecondary,
+            fontSize = 12.sp,
+            lineHeight = 17.sp
+        )
+        Spacer(Modifier.height(10.dp))
+        KSecondaryButton(
+            label = "Scan worker QR",
+            onClick = onScan,
+            modifier = Modifier.fillMaxWidth(),
+            tone = KTone.Primary,
+            leading = {
+                Icon(
+                    Icons.Default.QrCodeScanner,
+                    contentDescription = null,
+                    tint = colors.accentGreen,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+        )
+        tokens.forEach { (_, label, token) ->
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        label.ifBlank { "Worker" },
+                        color = colors.textPrimary,
+                        fontSize = 13.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        "\u2022\u2022\u2022\u2022" + token.takeLast(4),
+                        color = colors.textMuted,
+                        fontFamily = LocalKarenType.current.mono,
+                        fontSize = 11.sp
+                    )
+                }
+                KIconButton(onClick = { onRemove(token) }) {
+                    Icon(
+                        Icons.Default.Delete,
+                        contentDescription = "Remove ${label.ifBlank { "worker" }} token",
+                        tint = colors.textMuted,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -777,8 +909,9 @@ private fun EmptyPanel() {
         Spacer(Modifier.height(4.dp))
         CollapsibleDetails("Setup guide", "worker page · dashboard · WebGPU fix") {
             Text(
-                "Open the worker page (LAN address + /) in Chrome/Edge with WebGPU and save the token once — " +
-                    "the phone itself always stays master. The control dashboard lives at LAN address + /dashboard. " +
+                "Open the worker page (LAN address + /) in Chrome/Edge with WebGPU — it shows its own QR code. " +
+                    "Tap Scan worker QR above and point the camera at it; the worker joins by itself. " +
+                    "The control dashboard lives at LAN address + /dashboard and uses the master token. " +
                     "On a plain http:// address every browser hides WebGPU — the page's GPU panel then prints " +
                     "the exact fix: on the laptop run tools\\karen-tunnel.ps1 -Phone <this phone's IP> and use " +
                     "the 127.0.0.1 address it opens.",

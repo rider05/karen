@@ -1925,7 +1925,7 @@ fun SettingsScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column(Modifier.weight(1f)) {
-                            Text("Bearer token", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
+                            Text("Master token", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
                             Text(
                                 if (serverTokenShown) serverTokenValue else "••••" + serverTokenValue.takeLast(4),
                                 color = colors.textMuted,
@@ -1954,7 +1954,7 @@ fun SettingsScreen(
                         }
                     }
                     Text(
-                        "Runs while Karen is open. Example: curl -H \"Authorization: Bearer <token>\" http://127.0.0.1:${UserPrefs.serverPort(context)}/v1/models",
+                        "Used by the dashboard and API clients. Workers bring their own token: open the worker page, then scan its QR in Network Nodes. Example: curl -H \"Authorization: Bearer <token>\" http://127.0.0.1:${UserPrefs.serverPort(context)}/v1/models",
                         color = colors.textMuted,
                         fontSize = 11.sp,
                         fontFamily = FontFamily.Monospace

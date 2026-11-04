@@ -68,6 +68,12 @@ dependencies {
     implementation("androidx.compose.material3:material3:1.2.1")
     implementation("androidx.compose.material:material-icons-extended:1.6.8")
     debugImplementation("androidx.compose.ui:ui-tooling:1.6.8")
+    // CameraX + ML Kit barcode scanning: the phone scans a worker's pairing QR.
+    implementation("androidx.camera:camera-core:1.3.4")
+    implementation("androidx.camera:camera-camera2:1.3.4")
+    implementation("androidx.camera:camera-lifecycle:1.3.4")
+    implementation("androidx.camera:camera-view:1.3.4")
+    implementation("com.google.mlkit:barcode-scanning:17.3.0")
     // ONNX Runtime: executes .onnx voice models on-device (Silero VAD).
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.22.0")
 

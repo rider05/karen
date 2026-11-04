@@ -2028,9 +2028,14 @@ object LocalApiServer {
                 return
             }
 
-            // Bearer auth is mandatory for API routes.
+            // Bearer auth is mandatory for API routes. Two kinds are accepted:
+            // the master token (dashboard/API clients) and any worker token the
+            // master has scanned from that worker's QR code.
             val auth = headers["authorization"].orEmpty()
-            if (auth != "Bearer ${token(ctx)}") {
+            val bearer = auth.removePrefix("Bearer ").trim()
+            val authorized = auth == "Bearer ${token(ctx)}" ||
+                UserPrefs.hasWorkerToken(ctx, bearer)
+            if (!authorized) {
                 // Browser visits get a readable HTML hint; API clients get JSON.
                 if (method == "GET" && headers["accept"].orEmpty().contains("text/html")) {
                     writeHtml(socket, authHintPage(), 401)
@@ -3490,6 +3495,42 @@ object LocalApiServer {
     border-radius: 6px;
     white-space: nowrap;
   }
+  .pair-card {
+    display: flex;
+    gap: 18px;
+    align-items: flex-start;
+    flex-wrap: wrap;
+    background: #0f1115;
+    border: 1px solid var(--border-strong);
+    border-radius: 12px;
+    padding: 16px;
+  }
+  .pair-card canvas {
+    width: 216px;
+    height: 216px;
+    background: #ffffff;
+    border-radius: 8px;
+    image-rendering: pixelated;
+    flex: none;
+  }
+  .pair-side {
+    flex: 1;
+    min-width: 240px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .pair-title {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--text-primary);
+  }
+  .pair-token {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    color: var(--accent-blue);
+    word-break: break-all;
+  }
   body.worker details.files {
     background: var(--bg-surface);
     border: 1px solid var(--border-subtle);
@@ -3678,9 +3719,13 @@ object LocalApiServer {
   </div>
 </header>
 <div class="bar">
-  <span class="bar-tag workerOnly">NODE ACCESS TOKEN</span>
-  <input id="token" type="password" placeholder="Bearer token — Karen App → Settings → Local Server" style="flex:1;min-width:240px">
-  <button class="ghost" onclick="saveToken()">Save</button>
+  <span class="bar-tag workerOnly">THIS NODE'S PAIRING CODE</span>
+  <input id="token" type="text" readonly class="workerOnly" placeholder="generating…" style="flex:1;min-width:240px">
+  <button class="ghost workerOnly" onclick="copyToken()">Copy</button>
+  <button class="ghost workerOnly" onclick="regenToken()">New code</button>
+  <span class="bar-tag consoleOnly">MASTER TOKEN</span>
+  <input id="masterToken" type="password" class="consoleOnly" placeholder="Bearer token — Karen App → Settings → Local Server" style="flex:1;min-width:240px">
+  <button class="ghost consoleOnly" onclick="saveToken()">Save</button>
   <select id="model" class="consoleOnly" style="min-width:180px"><option value="">(pick model)</option></select>
   <button class="ghost consoleOnly" onclick="loadModels()">Refresh</button>
   <select id="runner" class="consoleOnly" style="min-width:200px" onchange="runnerChanged()" title="Where the prompt runs — the node with the most GPU is listed first">
@@ -3700,7 +3745,16 @@ object LocalApiServer {
     <div class="worker-hero-section workerOnly">
       <div class="worker-status-banner">
         <div class="worker-status-label">SLAVE NODE STATUS</div>
-        <div class="fmeta" id="workerStatus">Slave node — save the token above to pair this device.</div>
+        <div class="fmeta" id="workerStatus">Slave node — waiting for the master to scan this device's QR code.</div>
+      </div>
+      <div class="pair-card">
+        <canvas id="pairQr" width="216" height="216"></canvas>
+        <div class="pair-side">
+          <div class="pair-title">Scan with Karen on the phone</div>
+          <div class="fmeta">Open the Karen app → <b>Nodes</b> → <b>Scan worker QR</b>, then point the camera at this code. The phone stores this device's token; nothing is typed.</div>
+          <div class="fmeta pair-token" id="pairTok"></div>
+          <div class="fmeta" id="pairState">Not paired yet.</div>
+        </div>
       </div>
       <div class="frow worker-toggle-box" style="margin-top:2px">
         <label class="fmeta" style="display:flex;align-items:center;gap:10px;flex:1;min-width:260px;cursor:pointer">
@@ -3770,12 +3824,13 @@ object LocalApiServer {
 </footer>
 <div class="toast" id="toast"></div>
 <script>
+!function(r){var a={1:[[26,7,1,19],[26,10,1,16]],2:[[44,10,1,34],[44,16,1,28]],3:[[70,15,1,55],[70,26,1,44]],4:[[100,20,1,80],[100,18,2,32]],5:[[134,26,1,108],[134,24,2,43]],6:[[172,18,2,68],[172,16,4,27]],7:[[196,20,2,78],[196,18,4,31]],8:[[242,24,2,97],[242,22,4,38]],9:[[292,30,2,116],[292,22,5,36]],10:[[346,18,4,68],[346,26,5,43]]},n={1:[],2:[6,18],3:[6,22],4:[6,26],5:[6,30],6:[6,34],7:[6,22,38],8:[6,24,42],9:[6,26,46],10:[6,28,50]};function f(r,a){for(var n=0,f=7;f>=0;f--)n=n<<1^285*(n>>>7),n^=(a>>>f&1)*r;return 255&n}function o(r,a){for(var n=1,o=0;o<a;o++)n=f(n,r);return n}function e(r,a){for(var n=function(r){for(var a=[1],n=0;n<r;n++){for(var e=o(2,n),t=new Array(a.length+1).fill(0),u=0;u<a.length;u++)t[u]^=a[u],t[u+1]^=f(a[u],e);a=t}return a}(a),e=r.concat(new Array(a).fill(0)),t=0;t<r.length;t++){var u=e[t];if(0!==u)for(var v=0;v<n.length;v++)e[t+v]^=f(n[v],u)}return e.slice(r.length)}function t(r,n,f){var o=a[n][f],t=o[0],u=o[1],v=o[2],i=(o[3],[]),c=[];function l(r,a){for(var n=a-1;n>=0;n--)c.push(r>>>n&1)}l(4,4),l(r.length,n<=9?8:16),r.forEach(function(r){l(r,8)});var h=t-u*v,s=8*h;if(c.length>s)return null;for(var p=0;p<4&&c.length<s;p++)c.push(0);for(;c.length%8!=0;)c.push(0);for(var g=[236,17],m=0;c.length<s;)l(g[m%2],8),m++;for(var b=0;b<c.length;b+=8){for(var k=0,M=0;M<8;M++)k=k<<1|c[b+M];i.push(k)}for(var d=Math.floor(h/v),w=h%v,x=[],y=0,z=0;z<v;z++){var A=d+(z>=v-w?1:0);x.push(i.slice(y,y+A)),y+=A}for(var C=x.map(function(r){return e(r,u)}),E=[],L=Math.max.apply(null,x.map(function(r){return r.length})),R=0;R<L;R++)for(var I=0;I<v;I++)R<x[I].length&&E.push(x[I][R]);for(var K=0;K<u;K++)for(var Q=0;Q<v;Q++)E.push(C[Q][K]);return E}function u(r,a,f){for(var o=4*a+17,e=[],t=[],u=0;u<o;u++)e.push(new Array(o).fill(!1)),t.push(new Array(o).fill(!1));function i(r,a,n){r>=0&&a>=0&&r<o&&a<o&&(e[r][a]=n)}function c(r,a){r>=0&&a>=0&&r<o&&a<o&&(t[r][a]=!0)}[[0,0],[0,o-7],[o-7,0]].forEach(function(r){for(var a=-1;a<=7;a++)for(var n=-1;n<=7;n++){var f=r[0]+a,e=r[1]+n;if(!(f<0||e<0||f>=o||e>=o))i(f,e,a>=0&&a<=6&&(0===n||6===n)||n>=0&&n<=6&&(0===a||6===a)||a>=2&&a<=4&&n>=2&&n<=4),c(f,e)}});for(var l=8;l<o-8;l++)i(6,l,l%2==0),c(6,l),i(l,6,l%2==0),c(l,6);for(var h=n[a],s=0;s<h.length;s++)for(var p=0;p<h.length;p++){var g=h[s],m=h[p];if(!(6===g&&6===m||6===g&&m===o-7||g===o-7&&6===m))for(var b=-2;b<=2;b++)for(var k=-2;k<=2;k++){i(g+b,m+k,1!==Math.max(Math.abs(b),Math.abs(k))),c(g+b,m+k)}}for(var M=0;M<9;M++)t[8][M]||c(8,M),t[M][8]||c(M,8);for(var d=0;d<8;d++)c(8,o-1-d),c(o-1-d,8);if(i(o-8,8,!0),c(o-8,8),a>=7)for(var w=v(a,7973,18,6),x=0;x<18;x++){var y=1==(w>>>x&1),z=Math.floor(x/3),A=x%3;i(z,o-11+A,y),c(z,o-11+A),i(o-11+A,z,y),c(o-11+A,z)}var C=0,E=8*r.length;function L(a){return 1==(r[a>>3]>>>7-(7&a)&1)}for(var R=o-1;R>=1;R-=2){6===R&&(R=5);for(var I=0;I<o;I++)for(var K=0;K<2;K++){var Q=R-K,U=!(R+1&2)?o-1-I:I;if(!t[U][Q]){var j=C<E&&L(C);C++,e[U][Q]=j}}}return{matrix:e,size:o,reserved:t}}function v(r,a,n,f){for(var o=n-f,e=r<<o,t=n-1;t>=o;t--)e>>>t&1&&(e^=a<<t-o);return r<<o|e&(1<<o)-1}function i(r,a,n,f){for(var o=r.map(function(r){return r.slice()}),e=0;e<n;e++)for(var t=0;t<n;t++)if(!a[e][t]){var u=!1;switch(f){case 0:u=(e+t)%2==0;break;case 1:u=e%2==0;break;case 2:u=t%3==0;break;case 3:u=(e+t)%3==0;break;case 4:u=(Math.floor(e/2)+Math.floor(t/3))%2==0;break;case 5:u=e*t%2+e*t%3==0;break;case 6:u=(e*t%2+e*t%3)%2==0;break;case 7:u=((e+t)%2+e*t%3)%2==0}u&&(o[e][t]=!o[e][t])}return o}function c(r,a){var n,f,o,e,t=0;for(n=0;n<a;n++){for(o=1,e=r[n][0],f=1;f<a;f++)r[n][f]===e?o++:(o>=5&&(t+=o-5+3),o=1,e=r[n][f]);o>=5&&(t+=o-5+3)}for(f=0;f<a;f++){for(o=1,e=r[0][f],n=1;n<a;n++)r[n][f]===e?o++:(o>=5&&(t+=o-5+3),o=1,e=r[n][f]);o>=5&&(t+=o-5+3)}for(n=0;n<a-1;n++)for(f=0;f<a-1;f++){var u=r[n][f];u===r[n][f+1]&&u===r[n+1][f]&&u===r[n+1][f+1]&&(t+=3)}var v=[!0,!1,!0,!0,!0,!1,!0];function i(r){for(var n=0;n+7<=a;n++){for(var f=!0,o=0;o<7;o++)if(r(n+o)!==v[o]){f=!1;break}if(f){for(var e=!0,u=!0,i=1;i<=4;i++)if(n-i>=0&&r(n-i)){e=!1;break}for(var c=7;c<=10;c++)if(n+c<a&&r(n+c)){u=!1;break}(e||u)&&(t+=40)}}}for(n=0;n<a;n++)i(function(a){return r[n][a]});for(f=0;f<a;f++)i(function(a){return r[a][f]});var c=0;for(n=0;n<a;n++)for(f=0;f<a;f++)r[n][f]&&c++;var l=100*c/(a*a);return t+=10*Math.floor(Math.abs(l-50)/5)}function l(r,a,n,f){var o=21522^v((0===n?1:0)<<3|f,1335,15,5);function e(r){return 1==(o>>>r&1)}for(var t=0;t<15;t++)t<6?r[t][8]=e(t):t<8?r[t+1][8]=e(t):r[a-15+t][8]=e(t);for(var u=0;u<15;u++)u<8?r[8][a-u-1]=e(u):u<9?r[8][15-u]=e(u):r[8][15-u-1]=e(u);return r[a-8][8]=!0,r}r.KarenQR={encode:function(r,n,f){for(var o=function(r){for(var a=[],n=unescape(encodeURIComponent(r)),f=0;f<n.length;f++)a.push(255&n.charCodeAt(f));return a}(r),e="L"===n?0:1,v=1;v<=10;v++){var h=a[v][e],s=h[0]-h[1]*h[2],p=4+(v<=9?8:16);if(8*o.length+p<=8*s){var g=t(o,v,e);if(!g)continue;for(var m=u(g,v),b=null,k=1/0,M=null==f?8:f+1,d=null==f?0:f;d<M;d++){var w=i(m.matrix,m.reserved,m.size,d);l(w,m.size,e,d);var x=c(w,m.size);x<k&&(k=x,b={m:w,mask:d})}return{size:m.size,matrix:b.m,version:v,mask:b.mask,ec:0===e?"L":"M"}}}return null}}}("undefined"!=typeof window?window:module.exports);
 var PAGE = '$mode';
 var S = { token: localStorage.getItem('karen_token') || '', busy: false, ctrl: null, log: [], node: nodeName(), boost: localStorage.getItem('karen_gpu_boost') === '1', llm: null, llmMod: null, llmModel: '', adapter: null, device: null, benchAdapter: null, gpuName: '', gflops: 0,
   w: { on: localStorage.getItem('karen_worker') !== '0' && !!localStorage.getItem('karen_token'), saved: localStorage.getItem('karen_worker') === '1', master: false, id: localStorage.getItem('karen_worker_id') || '', model: localStorage.getItem('karen_worker_model') || '', loaded: '', engine: null, interrupted: false, loop: false, assignedAt: Number(localStorage.getItem('karen_assign_at') || 0), edit: false },
   wModels: [], wlist: [], wmap: {}, routed: localStorage.getItem('karen_runner') || '',
   multi: localStorage.getItem('karen_multi') === '1',
-  tel: {}, pressure: '', jsScore: 0, maxBufferMB: 0 };
+  tel: {}, pressure: '', jsScore: 0, maxBufferMB: 0, paired: false };
 function el(id) { return document.getElementById(id); }
 function nodeName() {
   var ua = navigator.userAgent, os = 'Device', br = 'Browser';
@@ -3804,7 +3859,7 @@ function toast(m) { var t = el('toast'); t.textContent = m; t.classList.add('sho
 function setStatus(ok, text) { el('dot').className = ok ? 'dot' : 'dot off'; el('statusText').textContent = text; }
 function add(role, text) { var d = document.createElement('div'); d.className = 'msg ' + role;
   d.textContent = text; el('chat').appendChild(d); el('chat').scrollTop = el('chat').scrollHeight; return d; }
-function saveToken() { S.token = el('token').value.trim();
+function saveToken() { S.token = el('masterToken').value.trim();
   localStorage.setItem('karen_token', S.token);
   toast(S.token ? 'Token saved' : 'Token cleared'); loadModels();
   reportNode().then(function () {
@@ -3821,7 +3876,7 @@ function saveToken() { S.token = el('token').value.trim();
   }); }
 function loadModels() {
   fetch('/v1/models', { headers: headers(false) }).then(function (r) {
-    if (r.status === 401) { setStatus(false, 'token needed'); return null; }
+    if (r.status === 401) { setStatus(false, 'waiting for the phone to scan this QR code'); return null; }
     if (!r.ok) { setStatus(false, 'HTTP ' + r.status); return null; }
     return r.json();
   }).then(function (j) {
@@ -4051,6 +4106,76 @@ function copyText(t) {
     return ok;
   } catch (e) { return false; }
 }
+// ---- Pairing: this device mints its own token; the phone scans the QR ----
+function newToken() {
+  var a = new Uint8Array(16);
+  if (window.crypto && crypto.getRandomValues) { crypto.getRandomValues(a); }
+  else { for (var i = 0; i < 16; i++) { a[i] = Math.floor(Math.random() * 256); } }
+  var s = '';
+  for (var j = 0; j < 16; j++) { s += ('0' + a[j].toString(16)).slice(-2); }
+  return s;
+}
+function pairPayload() {
+  var p = 'karen://pair?t=' + S.token + '&n=' + encodeURIComponent(S.node);
+  if (S.w.id) { p += '&i=' + encodeURIComponent(S.w.id); }
+  return p;
+}
+function renderQr() {
+  var cv = el('pairQr');
+  if (!cv || !window.KarenQR || !S.token) { return; }
+  var r = KarenQR.encode(pairPayload());
+  if (!r) { return; }
+  var ctx = cv.getContext('2d');
+  var quiet = 4, px = Math.max(2, Math.floor(cv.width / (r.size + quiet * 2)));
+  var off = Math.floor((cv.width - (r.size + quiet * 2) * px) / 2);
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.fillStyle = '#0f1115';
+  for (var y = 0; y < r.size; y++) {
+    for (var x = 0; x < r.size; x++) {
+      if (r.matrix[y][x]) { ctx.fillRect(off + (x + quiet) * px, off + (y + quiet) * px, px, px); }
+    }
+  }
+}
+function showPair() {
+  if (PAGE !== 'worker' || !el('token')) { return; }
+  el('token').value = S.token;
+  el('pairTok').textContent = 'Code ' + S.token.slice(0, 8) + '…' + S.token.slice(-6);
+  renderQr();
+}
+function pairState(text) { if (el('pairState')) { el('pairState').textContent = text; } }
+function copyToken() { toast(copyText(S.token) ? 'Pairing code copied' : S.token); }
+function regenToken() {
+  if (!confirm('Generate a new pairing code? Every phone that stored the old one stops working with this device.')) { return; }
+  S.token = newToken();
+  localStorage.setItem('karen_token', S.token);
+  showPair();
+  pairState('New code — scan it with the phone.');
+  setStatus(false, 'waiting for the phone to scan this QR code');
+  pairTick();
+}
+// The worker polls with its own token until the phone has stored it (401 =
+// not scanned yet). Once paired, this page loads models and joins on its own.
+function pairTick() {
+  if (PAGE !== 'worker' || S.w.master) { return; }
+  if (S.pairTimer) { clearTimeout(S.pairTimer); }
+  fetch('/v1/models', { headers: headers(false) }).then(function (r) {
+    if (r.status === 401) {
+      pairState('Waiting for the phone to scan this code…');
+      S.pairTimer = setTimeout(pairTick, document.hidden ? 15000 : 4000);
+      return;
+    }
+    pairState('Paired — the phone stored this device\'s token.');
+    S.paired = true;
+    setStatus(true, 'paired');
+    reportNode();
+    loadModels();
+    if (!S.w.on && S.adapter && localStorage.getItem('karen_worker') !== '0') {
+      toast('Paired — this device now works as a slave node');
+      workerJoin(true);
+    }
+  }).catch(function () { S.pairTimer = setTimeout(pairTick, 6000); });
+}
 function showBypassUndo(origin) {
   // WebGPU exists although this origin is NOT secure — the only way that
   // happens is the chrome://flags insecure-origin bypass. Show how to take
@@ -4237,8 +4362,8 @@ async function initGpu() {
     } else if (S.w.on) {
       workerStatus(S.w.saved ? 'rejoining…' : 'this device works as a slave node — joining…');
       workerJoin(true);
-    } else if (!S.token) {
-      el('workerStatus').textContent = 'Slave node — save the token above once; this device then starts working automatically.';
+    } else if (!S.paired) {
+      el('workerStatus').textContent = 'Slave node — waiting for the phone to scan this device\'s QR code.';
     } else {
       // Paired but slave mode is off: still load the model list so the
       // "Model this node runs" pick is usable before joining.
@@ -4632,8 +4757,8 @@ function toggleWorker(on) {
   }
   if (on && !S.token) {
     el('gpuWorker').checked = false;
-    workerStatus('save the token above first — then this device works as a slave node');
-    toast('Token needed first');
+    workerStatus('waiting for the phone to scan this device\'s QR code');
+    toast('Scan the QR code with the phone first');
     return;
   }
   localStorage.setItem('karen_worker', on ? '1' : '0');
@@ -4701,7 +4826,7 @@ async function workerRegister() {
     refreshWorkers();
     return true;
   }
-  workerStatus('registration failed — is the token saved?');
+  workerStatus('registration failed — scan this device\'s QR code with the phone first');
   refreshWorkers();
   return false;
 }
@@ -5474,7 +5599,14 @@ function send() {
 el('input').addEventListener('keydown', function (e) {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
 });
-el('token').value = S.token;
+if (PAGE === 'worker') {
+  // The worker mints its own token; the phone learns it by scanning the QR.
+  if (!S.token) { S.token = newToken(); localStorage.setItem('karen_token', S.token); }
+  showPair();
+  pairTick();
+} else if (el('masterToken')) {
+  el('masterToken').value = S.token;
+}
 measureCpu();
 initPressure();
 collectTelemetryDeep().catch(function () {});

@@ -448,6 +448,38 @@ object UserPrefs {
         prefs(ctx).edit().putString(KEY_SERVER_TOKEN, token).apply()
     }
 
+    // Worker-minted tokens the master has scanned in ("id|label|token" per line).
+    // A worker's own token is its credential; the master only trusts what it scanned.
+    private const val KEY_WORKER_TOKENS = "worker_tokens"
+    fun workerTokens(ctx: Context): List<Triple<String, String, String>> =
+        (prefs(ctx).getString(KEY_WORKER_TOKENS, "") ?: "")
+            .lineSequence()
+            .mapNotNull { line ->
+                val parts = line.split('|')
+                if (parts.size < 3 || parts[2].isBlank()) null
+                else Triple(parts[0], parts[1], parts[2])
+            }
+            .toList()
+
+    fun hasWorkerToken(ctx: Context, token: String): Boolean =
+        token.isNotBlank() && workerTokens(ctx).any { it.third == token }
+
+    fun addWorkerToken(ctx: Context, id: String, label: String, token: String) {
+        if (token.isBlank()) return
+        val clean = workerTokens(ctx).filterNot { it.third == token || (id.isNotBlank() && it.first == id) }
+        val line = "${id.replace("|", "")}|${label.replace("|", "").take(60)}|${token.trim()}"
+        prefs(ctx).edit()
+            .putString(KEY_WORKER_TOKENS, (clean.map { "${it.first}|${it.second}|${it.third}" } + line).joinToString("\n"))
+            .apply()
+    }
+
+    fun removeWorkerToken(ctx: Context, token: String) {
+        val left = workerTokens(ctx).filterNot { it.third == token }
+        prefs(ctx).edit()
+            .putString(KEY_WORKER_TOKENS, left.joinToString("\n") { "${it.first}|${it.second}|${it.third}" })
+            .apply()
+    }
+
     // Remote model catalog URL (blank = bundled list only).
     private const val KEY_CATALOG_URL = "catalog_url"
     fun catalogUrl(ctx: Context): String = prefs(ctx).getString(KEY_CATALOG_URL, "") ?: ""

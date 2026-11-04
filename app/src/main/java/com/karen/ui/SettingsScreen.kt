@@ -28,6 +28,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -47,7 +48,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 @Composable
-fun SettingsScreen(onBack: () -> Unit = {}) {
+fun SettingsScreen(
+    onNavigateToHome: () -> Unit = {},
+    onBack: () -> Unit = onNavigateToHome
+) {
     val colors = LocalKarenColors.current
     val context = LocalContext.current
     val currentMode = LocalKarenThemeMode.current
@@ -232,30 +236,67 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                     "Appearance",
                     Icons.Default.Palette,
                     colors.accentBlue,
-                    if (currentMode == KarenThemeMode.LIGHT) "LIGHT" else "DARK"
+                    when (currentMode) {
+                        KarenThemeMode.OLED -> "OLED"
+                        KarenThemeMode.CHARCOAL -> "CHARCOAL"
+                        KarenThemeMode.LIGHT -> "LIGHT"
+                    }
                 )
                 Spacer(Modifier.height(6.dp))
-                Row(
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(18.dp))
                         .background(colors.surface)
                         .border(1.dp, colors.border, RoundedCornerShape(18.dp))
                         .padding(14.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Text(if (currentMode == KarenThemeMode.LIGHT) "Light Mode" else "Dark Mode", color = colors.textPrimary, fontSize = 13.5.sp)
-                    Switch(
-                        checked = currentMode != KarenThemeMode.LIGHT,
-                        onCheckedChange = { KarenThemeState.toggleTheme() },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = Color.White,
-                            checkedTrackColor = colors.accentGreen,
-                            uncheckedThumbColor = colors.textMuted,
-                            uncheckedTrackColor = colors.surfaceHover
+                    Column {
+                        Text("Theme Preset", color = colors.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
+                        Text(
+                            when (currentMode) {
+                                KarenThemeMode.OLED -> "True black #000000 · Maximum battery saving"
+                                KarenThemeMode.CHARCOAL -> "Classic ChatGPT charcoal #212121"
+                                KarenThemeMode.LIGHT -> "Clean daytime high contrast #FFFFFF"
+                            },
+                            color = colors.textMuted,
+                            fontSize = 11.5.sp
                         )
-                    )
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(colors.surfaceHover.copy(alpha = 0.55f))
+                            .border(1.dp, colors.border.copy(alpha = 0.5f), RoundedCornerShape(12.dp))
+                            .padding(4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        listOf(
+                            KarenThemeMode.OLED to "OLED",
+                            KarenThemeMode.CHARCOAL to "Charcoal",
+                            KarenThemeMode.LIGHT to "Light"
+                        ).forEach { (mode, label) ->
+                            val selected = currentMode == mode
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(if (selected) colors.accentGreen else Color.Transparent)
+                                    .clickable { KarenThemeState.setMode(mode) }
+                                    .padding(vertical = 8.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    label,
+                                    color = if (selected) Color.White else colors.textPrimary,
+                                    fontSize = 12.sp,
+                                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
+                                )
+                            }
+                        }
+                    }
                 }
             }
 
@@ -1203,7 +1244,7 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                             }
                             Text("Choose", color = colors.accentBlue, fontSize = 12.sp)
                             Icon(
-                                Icons.Default.KeyboardArrowRight,
+                                Icons.AutoMirrored.Filled.KeyboardArrowRight,
                                 contentDescription = "Choose voice",
                                 tint = colors.textMuted,
                                 modifier = Modifier.size(16.dp)

@@ -3256,15 +3256,15 @@ fun WorkspaceScreen(
             }
         }
 
-        // Artifact tabs — colored webapp-mirror pill bar.
+        // Artifact tabs — unified segmented developer studio bar.
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 4.dp)
-                .clip(RoundedCornerShape(16.dp))
+                .padding(horizontal = 14.dp, vertical = 3.dp)
+                .clip(RoundedCornerShape(12.dp))
                 .background(colors.surface)
-                .border(1.dp, colors.border, RoundedCornerShape(16.dp))
-                .padding(4.dp),
+                .border(1.dp, colors.border, RoundedCornerShape(12.dp))
+                .padding(3.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             val stepBadge = remember(project.steps.size, project.steps.count { it.done }) {
@@ -3277,54 +3277,66 @@ fun WorkspaceScreen(
                     "Plan" -> stepBadge
                     else -> null
                 }
-                Row(
+                Box(
                     modifier = Modifier
                         .weight(1f)
-                        .clip(RoundedCornerShape(12.dp))
+                        .clip(RoundedCornerShape(8.dp))
                         .background(if (isSelected) tint.copy(alpha = 0.14f) else Color.Transparent)
                         .border(
                             1.dp,
-                            if (isSelected) tint.copy(alpha = 0.45f) else Color.Transparent,
-                            RoundedCornerShape(12.dp)
+                            if (isSelected) tint.copy(alpha = 0.40f) else Color.Transparent,
+                            RoundedCornerShape(8.dp)
                         )
                         .clickable { activeTab = tab }
-                        .padding(vertical = 7.dp),
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically
+                        .padding(vertical = 6.dp),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Icon(
-                        workspaceTabIcon(tab),
-                        contentDescription = null,
-                        tint = if (isSelected) tint else colors.textMuted,
-                        modifier = Modifier.size(14.dp)
-                    )
-                    Spacer(Modifier.width(4.dp))
-                    Text(
-                        text = tab,
-                        color = if (isSelected) tint else colors.textMuted,
-                        fontSize = 11.sp,
-                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                        maxLines = 1
-                    )
-                    if (badgeText != null) {
+                    Row(
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            workspaceTabIcon(tab),
+                            contentDescription = null,
+                            tint = if (isSelected) tint else colors.textMuted,
+                            modifier = Modifier.size(13.dp)
+                        )
                         Spacer(Modifier.width(4.dp))
-                        WorkspaceMiniPill(badgeText, if (isSelected) tint else colors.textMuted)
+                        Text(
+                            text = tab,
+                            color = if (isSelected) tint else colors.textMuted,
+                            fontSize = 11.5.sp,
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                            maxLines = 1
+                        )
+                        if (badgeText != null) {
+                            Spacer(Modifier.width(3.dp))
+                            WorkspaceMiniPill(badgeText, if (isSelected) tint else colors.textMuted)
+                        }
                     }
                 }
             }
+            // Hairline separator before full-screen toggle
+            Box(
+                modifier = Modifier
+                    .padding(horizontal = 3.dp)
+                    .width(1.dp)
+                    .height(18.dp)
+                    .background(colors.border)
+            )
             // Focus mode: give the canvas the whole thread area (and back).
             Box(
                 modifier = Modifier
-                    .clip(RoundedCornerShape(12.dp))
+                    .clip(RoundedCornerShape(8.dp))
                     .clickable { canvasExpanded = !canvasExpanded }
-                    .padding(horizontal = 8.dp, vertical = 7.dp),
+                    .padding(horizontal = 7.dp, vertical = 6.dp),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
                     if (canvasExpanded) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
                     contentDescription = if (canvasExpanded) "Restore chat" else "Expand canvas",
                     tint = if (canvasExpanded) colors.accentGreen else colors.textMuted,
-                    modifier = Modifier.size(19.dp)
+                    modifier = Modifier.size(17.dp)
                 )
             }
         }
@@ -3340,14 +3352,14 @@ fun WorkspaceScreen(
                 .fillMaxWidth()
                 .weight(1.5f)
                 .heightIn(min = if (imeShowing) 0.dp else 180.dp)
-                .padding(horizontal = 16.dp)
-                .clip(RoundedCornerShape(16.dp))
+                .padding(horizontal = 14.dp)
+                .clip(RoundedCornerShape(14.dp))
                 .background(
                     Brush.verticalGradient(
                         listOf(colors.surface, colors.cardBackground)
                     )
                 )
-                .border(1.dp, colors.accentBlue.copy(alpha = 0.22f), RoundedCornerShape(16.dp))
+                .border(1.dp, colors.border, RoundedCornerShape(14.dp))
         ) {
             when (activeTab) {
                 "Code" -> CodeCanvasView(project)
@@ -3371,12 +3383,12 @@ fun WorkspaceScreen(
                     workerRoute = it
                     UserPrefs.setWorkerTarget(ctx, it)
                 },
-                modifier = Modifier.padding(start = 14.dp)
+                modifier = Modifier.padding(horizontal = 14.dp)
             )
             // Per-turn model for the picked node (hidden for this phone / auto).
             WorkerModelChip(
                 route = workerRoute,
-                modifier = Modifier.padding(start = 14.dp)
+                modifier = Modifier.padding(horizontal = 14.dp)
             )
 
             // Quick action suggestion chips
@@ -3417,7 +3429,7 @@ fun WorkspaceScreen(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(start = 18.dp, end = 18.dp, top = 4.dp, bottom = 2.dp),
+                    .padding(start = 14.dp, end = 14.dp, top = 4.dp, bottom = 2.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Box(
@@ -3445,11 +3457,11 @@ fun WorkspaceScreen(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 14.dp, vertical = 6.dp)
-                    .clip(RoundedCornerShape(18.dp))
+                    .padding(horizontal = 14.dp, vertical = 4.dp)
+                    .clip(RoundedCornerShape(16.dp))
                     .background(colors.composerBackground)
-                    .border(1.dp, colors.accentGreen.copy(alpha = 0.24f), RoundedCornerShape(18.dp))
-                    .padding(6.dp),
+                    .border(1.dp, colors.accentGreen.copy(alpha = 0.24f), RoundedCornerShape(16.dp))
+                    .padding(horizontal = 6.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
             OutlinedTextField(
@@ -3641,6 +3653,8 @@ fun WorkspaceScreen(
     }
 }
 
+private enum class CodeViewMode { CODE, SPLIT, FILES }
+
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun CodeCanvasView(project: Project) {
@@ -3753,261 +3767,218 @@ private fun CodeCanvasView(project: Project) {
     val visible = entries.filter { ancestorsExpanded(it) }
     val currentFile = currentRel?.let { File(root, it) }?.takeIf { it.isFile }
 
-    Column(modifier = Modifier.fillMaxSize().padding(10.dp)) {
-        // Toolbar: breadcrumb + file ops
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(12.dp))
-                .background(colors.surface)
-                .border(1.dp, colors.border, RoundedCornerShape(12.dp))
-                .padding(horizontal = 8.dp, vertical = 6.dp)
+    var codeViewMode by remember { mutableStateOf(CodeViewMode.SPLIT) }
+    val clipboard = LocalClipboardManager.current
+
+    @Composable
+    fun ExplorerPane(modifier: Modifier = Modifier) {
+        Column(
+            modifier = modifier
+                .clip(RoundedCornerShape(10.dp))
+                .background(if (colors.isDark) Color(0xFF0F0F11) else Color(0xFFF4F4F5))
+                .border(1.dp, colors.border, RoundedCornerShape(10.dp))
         ) {
-            Box(
+            Row(
                 modifier = Modifier
-                    .size(28.dp)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(colors.accentBlue.copy(alpha = 0.12f))
-                    .border(1.dp, colors.accentBlue.copy(alpha = 0.28f), RoundedCornerShape(8.dp)),
-                contentAlignment = Alignment.Center
+                    .fillMaxWidth()
+                    .height(28.dp)
+                    .background(colors.surface)
+                    .padding(horizontal = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(Icons.Default.Code, contentDescription = null, tint = colors.accentBlue, modifier = Modifier.size(15.dp))
-            }
-            Spacer(Modifier.width(8.dp))
-            Column(Modifier.weight(1f)) {
+                Icon(Icons.Default.FolderOpen, contentDescription = null, tint = colors.accentAmber, modifier = Modifier.size(13.dp))
+                Spacer(Modifier.width(4.dp))
                 Text(
-                    if (dirty) "CODE // UNSAVED EDITS" else "CODE // EXPLORER & EDITOR",
-                    color = if (dirty) colors.accentAmber else colors.accentBlue,
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 8.sp,
+                    "FILES · ${entries.count { it.isFile }}",
+                    color = colors.textMuted,
+                    fontSize = 9.sp,
                     fontWeight = FontWeight.Bold,
-                    letterSpacing = 0.8.sp
-                )
-                Text(
-                    currentRel ?: "No file open",
-                    color = if (currentRel != null) colors.textPrimary else colors.textMuted,
-                    fontSize = 11.sp,
                     fontFamily = FontFamily.Monospace,
-                    maxLines = 1,
-                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                    modifier = Modifier.weight(1f)
                 )
-            }
-            if (dirty) {
-                Box(Modifier.padding(end = 4.dp).size(8.dp).clip(CircleShape).background(colors.accentAmber))
-            }
-            IconButton(onClick = { nameInput = ""; showNewFile = true }, modifier = Modifier.size(30.dp)) {
-                Icon(Icons.AutoMirrored.Filled.NoteAdd, contentDescription = "New file", tint = colors.textSecondary, modifier = Modifier.size(16.dp))
-            }
-            IconButton(onClick = { nameInput = ""; showNewFolder = true }, modifier = Modifier.size(30.dp)) {
-                Icon(Icons.Default.CreateNewFolder, contentDescription = "New folder", tint = colors.textSecondary, modifier = Modifier.size(16.dp))
-            }
-            IconButton(
-                onClick = { nameInput = currentFile?.name ?: ""; showRename = true },
-                enabled = currentFile != null,
-                modifier = Modifier.size(30.dp)
-            ) {
-                Icon(Icons.Default.Edit, contentDescription = "Rename", tint = if (currentFile != null) colors.textSecondary else colors.textMuted.copy(alpha = 0.5f), modifier = Modifier.size(15.dp))
-            }
-            IconButton(
-                onClick = { confirmDeleteRel = currentRel },
-                enabled = currentRel != null,
-                modifier = Modifier.size(30.dp)
-            ) {
-                Icon(Icons.Default.Delete, contentDescription = "Delete", tint = if (currentRel != null) colors.accentRed else colors.textMuted.copy(alpha = 0.5f), modifier = Modifier.size(15.dp))
-            }
-            IconButton(onClick = { refreshTick = System.currentTimeMillis() }, modifier = Modifier.size(30.dp)) {
-                Icon(Icons.Default.Refresh, contentDescription = "Refresh", tint = colors.textSecondary, modifier = Modifier.size(15.dp))
-            }
-        }
-        Spacer(Modifier.height(6.dp))
-        Row(modifier = Modifier.fillMaxWidth().weight(1f)) {
-            // Explorer
-            Column(
-                modifier = Modifier
-                    .weight(0.9f)
-                    .fillMaxHeight()
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(if (colors.isDark) Color(0xFF0F0F11) else Color(0xFFF4F4F5))
-                    .border(1.dp, colors.border, RoundedCornerShape(12.dp))
-                    .padding(vertical = 6.dp)
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 2.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(Icons.Default.FolderOpen, contentDescription = null, tint = colors.accentAmber, modifier = Modifier.size(13.dp))
-                    Spacer(Modifier.width(5.dp))
-                    Text(
-                        "FILES · ${entries.count { it.isFile }}",
-                        color = colors.textMuted,
-                        fontSize = 9.5.sp,
-                        fontWeight = FontWeight.Bold,
-                        fontFamily = FontFamily.Monospace
-                    )
+                IconButton(onClick = { nameInput = ""; showNewFile = true }, modifier = Modifier.size(20.dp)) {
+                    Icon(Icons.AutoMirrored.Filled.NoteAdd, contentDescription = "New file", tint = colors.textSecondary, modifier = Modifier.size(12.dp))
                 }
-                LazyColumn(modifier = Modifier.fillMaxSize()) {
-                    if (visible.isEmpty()) {
-                        item {
-                            Text(
-                                "No files yet — prompt Karen to scaffold or tap +",
-                                color = colors.textMuted,
-                                fontSize = 11.sp,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
-                            )
-                        }
-                    }
-                    items(visible.size) { idx ->
-                        val f = visible[idx]
-                        val rel = relOf(f)
-                        val depth = depthOf(root, f)
-                        val isDir = f.isDirectory
-                        val isSel = rel == currentRel
-                        val itemTint = fileTintFor(f.name, isDir, colors)
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 4.dp, vertical = 1.dp)
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(if (isSel) colors.accentGreen.copy(alpha = 0.16f) else Color.Transparent)
-                                .border(
-                                    1.dp,
-                                    if (isSel) colors.accentGreen.copy(alpha = 0.40f) else Color.Transparent,
-                                    RoundedCornerShape(8.dp)
-                                )
-                                .clickable {
-                                    if (isDir) {
-                                        expanded = if (expanded.contains(rel)) expanded - rel else expanded + rel
-                                    } else {
-                                        currentRel = rel
-                                        scope.launch { loadRel(rel) }
-                                    }
-                                }
-                                .padding(start = (6 + depth * 11).dp, end = 6.dp, top = 5.dp, bottom = 5.dp)
-                        ) {
-                            if (isDir) {
-                                Icon(
-                                    if (expanded.contains(rel)) Icons.Default.KeyboardArrowDown else Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                                    contentDescription = null,
-                                    tint = colors.textMuted,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                                Icon(
-                                    if (expanded.contains(rel)) Icons.Default.FolderOpen else Icons.Default.Folder,
-                                    contentDescription = null,
-                                    tint = colors.accentAmber,
-                                    modifier = Modifier.size(15.dp)
-                                )
-                            } else {
-                                Spacer(Modifier.width(14.dp))
-                                Icon(
-                                    fileIconFor(f.name, false),
-                                    contentDescription = null,
-                                    tint = itemTint,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                            }
-                            Spacer(Modifier.width(6.dp))
-                            Text(
-                                f.name,
-                                color = if (isSel) colors.textPrimary else colors.textSecondary,
-                                fontSize = 11.5.sp,
-                                fontFamily = FontFamily.Monospace,
-                                fontWeight = if (isSel) FontWeight.SemiBold else FontWeight.Normal,
-                                maxLines = 1,
-                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f)
-                            )
-                            if (!isDir && f.length() > 0) {
-                                Text(
-                                    formatFileSize(f.length()),
-                                    color = colors.textMuted,
-                                    fontSize = 8.5.sp,
-                                    fontFamily = FontFamily.Monospace
-                                )
-                            }
-                        }
-                    }
+                IconButton(onClick = { nameInput = ""; showNewFolder = true }, modifier = Modifier.size(20.dp)) {
+                    Icon(Icons.Default.CreateNewFolder, contentDescription = "New folder", tint = colors.textSecondary, modifier = Modifier.size(12.dp))
                 }
             }
-            Spacer(Modifier.width(8.dp))
-            // Editor
-            Column(modifier = Modifier.weight(1.5f).fillMaxHeight()) {
-                val clipboard = LocalClipboardManager.current
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(bottom = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    val fileTint = if (currentFile != null) fileTintFor(currentFile.name, false, colors) else colors.accentGreen
-                    Box(
-                        modifier = Modifier
-                            .size(24.dp)
-                            .clip(RoundedCornerShape(7.dp))
-                            .background(fileTint.copy(alpha = 0.14f)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            if (currentFile != null) fileIconFor(currentFile.name, false) else Icons.Default.Description,
-                            contentDescription = null,
-                            tint = fileTint,
-                            modifier = Modifier.size(13.dp)
+            Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(colors.border))
+            LazyColumn(modifier = Modifier.fillMaxSize().padding(vertical = 4.dp)) {
+                if (visible.isEmpty()) {
+                    item {
+                        Text(
+                            "No files yet — prompt Karen to scaffold or tap +",
+                            color = colors.textMuted,
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
                         )
                     }
-                    Spacer(Modifier.width(7.dp))
-                    Text(
-                        currentFile?.name ?: "Editor",
-                        color = if (currentFile != null) colors.textPrimary else colors.textMuted,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        fontFamily = FontFamily.Monospace,
-                        maxLines = 1,
-                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f)
-                    )
-                    if (currentFile != null && content.isNotEmpty()) {
-                        IconButton(
-                            onClick = {
-                                clipboard.setText(AnnotatedString(content))
-                            },
-                            modifier = Modifier.size(24.dp)
-                        ) {
-                            Icon(Icons.Default.ContentCopy, contentDescription = "Copy code", tint = colors.textMuted, modifier = Modifier.size(13.dp))
+                }
+                items(visible.size) { idx ->
+                    val f = visible[idx]
+                    val rel = relOf(f)
+                    val depth = depthOf(root, f)
+                    val isDir = f.isDirectory
+                    val isSel = rel == currentRel
+                    val itemTint = fileTintFor(f.name, isDir, colors)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 4.dp, vertical = 1.dp)
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(if (isSel) colors.accentGreen.copy(alpha = 0.16f) else Color.Transparent)
+                            .border(
+                                1.dp,
+                                if (isSel) colors.accentGreen.copy(alpha = 0.40f) else Color.Transparent,
+                                RoundedCornerShape(6.dp)
+                            )
+                            .clickable {
+                                if (isDir) {
+                                    expanded = if (expanded.contains(rel)) expanded - rel else expanded + rel
+                                } else {
+                                    currentRel = rel
+                                    scope.launch { loadRel(rel) }
+                                    if (codeViewMode == CodeViewMode.FILES) {
+                                        codeViewMode = CodeViewMode.CODE
+                                    }
+                                }
+                            }
+                            .padding(start = (6 + depth * 10).dp, end = 6.dp, top = 4.dp, bottom = 4.dp)
+                    ) {
+                        if (isDir) {
+                            Icon(
+                                if (expanded.contains(rel)) Icons.Default.KeyboardArrowDown else Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                contentDescription = null,
+                                tint = colors.textMuted,
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Icon(
+                                if (expanded.contains(rel)) Icons.Default.FolderOpen else Icons.Default.Folder,
+                                contentDescription = null,
+                                tint = colors.accentAmber,
+                                modifier = Modifier.size(14.dp)
+                            )
+                        } else {
+                            Spacer(Modifier.width(13.dp))
+                            Icon(
+                                fileIconFor(f.name, false),
+                                contentDescription = null,
+                                tint = itemTint,
+                                modifier = Modifier.size(13.dp)
+                            )
                         }
-                        Spacer(Modifier.width(4.dp))
-                    }
-                    if (currentFile != null) {
-                        WorkspaceMiniPill(if (previewMode) "PREVIEW" else "EDIT", if (previewMode) colors.accentBlue else colors.accentGreen)
+                        Spacer(Modifier.width(5.dp))
+                        Text(
+                            f.name,
+                            color = if (isSel) colors.textPrimary else colors.textSecondary,
+                            fontSize = 11.sp,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = if (isSel) FontWeight.SemiBold else FontWeight.Normal,
+                            maxLines = 1,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                        if (!isDir && f.length() > 0) {
+                            Text(
+                                formatFileSize(f.length()),
+                                color = colors.textMuted,
+                                fontSize = 8.5.sp,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
                     }
                 }
+            }
+        }
+    }
+
+    @Composable
+    fun EditorPane(modifier: Modifier = Modifier) {
+        Column(
+            modifier = modifier
+                .clip(RoundedCornerShape(10.dp))
+                .background(if (colors.isDark) Color(0xFF0F0F11) else Color(0xFFF4F4F5))
+                .border(1.dp, colors.border, RoundedCornerShape(10.dp))
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(28.dp)
+                    .background(colors.surface)
+                    .padding(horizontal = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                val fileTint = if (currentFile != null) fileTintFor(currentFile.name, false, colors) else colors.accentGreen
+                Icon(
+                    if (currentFile != null) fileIconFor(currentFile.name, false) else Icons.Default.Description,
+                    contentDescription = null,
+                    tint = fileTint,
+                    modifier = Modifier.size(12.dp)
+                )
+                Spacer(Modifier.width(5.dp))
+                Text(
+                    currentFile?.name ?: "Editor",
+                    color = if (currentFile != null) colors.textPrimary else colors.textMuted,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    fontFamily = FontFamily.Monospace,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                if (currentFile != null && content.isNotEmpty()) {
+                    IconButton(
+                        onClick = { clipboard.setText(AnnotatedString(content)) },
+                        modifier = Modifier.size(20.dp)
+                    ) {
+                        Icon(Icons.Default.ContentCopy, contentDescription = "Copy code", tint = colors.textMuted, modifier = Modifier.size(11.dp))
+                    }
+                    Spacer(Modifier.width(4.dp))
+                }
+                if (currentFile != null) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(if (previewMode) colors.accentBlue.copy(alpha = 0.14f) else colors.accentGreen.copy(alpha = 0.14f))
+                            .border(0.5.dp, if (previewMode) colors.accentBlue.copy(alpha = 0.40f) else colors.accentGreen.copy(alpha = 0.40f), RoundedCornerShape(4.dp))
+                            .clickable { previewMode = !previewMode }
+                            .padding(horizontal = 5.dp, vertical = 2.dp)
+                    ) {
+                        Text(
+                            if (previewMode) "PREVIEW" else "EDIT",
+                            color = if (previewMode) colors.accentBlue else colors.accentGreen,
+                            fontSize = 8.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                }
+            }
+            Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(colors.border))
+            Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
                 if (currentFile == null) {
-                    Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
-                        Text("Select a file from the explorer to view & edit", color = colors.textMuted, fontSize = 12.sp)
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text("Select a file from explorer to view & edit", color = colors.textMuted, fontSize = 11.sp)
                     }
                 } else if (binaryNote != null) {
-                    Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(Icons.AutoMirrored.Filled.InsertDriveFile, contentDescription = null, tint = colors.textMuted, modifier = Modifier.size(28.dp))
-                            Spacer(Modifier.height(8.dp))
-                            Text(binaryNote!!, color = colors.textMuted, fontSize = 12.sp)
-                            Spacer(Modifier.height(4.dp))
-                            Text(currentFile.name, color = colors.textSecondary, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                            Icon(Icons.AutoMirrored.Filled.InsertDriveFile, contentDescription = null, tint = colors.textMuted, modifier = Modifier.size(24.dp))
+                            Spacer(Modifier.height(6.dp))
+                            Text(binaryNote!!, color = colors.textMuted, fontSize = 11.sp)
+                            Spacer(Modifier.height(3.dp))
+                            Text(currentFile.name, color = colors.textSecondary, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
                         }
                     }
                 } else if (previewMode) {
-                    // Webapp-mirror colored preview: line numbers + syntax tint.
                     val previewLines = remember(content) { content.lines() }
                     SelectionContainer {
                         LazyColumn(
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .weight(1f)
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(if (colors.isDark) Color(0xFF0F0F11) else Color(0xFFF4F4F5))
-                                .border(1.dp, colors.border, RoundedCornerShape(12.dp))
-                                .padding(vertical = 8.dp)
+                                .fillMaxSize()
+                                .padding(vertical = 4.dp)
                         ) {
                             items(previewLines.size) { idx ->
                                 Row(
@@ -4017,7 +3988,7 @@ private fun CodeCanvasView(project: Project) {
                                 ) {
                                     Text(
                                         "${idx + 1}",
-                                        color = colors.textMuted.copy(alpha = 0.7f),
+                                        color = colors.textMuted.copy(alpha = 0.65f),
                                         fontSize = 11.sp,
                                         fontFamily = FontFamily.Monospace,
                                         modifier = Modifier.width(26.dp)
@@ -4048,89 +4019,256 @@ private fun CodeCanvasView(project: Project) {
                     OutlinedTextField(
                         value = content,
                         onValueChange = { content = it; dirty = it != savedText },
-                        modifier = Modifier.fillMaxWidth().weight(1f),
-                        shape = RoundedCornerShape(12.dp),
-                        textStyle = androidx.compose.ui.text.TextStyle(color = colors.textPrimary, fontFamily = FontFamily.Monospace, fontSize = 12.sp),
+                        modifier = Modifier.fillMaxSize(),
+                        textStyle = androidx.compose.ui.text.TextStyle(color = colors.textPrimary, fontFamily = FontFamily.Monospace, fontSize = 11.5.sp),
                         colors = karenFieldColors(colors)
                     )
                 }
-                Spacer(Modifier.height(6.dp))
-                // Action buttons: Preview / Edit toggle, Save, Compile & Test
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    OutlinedButton(
-                        onClick = { previewMode = !previewMode },
-                        enabled = currentFile != null && binaryNote == null,
-                        shape = RoundedCornerShape(8.dp),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
-                    ) {
-                        Icon(
-                            if (previewMode) Icons.Default.Edit else Icons.Default.Visibility,
-                            contentDescription = if (previewMode) "Edit" else "Preview",
-                            tint = colors.textSecondary,
-                            modifier = Modifier.size(14.dp)
-                        )
+            }
+        }
+    }
+
+    Column(modifier = Modifier.fillMaxSize().padding(7.dp)) {
+        // Toolbar: file breadcrumb + mode switcher + quick actions
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(9.dp))
+                .background(colors.surface)
+                .border(1.dp, colors.border, RoundedCornerShape(9.dp))
+                .padding(horizontal = 8.dp, vertical = 4.dp)
+        ) {
+            val fileTint = if (currentFile != null) fileTintFor(currentFile.name, false, colors) else colors.accentBlue
+            Box(
+                modifier = Modifier
+                    .size(24.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(fileTint.copy(alpha = 0.14f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    if (currentFile != null) fileIconFor(currentFile.name, false) else Icons.Default.Code,
+                    contentDescription = null,
+                    tint = fileTint,
+                    modifier = Modifier.size(13.dp)
+                )
+            }
+            Spacer(Modifier.width(6.dp))
+            Column(modifier = Modifier.weight(1f, fill = false)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        currentFile?.name ?: (currentRel ?: "Explorer"),
+                        color = if (currentRel != null) colors.textPrimary else colors.textMuted,
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                    )
+                    if (dirty) {
                         Spacer(Modifier.width(4.dp))
-                        Text(if (previewMode) "Edit" else "Preview", fontSize = 11.5.sp)
+                        Box(Modifier.size(6.dp).clip(CircleShape).background(colors.accentAmber))
                     }
-                    Button(
-                        onClick = {
-                            val f = currentFile ?: return@Button
-                            val rel = currentRel ?: return@Button
-                            scope.launch(Dispatchers.IO) {
-                                try {
-                                    val prev = try { if (f.exists()) f.readText() else "" } catch (_: Exception) { "" }
-                                    f.parentFile?.mkdirs()
-                                    f.writeText(content)
-                                    withContext(Dispatchers.Main) {
-                                        project.codeOld = prev
-                                        project.codeNew = content
-                                        loadedFor = rel
-                                        savedText = content
-                                        dirty = false
-                                        status = "Saved $rel (${content.length} chars)"
-                                        statusOk = true
-                                        refreshTick = System.currentTimeMillis()
-                                    }
-                                } catch (e: Exception) {
-                                    withContext(Dispatchers.Main) {
-                                        status = "Error saving: ${e.message}"
-                                        statusOk = false
-                                    }
+                }
+                Text(
+                    if (currentFile != null) "${formatFileSize(currentFile.length())} · ${entries.count { it.isFile }} files"
+                    else "${entries.count { it.isFile }} files in project",
+                    color = colors.textMuted,
+                    fontSize = 8.5.sp,
+                    fontFamily = FontFamily.Monospace
+                )
+            }
+
+            Spacer(Modifier.width(6.dp))
+
+            // View Mode Capsule: [ Code | Split | Files ]
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(colors.cardBackground)
+                    .border(1.dp, colors.border, RoundedCornerShape(6.dp))
+                    .padding(1.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                listOf(CodeViewMode.CODE to "Code", CodeViewMode.SPLIT to "Split", CodeViewMode.FILES to "Files").forEach { (mode, label) ->
+                    val isSel = codeViewMode == mode
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(5.dp))
+                            .background(if (isSel) colors.accentBlue.copy(alpha = 0.16f) else Color.Transparent)
+                            .clickable { codeViewMode = mode }
+                            .padding(horizontal = 5.dp, vertical = 2.5.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            label,
+                            color = if (isSel) colors.accentBlue else colors.textMuted,
+                            fontSize = 9.5.sp,
+                            fontWeight = if (isSel) FontWeight.Bold else FontWeight.Normal
+                        )
+                    }
+                }
+            }
+
+            Spacer(Modifier.width(4.dp))
+
+            // Save pill
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(if (dirty) colors.accentGreen else colors.surfaceHover)
+                    .border(0.75.dp, if (dirty) colors.accentGreen else colors.border, RoundedCornerShape(6.dp))
+                    .clickable(enabled = currentFile != null && binaryNote == null && dirty) {
+                        val f = currentFile ?: return@clickable
+                        val rel = currentRel ?: return@clickable
+                        scope.launch(Dispatchers.IO) {
+                            try {
+                                val prev = try { if (f.exists()) f.readText() else "" } catch (_: Exception) { "" }
+                                f.parentFile?.mkdirs()
+                                f.writeText(content)
+                                withContext(Dispatchers.Main) {
+                                    project.codeOld = prev
+                                    project.codeNew = content
+                                    loadedFor = rel
+                                    savedText = content
+                                    dirty = false
+                                    status = "Saved $rel"
+                                    statusOk = true
+                                    refreshTick = System.currentTimeMillis()
+                                }
+                            } catch (e: Exception) {
+                                withContext(Dispatchers.Main) {
+                                    status = "Error: ${e.message}"
+                                    statusOk = false
                                 }
                             }
-                        },
-                        enabled = currentFile != null && binaryNote == null && content.length <= 15000,
-                        colors = ButtonDefaults.buttonColors(containerColor = colors.accentGreen, contentColor = Color.White),
-                        shape = RoundedCornerShape(8.dp),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
-                    ) {
-                        Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(13.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("Save", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
                     }
-                    OutlinedButton(
-                        onClick = {
-                            scope.launch {
-                                val out = compileAndTest(root)
-                                status = out.take(600)
-                                statusOk = !out.startsWith("Error") && !out.contains("FAIL")
-                            }
-                        },
-                        shape = RoundedCornerShape(8.dp),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
-                    ) {
-                        Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(13.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("Compile & Test", fontSize = 11.5.sp)
+                    .padding(horizontal = 6.dp, vertical = 3.5.dp)
+            ) {
+                Text(
+                    "Save",
+                    color = if (dirty) Color.White else colors.textMuted,
+                    fontSize = 9.5.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            Spacer(Modifier.width(3.dp))
+
+            // Run / Compile
+            Box(
+                modifier = Modifier
+                    .size(22.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(colors.accentBlue.copy(alpha = 0.12f))
+                    .border(0.75.dp, colors.accentBlue.copy(alpha = 0.30f), RoundedCornerShape(6.dp))
+                    .clickable {
+                        scope.launch {
+                            val out = compileAndTest(root)
+                            status = out.take(600)
+                            statusOk = !out.startsWith("Error") && !out.contains("FAIL")
+                        }
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(Icons.Default.PlayArrow, contentDescription = "Run", tint = colors.accentBlue, modifier = Modifier.size(13.dp))
+            }
+
+            Spacer(Modifier.width(3.dp))
+
+            // More Menu
+            Box {
+                var menuOpen by remember { mutableStateOf(false) }
+                Box(
+                    modifier = Modifier
+                        .size(22.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickable { menuOpen = true },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(Icons.Default.MoreVert, contentDescription = "Options", tint = colors.textSecondary, modifier = Modifier.size(14.dp))
+                }
+                KDropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    DropdownMenuItem(
+                        text = { Text("New file", fontSize = 12.sp) },
+                        leadingIcon = { Icon(Icons.AutoMirrored.Filled.NoteAdd, contentDescription = null, modifier = Modifier.size(14.dp)) },
+                        onClick = { menuOpen = false; nameInput = ""; showNewFile = true }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("New folder", fontSize = 12.sp) },
+                        leadingIcon = { Icon(Icons.Default.CreateNewFolder, contentDescription = null, modifier = Modifier.size(14.dp)) },
+                        onClick = { menuOpen = false; nameInput = ""; showNewFolder = true }
+                    )
+                    if (currentFile != null) {
+                        DropdownMenuItem(
+                            text = { Text("Rename", fontSize = 12.sp) },
+                            leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(14.dp)) },
+                            onClick = { menuOpen = false; nameInput = currentFile.name; showRename = true }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Delete", color = colors.accentRed, fontSize = 12.sp) },
+                            leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null, tint = colors.accentRed, modifier = Modifier.size(14.dp)) },
+                            onClick = { menuOpen = false; confirmDeleteRel = currentRel }
+                        )
                     }
+                    DropdownMenuItem(
+                        text = { Text("Refresh tree", fontSize = 12.sp) },
+                        leadingIcon = { Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(14.dp)) },
+                        onClick = { menuOpen = false; refreshTick = System.currentTimeMillis() }
+                    )
                 }
-                if (status != null) {
-                    Spacer(Modifier.height(4.dp))
-                    Text(status!!, color = if (statusOk) colors.accentGreen else colors.accentRed, fontSize = 10.5.sp, fontFamily = FontFamily.Monospace, maxLines = 4)
+            }
+        }
+
+        Spacer(Modifier.height(5.dp))
+
+        // Main Panes Layout
+        when (codeViewMode) {
+            CodeViewMode.SPLIT -> {
+                Row(modifier = Modifier.fillMaxWidth().weight(1f)) {
+                    ExplorerPane(Modifier.weight(1f).fillMaxHeight())
+                    Spacer(Modifier.width(6.dp))
+                    EditorPane(Modifier.weight(1.5f).fillMaxHeight())
                 }
+            }
+            CodeViewMode.CODE -> {
+                Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
+                    EditorPane(Modifier.fillMaxSize())
+                }
+            }
+            CodeViewMode.FILES -> {
+                Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
+                    ExplorerPane(Modifier.fillMaxSize())
+                }
+            }
+        }
+
+        if (status != null) {
+            Spacer(Modifier.height(3.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(if (statusOk) colors.accentGreen.copy(alpha = 0.12f) else colors.accentRed.copy(alpha = 0.12f))
+                    .padding(horizontal = 8.dp, vertical = 3.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    status!!,
+                    color = if (statusOk) colors.accentGreen else colors.accentRed,
+                    fontSize = 9.5.sp,
+                    fontFamily = FontFamily.Monospace,
+                    maxLines = 2,
+                    modifier = Modifier.weight(1f)
+                )
+                Icon(
+                    Icons.Default.Close,
+                    contentDescription = "Dismiss",
+                    tint = colors.textMuted,
+                    modifier = Modifier.size(12.dp).clickable { status = null }
+                )
             }
         }
     }

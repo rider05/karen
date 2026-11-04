@@ -1,8 +1,9 @@
 # Agent Instructions — Karen
 
 ## What to do
-- Build: `cd D:\karen; .\gradlew.bat :app:compileDebugKotlin --offline` (SDK path in `local.properties`); `assembleDebug` before shipping an APK to `apks/karen.apk`.
-- Ship every fix the same way: commit code → `git push origin main` → copy `app/build/outputs/apk/debug/app-debug.apk` → `apks/karen.apk` → commit APK refresh → push.
+- Build: `cd D:\karen; .\gradlew.bat :app:compileDebugKotlin --offline` (SDK path in `local.properties`).
+- Ship every fix the same way: commit code → `git push origin main` → `.\gradlew.bat :app:assembleRelease --offline` → copy `app/build/outputs/apk/release/app-release.apk` → `apks/karen.apk` → commit APK refresh → push.
+- Ship the **release** APK, never `assembleDebug`: debug is signed with the Android Debug key and breaks installs with "Signing certificate mismatch". `karen-release.jks` (CN=Karen) is the installed key.
 - Verify behavior fixes on the `My_Phone` emulator before closing the task (boot headless, `-memory 5120`, install via `adb install -r`, screenshot via `adb exec-out uiautomator dump`).
 
 ## What not to do

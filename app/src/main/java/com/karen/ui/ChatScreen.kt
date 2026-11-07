@@ -2656,9 +2656,7 @@ fun ChatScreen(
                 )
         )
 
-        // Starter prompts and memory completions live in the composer stack
-        // (see ChatSuggestionPills) so they align above the Run-on chip
-        // instead of floating over the message list.
+        // Composer sits directly above the message list (no suggestions).
 
         // Jump-to-latest FAB (ChatGPT-style): visible only when scrolled
         // up away from the end; hides at the bottom of the chat.
@@ -3001,36 +2999,7 @@ fun ChatScreen(
                     )
                 }
             }
-            // Suggestion pills above the composer, matching the design's
-            // staggered stack: starter prompts on a fresh chat, memory
-            // completions (past asks remembered on this device) once typing
-            // starts. Picking one fills the field and parks the cursor after a
-            // trailing space.
-            val memoryQuery = input.text.trim()
-            val memoryMatches = remember(memoryQuery, promptMemoryRevision) {
-                if (memoryQuery.length < 2 || mentionMatch != null || slashToken != null) {
-                    emptyList<String>()
-                } else {
-                    PromptMemory.matches(context, memoryQuery)
-                }
-            }
-            val starterSuggestions = remember(messages.size) {
-                if (messages.size <= 1) {
-                    listOf("Inspect my timetable", "Summarize a document", "Set a reminder", "Open Workspace")
-                } else {
-                    emptyList()
-                }
-            }
-            if (memoryMatches.isNotEmpty() ||
-                (memoryQuery.isBlank() && starterSuggestions.isNotEmpty())
-            ) {
-                ChatSuggestionPills(
-                    starter = starterSuggestions,
-                    memory = memoryMatches,
-                    colors = colors,
-                    onPick = { pick -> setInputEnd("$pick ") }
-                )
-            }
+            /** Suggestion pills removed: composer is clean by design. */
             ChatGPTFloatingComposer(
                 value = input,
                 onValueChange = { input = it },
@@ -3627,171 +3596,6 @@ private fun ChatRoutingStatus(
             wide = true
         )
         WorkerModelChip(route = route)
-    }
-}
-
-/**
- * Suggestion pills above the composer (design ref: the staggered stack —
- * "Inspect my timetable", then "Summarize a document" + "Set a reminder",
- * then "Open Workspace"). A fresh chat keeps that 1-2-1 rhythm; while
- * typing, memory completions flow in the same pill style.
- *
- * The stack assembles: each pill rises out of a faint green halo, unwinding
- * its sparkle and passing one light sweep across the surface. The halo
- * breathes slowly behind the block so an empty chat never feels frozen.
- */
-@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
-@Composable
-private fun ChatSuggestionPills(
-    starter: List<String>,
-    memory: List<String>,
-    colors: KarenColors,
-    onPick: (String) -> Unit
-) {
-    val typing = memory.isNotEmpty()
-    val halo = rememberInfiniteTransition(label = "pill_halo")
-    val breathe by halo.animateFloat(
-        initialValue = 0.30f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(2800, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "pill_halo_alpha"
-    )
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .drawBehind {
-                drawRect(
-                    brush = androidx.compose.ui.graphics.Brush.radialGradient(
-                        colors = listOf(
-                            colors.accentGreen.copy(alpha = 0.075f * breathe),
-                            Color.Transparent
-                        ),
-                        center = androidx.compose.ui.geometry.Offset(
-                            size.width / 2f,
-                            size.height * 0.55f
-                        ),
-                        radius = size.width * 0.58f
-                    )
-                )
-            }
-    ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 6.dp)
-        ) {
-            if (typing) {
-                androidx.compose.foundation.layout.FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    memory.forEachIndexed { i, text ->
-                        SuggestionPill(text, colors, 300.dp, i) { onPick(text) }
-                    }
-                }
-            } else if (starter.size >= 4) {
-                SuggestionPill(starter[0], colors, 300.dp, 0) { onPick(starter[0]) }
-                androidx.compose.foundation.layout.FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    SuggestionPill(starter[1], colors, 240.dp, 1) { onPick(starter[1]) }
-                    SuggestionPill(starter[2], colors, 240.dp, 2) { onPick(starter[2]) }
-                }
-                SuggestionPill(starter[3], colors, 300.dp, 3) { onPick(starter[3]) }
-            }
-        }
-    }
-}
-
-/**
- * One suggestion pill: green sparkle + label, full radius, no border.
- * [index] staggers the entrance so the stack assembles top-to-bottom.
- */
-@Composable
-private fun SuggestionPill(
-    text: String,
-    colors: KarenColors,
-    maxWidth: Dp,
-    index: Int,
-    onClick: () -> Unit
-) {
-    var landed by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) { landed = true }
-    // One driver: rise + scale + sparkle unwind + a single light sweep.
-    val enter by animateFloatAsState(
-        targetValue = if (landed) 1f else 0f,
-        animationSpec = tween(
-            durationMillis = 440,
-            delayMillis = 30 + index * 55,
-            easing = CubicBezierEasing(0.16f, 0.84f, 0.24f, 1f)
-        ),
-        label = "pill_enter_$index"
-    )
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier
-            .widthIn(max = maxWidth)
-            .graphicsLayer {
-                alpha = enter
-                translationY = (1f - enter) * 22.dp.toPx()
-                scaleX = 0.90f + 0.10f * enter
-                scaleY = 0.90f + 0.10f * enter
-            }
-            .clip(RoundedCornerShape(50))
-            .background(colors.surfaceHover)
-            .drawWithContent {
-                drawContent()
-                val sweep = ((enter - 0.30f) / 0.70f).coerceIn(0f, 1f)
-                if (sweep > 0f && sweep < 1f) {
-                    val x = -size.width * 0.7f + size.width * 2.1f * sweep
-                    drawRect(
-                        brush = androidx.compose.ui.graphics.Brush.linearGradient(
-                            colors = listOf(
-                                Color.Transparent,
-                                Color.White.copy(alpha = 0.06f),
-                                Color.Transparent
-                            ),
-                            start = androidx.compose.ui.geometry.Offset(x, 0f),
-                            end = androidx.compose.ui.geometry.Offset(
-                                x + size.width * 0.55f,
-                                size.height
-                            )
-                        )
-                    )
-                }
-            }
-            .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 11.dp)
-    ) {
-        Icon(
-            Icons.Default.AutoAwesome,
-            contentDescription = null,
-            tint = colors.accentGreen,
-            modifier = Modifier
-                .size(14.dp)
-                .graphicsLayer {
-                    scaleX = 0.55f + 0.45f * enter
-                    scaleY = 0.55f + 0.45f * enter
-                    rotationZ = (1f - enter) * -70f
-                }
-        )
-        Spacer(Modifier.width(8.dp))
-        Text(
-            text = text,
-            color = colors.textPrimary,
-            fontSize = 13.5.sp,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 1,
-            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
-        )
     }
 }
 

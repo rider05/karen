@@ -25,6 +25,8 @@ release builds sign with it via the `release` signingConfig in
 `app/build.gradle.kts`, so a fresh `apks/karen.apk` installs over the
 current app with no uninstall. After copying, commit the APK refresh and
 push; a cached download may still show the old build — hard-refresh.
+**Slim rule:** keep `abiFilters` arm64-v8a only — adding x86_64 balloons the
+APK past GitHub's 100 MB push limit.
 
 ## Theme (Professional Workspace — per `docs/DESIGN.md`)
 

@@ -280,7 +280,7 @@ object MagazineBuilder {
             for (i in 0 until n) {
                 val page = renderer.openPage(i)
                 val bmp = Bitmap.createBitmap(page.width, page.height, Bitmap.Config.ARGB_8888)
-                page.render(bmp, android.graphics.Rect(0, 0, page.width, page.height), null, 0)
+                page.render(bmp, android.graphics.Rect(0, 0, page.width, page.height), null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
                 page.close()
                 if (!isInked(bmp)) issues.add("cover and page ${i + 1} design need more ink")
                 bmp.recycle()

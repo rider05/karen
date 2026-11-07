@@ -62,14 +62,14 @@ fun PdfViewerDialog(
             val idx = pageIndex.coerceIn(0, renderer.pageCount - 1)
             val page = renderer.openPage(idx)
             val bmp = Bitmap.createBitmap(page.width, page.height, Bitmap.Config.ARGB_8888)
-            page.render(bmp, android.graphics.Rect(0, 0, page.width, page.height), null, 0)
+            page.render(bmp, android.graphics.Rect(0, 0, page.width, page.height), null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
             page.close()
             renderer.close()
             fd.close()
             bitmap = bmp
             error = null
         } catch (e: Exception) {
-            error = e.message ?: "Could not render this file."
+            error = "Could not render this page on this device (${e.message ?: e.javaClass.simpleName})."
             bitmap = null
         }
     }

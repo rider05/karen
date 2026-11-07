@@ -47,4 +47,56 @@ class KarenPlanTest {
         assertEquals(1, parsed.steps.size)
         assertEquals("Real step to execute", parsed.steps[0].text)
     }
+
+    @Test
+    fun splitTraceParsesSkillAndStripsLines() {
+        val reply = "///TRACE {\"t\":\"Build the PDF page by page\",\"k\":\"build\",\"s\":\"started\"}\n" +
+            "///TRACE {\"t\":\"pdf\",\"k\":\"skill\",\"s\":\"info\"}\n" +
+            "///TRACE {\"t\":\"PDF tools and fonts\",\"k\":\"env\",\"s\":\"info\"}\n" +
+            "///TRACE {\"t\":\"Created lib.py\",\"k\":\"create\",\"s\":\"info\"}\n" +
+            "Body."
+        val parsed = splitTrace(reply)
+        assertEquals(4, parsed.rows.size)
+        assertEquals(TraceKind.Skill, parsed.rows[1].kind)
+        assertEquals(TraceKind.EnvCheck, parsed.rows[2].kind)
+        assertEquals(TraceKind.Create, parsed.rows[3].kind)
+        assertFalse(parsed.body.contains("///TRACE"))
+        assertTrue(parsed.body.contains("Body."))
+        assertTrue(traceSummary(parsed.rows).contains("Created 1 file"))
+    }
+
+    @Test
+    fun splitClarifyParsesMaxTwo() {
+        val reply = "///CLARIFY {\"q\":\"Which one?\",\"opts\":[\"A\",\"B (Recommended)\"]}\n" +
+            "///CLARIFY {\"q\":\"Style?\",\"opts\":[\"X\",\"Y\"]}\n" +
+            "Body."
+        val parsed = splitClarify(reply)
+        assertEquals(2, parsed.questions.size)
+        assertEquals("Which one?", parsed.questions[0].question)
+        assertFalse(parsed.body.contains("///CLARIFY"))
+    }
+
+    @Test
+    fun splitArtifactAndSourcesParseAndStrip() {
+        val reply = "///ARTIFACT {\"name\":\"shop_magazine.pdf\",\"pages\":15,\"kind\":\"pdf\"}\n" +
+            "///SOURCES {\"items\":[{\"title\":\"Daily News\",\"url\":\"https://example.com/a\",\"source\":\"dailynews\"}]}\n" +
+            "Body."
+        val art = splitArtifact(reply)
+        val src = splitSources(art.body)
+        assertEquals(1, art.artifacts.size)
+        assertEquals(15, art.artifacts[0].pages)
+        assertEquals(1, src.items.size)
+        assertEquals("dailynews", src.items[0].source)
+        assertTrue(src.body.contains("Body."))
+        assertFalse(src.body.contains("///ARTIFACT"))
+        assertFalse(src.body.contains("///SOURCES"))
+    }
+
+    @Test
+    fun wantsLongBuildGuardsFalsePositives() {
+        assertTrue(wantsLongBuild("Make a 15 page pdf magazine for acme and do it step by step"))
+        assertTrue(wantsLongBuild("Build a step by step document"))
+        assertFalse(wantsLongBuild("Hi there"))
+        assertFalse(wantsLongBuild("What is the capital of France?"))
+    }
 }

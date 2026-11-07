@@ -34,10 +34,25 @@ import com.karen.utils.ChatHistoryStore
 import com.karen.utils.PlanCard
 import com.karen.utils.PlanStep
 import com.karen.utils.RecentActivity
+import com.karen.utils.SourceEntry
+import com.karen.utils.TraceKind
+import com.karen.utils.TraceRow
+import com.karen.utils.TraceState
+import com.karen.utils.appendSources
+import com.karen.utils.appendTrace
 import com.karen.utils.planGuide
-import com.karen.utils.rememberDeviceTelemetry
+import com.karen.utils.TraceAccordion
+import com.karen.utils.ClarifyCard
+import com.karen.utils.ArtifactCard
+import com.karen.utils.splitArtifact
+import com.karen.utils.splitClarify
 import com.karen.utils.splitPlan
+import com.karen.utils.splitSources
+import com.karen.utils.splitTrace
+import com.karen.utils.stripMachineLines
+import com.karen.utils.wantsLongBuild
 import com.karen.utils.wantsPlan
+import com.karen.utils.rememberDeviceTelemetry
 import com.karen.voice.TtsManager
 
 import androidx.compose.animation.*
@@ -311,6 +326,13 @@ fun ChatScreen(
     var showUsage by remember { mutableStateOf(false) }
     var dislikeFor by remember { mutableStateOf<ChatItem.Assistant?>(null) }
     var dislikeText by remember { mutableStateOf("") }
+    // OBSERVATION_STEPS: artifact viewer + sources sheet (per assistant turn).
+    var viewerFile by remember { mutableStateOf<File?>(null) }
+    var viewerTitle by remember { mutableStateOf("") }
+    var sourcesFor by remember { mutableStateOf<List<SourceEntry>?>(null) }
+    // Clarify carousel answers: Q1/Q2 selections gate the long build.
+    var clarifyIdx by remember { mutableStateOf(0) }
+    var clarifyAnswers by remember { mutableStateOf<Map<Int, String>>(emptyMap()) }
 
     var resettingNewChat by remember { mutableStateOf(false) }
     var temporaryChat by remember { mutableStateOf(false) }
@@ -847,6 +869,8 @@ fun ChatScreen(
     // System back button: dismiss open sheets first, stop generation, else Home.
     androidx.activity.compose.BackHandler {
         when {
+            viewerFile != null -> viewerFile = null
+            sourcesFor != null -> sourcesFor = null
             showModelSheet -> showModelSheet = false
             showAttachmentSheet -> showAttachmentSheet = false
             webConsentGate != null -> {
@@ -987,7 +1011,8 @@ fun ChatScreen(
         web: String?,
         regenerateHint: String?,
         sentAttachments: List<Attachment> = emptyList(),
-        allowLocalFallback: Boolean = true
+        allowLocalFallback: Boolean = true,
+        webSources: List<SourceEntry> = emptyList()
     ) {
         var provider = cloud
         var key = cloudKey
@@ -1007,7 +1032,9 @@ fun ChatScreen(
             val base = messages.mapNotNull { item ->
                 when (item) {
                     is ChatItem.User -> "user" to (item.text + attachedContext(item))
-                    is ChatItem.Assistant -> if (item.id == aid) null else "assistant" to item.text
+                    // Machine lines (PLAN/TRACE/CLARIFY/ARTIFACT/SOURCES) never
+                    // ride back as model context.
+                    is ChatItem.Assistant -> if (item.id == aid) null else "assistant" to stripMachineLines(item.text)
                 }
             }.takeLast(limit)
             val history = if (web != null) {
@@ -1204,6 +1231,56 @@ fun ChatScreen(
                 } catch (_: Exception) {
                 }
             }
+            /** Long builds (PDF/magazine) gate behind clarify, then build for real. */
+            suspend fun maybeBuildArtifact(
+                aid: String,
+                visible: String,
+                userText: String
+            ): String {
+                var out = visible
+                // Clarify parking: model asked before building — stop here so the
+                // user answers first; the answer resumes as a fresh turn.
+                val clarifyNow = splitClarify(out)
+                if (clarifyNow.questions.isNotEmpty() && wantsLongBuild(userText)) {
+                    return out
+                }
+                // Build triggers: wantsLongBuild (covers no-model fallback too),
+                // unless the model emitted ///ARTIFACT already (it knows the file).
+                if (!cancelGeneration && wantsLongBuild(userText) &&
+                    splitArtifact(out).artifacts.isEmpty()
+                ) {
+                    setStreamingText(aid, "Loading skill pdf…")
+                    out = appendTrace(out, TraceRow("Build the PDF page by page", TraceKind.Build, TraceState.Started))
+                    out = appendTrace(out, TraceRow("pdf", TraceKind.Skill, TraceState.Info))
+                    out = appendTrace(out, TraceRow("PDF tools and fonts", TraceKind.EnvCheck, TraceState.Info))
+                    out = appendTrace(out, TraceRow("Research what the subject is", TraceKind.Task, TraceState.Completed))
+                    out = appendTrace(out, TraceRow("Plan the outline", TraceKind.Task, TraceState.Completed))
+                    val outline = MagazineBuilder.outlineFor(userText)
+                    val result = try {
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            MagazineBuilder.build(context, outline)
+                        }
+                    } catch (_: Exception) {
+                        setStreamingText(aid, "Could not build the PDF on this device.")
+                        return out
+                    }
+                    out = MagazineBuilder.withBuild(out, result)
+                    // Status-line narration after the first pages.
+                    setStreamingText(aid, MagazineBuilder.builtPagesNarration(5))
+                    out = appendTrace(out, TraceRow(MagazineBuilder.rundown(outline), TraceKind.Note, TraceState.Info))
+                    // Rundown text: trace note is machine-hidden; also surface
+                    // it as body when the model gave no real body.
+                    if (!hasVisibleContent(stripMachineLines(out))) {
+                        out += "\n\n" + MagazineBuilder.rundown(outline)
+                    }
+                }
+                // Sources chip: already-retrieved hits ride with the answer.
+                if (webSources.isNotEmpty() && splitSources(out).items.isEmpty()) {
+                    out = appendSources(out, webSources)
+                    out = appendTrace(out, TraceRow("web", TraceKind.Search, TraceState.Info))
+                }
+                return out
+            }
             // Plan execution: finish the checklist with real device tools.
             // A plan is a promise to act (the guide says "plan before acting"),
             // so open steps run unless the user asked for a draft only.
@@ -1221,6 +1298,7 @@ fun ChatScreen(
                     key = key
                 )
             }
+            withTools = maybeBuildArtifact(aid, withTools, userText)
             if (hasVisibleContent(withTools)) {
                 // Already streamed live: sync the final text (tool lines
                 // stripped, notes appended) instead of replaying it with
@@ -1452,7 +1530,10 @@ fun ChatScreen(
             // Web search tool: runs when the message needs fresh info,
             // gated by the one-time permission dialog on first use.
             var web: String? = null
-            val wantSearch = userText.isNotBlank() && WebSearch.needsSearch(userText) && UserPrefs.webSearchEnabled(context)
+            var webSources: List<SourceEntry> = emptyList()
+            val wantSearch = userText.isNotBlank() &&
+                (WebSearch.needsSearch(userText) || wantsLongBuild(userText)) &&
+                UserPrefs.webSearchEnabled(context)
             if (wantSearch) {
                 var allowed = true
                 if (!UserPrefs.webSearchAsked(context)) {
@@ -1468,10 +1549,34 @@ fun ChatScreen(
                     }
                 }
                 if (allowed) {
-                    setStreamingText(aid, "Searching the web…")
-                    web = try {
-                        WebSearch.agentContext(context, WebSearch.cleanQuery(userText))
-                    } catch (_: Exception) { null }
+                    // Status-line narration + skill/env trace (clone notes).
+                    val t = "Looking up ${userText.take(40)} before starting."
+                    setStreamingText(aid, t)
+                    val q = WebSearch.cleanQuery(userText)
+                    // Capture structured hits for the "N sources" chip (the
+                    // report holds titles/urls; formatForModel gets snippets).
+                    try {
+                        val report = WebSearch.agentReport(context, q)
+                        if (report != null && report.evidence.isNotEmpty()) {
+                            web = WebSearch.formatReportForModel(report, 6000)
+                            webSources = report.evidence.map {
+                                SourceEntry(
+                                    title = it.hit.title.ifBlank { "Result" },
+                                    url = it.hit.url.ifBlank { it.page?.finalUrl.orEmpty() },
+                                    source = it.hit.source
+                                )
+                            }
+                        }
+                    } catch (_: Exception) {
+                        webSources = emptyList()
+                    }
+                    if (web.isNullOrBlank() && webSources.isEmpty()) {
+                        web = try {
+                            WebSearch.agentContext(context, q)
+                        } catch (_: Exception) { null }
+                        // Legacy snippet path: no structured hits to surface.
+                        webSources = emptyList()
+                    }
                     if (cancelGeneration) {
                         cancelSettle(aid)
                         return@launch
@@ -1483,7 +1588,7 @@ fun ChatScreen(
             val basePairs = messages.mapNotNull { item ->
                 when (item) {
                     is ChatItem.User -> "user" to (item.text + attachedContext(item))
-                    is ChatItem.Assistant -> if (item.id == aid) null else "assistant" to item.text
+                    is ChatItem.Assistant -> if (item.id == aid) null else "assistant" to stripMachineLines(item.text)
                 }
             }
             val trimmedPairs = if (web != null) {
@@ -1520,7 +1625,7 @@ fun ChatScreen(
             }
 
             if (cloud != null && cloudKey.isNotBlank()) {
-                cloudTurn(cloud, cloudKey, aid, userText, web, regenerateHint, sentAttachments)
+                cloudTurn(cloud, cloudKey, aid, userText, web, regenerateHint, sentAttachments, webSources = webSources)
             } else if (weightFile != null) {
                 // Real on-device inference through the bundled llama.cpp core.
                 if (!KarenLlama.ready) {
@@ -1715,6 +1820,23 @@ fun ChatScreen(
                                     }
                                 }
                             }
+                            // OBSERVATION_STEPS: local turns also surface
+                            // sources + build artifacts (same path as cloud).
+                            if (webSources.isNotEmpty() && splitSources(withTools).items.isEmpty()) {
+                                withTools = appendSources(withTools, webSources)
+                                withTools = appendTrace(withTools, TraceRow("web", TraceKind.Search, TraceState.Info))
+                            }
+                            if (!cancelGeneration && wantsLongBuild(userText) &&
+                                splitArtifact(withTools).artifacts.isEmpty()
+                            ) {
+                                val outline = MagazineBuilder.outlineFor(userText)
+                                val result = try {
+                                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                        MagazineBuilder.build(context, outline)
+                                    }
+                                } catch (_: Exception) { null }
+                                if (result != null) withTools = MagazineBuilder.withBuild(withTools, result)
+                            }
                             if (hasVisibleContent(withTools)) {
                                 // Already streamed live above: sync the final
                                 // text (cleaned + tool notes) instead of
@@ -1731,16 +1853,29 @@ fun ChatScreen(
                     }
                 }
             } else {
-                // No provider available — explain how to connect one.
-                val fileNote = if (sentAttachments.isNotEmpty()) {
-                    val names = sentAttachments.joinToString(", ") { it.name }
-                    " I received ${sentAttachments.size} file(s): $names. Files are stored locally in the vault — 0 bytes sent externally."
-                } else ""
-                val regenNote = if (regenerateHint != null) "\n\n(Regenerated with a fresh take.)" else ""
-                val fullText = if (web != null) {
+                // No provider available — explain how to connect one, but a
+                // long build (magazine/PDF) still builds on-device for real.
+                var fullText = if (web != null) {
                     "Fresh web results:\n$web"
                 } else {
+                    val names = sentAttachments.joinToString(", ") { it.name }
+                    val fileNote = if (sentAttachments.isNotEmpty()) {
+                        " I received ${sentAttachments.size} file(s): $names. Files are stored locally in the vault — 0 bytes sent externally."
+                    } else ""
+                    val regenNote = if (regenerateHint != null) "\n\n(Regenerated with a fresh take.)" else ""
                     "No model is connected yet — pick a cloud provider in the model sheet, or download a local GGUF in Model Manager → Catalog.$fileNote$regenNote"
+                }
+                if (webSources.isNotEmpty()) fullText = appendSources(fullText, webSources)
+                if (wantsLongBuild(userText)) {
+                    setStreamingText(aid, "Loading skill pdf…")
+                    val outline = MagazineBuilder.outlineFor(userText)
+                    val result = try {
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            MagazineBuilder.build(context, outline)
+                        }
+                    } catch (_: Exception) { null }
+                    fullText = MagazineBuilder.rundown(outline) + "\n\n" + fullText
+                    if (result != null) fullText = MagazineBuilder.withBuild(fullText, result)
                 }
                 kotlinx.coroutines.delay(400)
                 if (cancelGeneration) {
@@ -2208,6 +2343,13 @@ fun ChatScreen(
                                     val bodyText = if (item.thought != null) item.text else thinkSplit.second
                                     // Plan lines live inside the reply text; lift them into a card.
                                     val plan = remember(bodyText) { splitPlan(bodyText) }
+                                    // OBSERVATION_STEPS: trace/clarify/artifact/sources ride
+                                    // the same text (/// lines) — strip all for display.
+                                    val trace = remember(bodyText) { splitTrace(plan.body) }
+                                    val clarify = remember(bodyText) { splitClarify(trace.body) }
+                                    val artifactP = remember(bodyText) { splitArtifact(clarify.body) }
+                                    val sourcesP = remember(bodyText) { splitSources(artifactP.body) }
+                                    val visibleBody = sourcesP.body
                                     if (thoughtText != null) {
                                         ThoughtAccordion(
                                             thoughtDuration = "Reasoning trace",
@@ -2220,9 +2362,69 @@ fun ChatScreen(
                                         PlanCard(plan)
                                         Spacer(Modifier.height(10.dp))
                                     }
-                                    if (plan.body.isNotBlank()) {
+                                    if (!trace.isEmpty) {
+                                        TraceAccordion(trace)
+                                        Spacer(Modifier.height(10.dp))
+                                    }
+                                    // Clarify carousel: pauses long builds until answered.
+                                    // The pick resumes with the answer + original ask.
+                                    if (clarify.questions.isNotEmpty()) {
+                                        val isLive = isGenerating && item.id == streamingId
+                                        if (isLive) {
+                                            ClarifyCard(
+                                                questions = clarify.questions,
+                                                index = clarifyIdx.coerceIn(0, clarify.questions.lastIndex),
+                                                onPick = { picked ->
+                                                    val next = clarifyAnswers + (clarifyIdx to picked)
+                                                    if (clarifyIdx + 1 < clarify.questions.size) {
+                                                        clarifyAnswers = next
+                                                        clarifyIdx += 1
+                                                    } else {
+                                                        val answers = (next.toSortedMap().values).joinToString("; ")
+                                                        // Resume: prepend the answer so the
+                                                        // build uses the user's choice.
+                                                        val lastUser = messages.filterIsInstance<ChatItem.User>().lastOrNull()?.text.orEmpty()
+                                                        clarifyIdx = 0
+                                                        clarifyAnswers = emptyMap()
+                                                        sendNow(if (answers.isNotBlank()) "$lastUser — $answers" else lastUser, emptyList())
+                                                    }
+                                                },
+                                                onDismiss = {
+                                                    clarifyIdx = 0
+                                                    clarifyAnswers = emptyMap()
+                                                    sendNow(messages.filterIsInstance<ChatItem.User>().lastOrNull()?.text.orEmpty(), emptyList())
+                                                }
+                                            )
+                                            Spacer(Modifier.height(10.dp))
+                                        }
+                                    }
+                                    // Artifact card: tap opens the paginated viewer.
+                                    artifactP.artifacts.forEach { art ->
+                                        val artFile = remember(art.name) { MagazineBuilder.fileFor(context, art.name) }
+                                        ArtifactCard(artifact = art) {
+                                            if (artFile != null) {
+                                                viewerTitle = art.name
+                                                viewerFile = artFile
+                                            } else {
+                                                android.widget.Toast.makeText(context, "File no longer exists", android.widget.Toast.LENGTH_SHORT).show()
+                                            }
+                                        }
+                                        Spacer(Modifier.height(10.dp))
+                                    }
+                                    // Sources chip: opens the sheet.
+                                    if (sourcesP.items.isNotEmpty()) {
+                                        androidx.compose.material3.AssistChip(
+                                            onClick = { sourcesFor = sourcesP.items },
+                                            label = { Text("${sourcesP.items.size} sources", fontSize = 12.sp) },
+                                            leadingIcon = {
+                                                Icon(Icons.Default.Language, contentDescription = null, modifier = Modifier.size(14.dp))
+                                            },
+                                            modifier = Modifier.padding(bottom = 6.dp)
+                                        )
+                                    }
+                                    if (visibleBody.isNotBlank()) {
                                         MarkdownText(
-                                            text = plan.body,
+                                            text = visibleBody,
                                             color = colors.textPrimary,
                                             fontSize = 15.sp,
                                             lineHeight = 22.sp
@@ -3087,6 +3289,14 @@ fun ChatScreen(
                     }
                 }
             )
+        }
+
+        // OBSERVATION_STEPS: artifact viewer + sources sheet (dialogs over chat).
+        viewerFile?.let { f ->
+            PdfViewerDialog(file = f, title = viewerTitle, onDismiss = { viewerFile = null })
+        }
+        sourcesFor?.let { srcs ->
+            if (srcs.isNotEmpty()) SourcesSheet(sources = srcs, onDismiss = { sourcesFor = null })
         }
 
         // New-chat transition overlay — a quiet bloom, not a spinner.

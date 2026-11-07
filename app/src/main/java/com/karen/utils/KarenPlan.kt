@@ -77,7 +77,19 @@ fun planGuide(): String = buildString {
     append("the app runs the tool and advances the checklist for you. Never claim an action succeeded. ")
     append("One action per step, at most 8 steps, 60 characters each. ")
     append("The line is machine syntax and is never shown; keep commentary out of it. ")
-    append("Skip the plan for simple questions, single lookups, and chit-chat.")
+    append("Skip the plan for simple questions, single lookups, and chit-chat. ")
+    // OBSERVATION_STEPS clone notes: narrate long work + clarify ambiguity.
+    append("\nFor long builds (PDF/magazine/document/code >10 steps): first emit one status line ")
+    append("(\"Looking up X before starting.\"), then a fixed task skeleton as ///PLAN ")
+    append("(Research → Plan → Build → Check & deliver). ")
+    append("After each plan revision add ///TRACE rows mirroring Claude: ")
+    append("Added/Started/Completed task, Searched the web, Loaded skill, Checked tools/fonts, ")
+    append("Created lib.py/pages_a.py/build.py, Built pages, Rendered, Read sheet, Flagging issues. ")
+    append("When the subject is ambiguous, ask before building: emit ///CLARIFY lines (2 max), ")
+    append("one per line, e.g. ///CLARIFY {\"q\":\"Which X?\",\"opts\":[\"A\",\"B (Recommended)\"]}. ")
+    append("The app shows them as a tap carousel; wait for the user's answer. ")
+    append("When you deliver a file, emit ///ARTIFACT {\"name\":\"file.pdf\",\"pages\":15,\"kind\":\"pdf\"} ")
+    append("and optionally ///SOURCES {\"items\":[{\"title\":\"…\",\"url\":\"…\",\"source\":\"…\"}]}.")
 }
 
 /**
@@ -266,5 +278,515 @@ fun PlanCard(plan: ParsedPlan, modifier: Modifier = Modifier) {
                 )
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// OBSERVATION_STEPS — Claude-style step trace, clarify, artifacts, sources.
+// All live inside the reply text as ///TRACE / ///CLARIFY / ///ARTIFACT /
+// SOURCES lines (like ///PLAN), so they survive persistence with no schema
+// change. splitTrace returns the append-only trace plus the body with all
+// machine lines stripped.
+// ---------------------------------------------------------------------------
+
+/** Trace row kind — skill/env are first-class (clone notes). */
+enum class TraceKind { Task, Skill, EnvCheck, Build, Search, Create, Render, Read, Flag, Note }
+
+enum class TraceState { Added, Started, Completed, Info }
+
+data class TraceRow(
+    val label: String,
+    val kind: TraceKind,
+    val state: TraceState
+)
+
+data class ParsedTrace(val rows: List<TraceRow>, val body: String) {
+    val isEmpty: Boolean get() = rows.isEmpty()
+}
+
+/** One clarifying question with tappable options. */
+data class ClarifyQuestion(val question: String, val options: List<String>)
+
+data class ParsedClarify(val questions: List<ClarifyQuestion>, val body: String)
+
+/** A delivered file artifact (PDF etc.) built on-device. */
+data class ArtifactMeta(val name: String, val pages: Int, val kind: String)
+
+data class ParsedArtifact(val artifacts: List<ArtifactMeta>, val body: String)
+
+/** One web source behind the "N sources" chip. */
+data class SourceEntry(val title: String, val url: String, val source: String)
+
+data class ParsedSources(val items: List<SourceEntry>, val body: String)
+
+private const val TRACE_MARK = "///TRACE"
+private const val CLARIFY_MARK = "///CLARIFY"
+private const val ARTIFACT_MARK = "///ARTIFACT"
+private const val SOURCES_MARK = "///SOURCES"
+
+/** True for long-build prompts ("15 page pdf", "magazine", "step by step" builds). */
+fun wantsLongBuild(prompt: String): Boolean {
+    val t = " ${prompt.lowercase()} "
+    return listOf("pdf", "magazine", "document", "report", "ebook", "book", "page", " build ", " create a ").any { it in t } &&
+        (wantsPlan(prompt) || "step by step" in t)
+}
+
+private fun kindOf(raw: String): TraceKind = when (raw.trim().lowercase()) {
+    "skill" -> TraceKind.Skill
+    "env", "check", "tools" -> TraceKind.EnvCheck
+    "build" -> TraceKind.Build
+    "search", "web" -> TraceKind.Search
+    "create", "file" -> TraceKind.Create
+    "render" -> TraceKind.Render
+    "read" -> TraceKind.Read
+    "flag" -> TraceKind.Flag
+    else -> TraceKind.Task
+}
+
+private fun stateOf(raw: String): TraceState = when (raw.trim().lowercase()) {
+    "started", "doing", "active", "running" -> TraceState.Started
+    "completed", "done", "finished", "ok" -> TraceState.Completed
+    "added" -> TraceState.Added
+    else -> TraceState.Info
+}
+
+private fun parseTraceLine(line: String): TraceRow? {
+    val start = line.indexOf('{')
+    val end = line.lastIndexOf('}')
+    val label = if (start < 0 || end <= start) {
+        // Bare ///TRACE text line: label with no kind/state.
+        line.removePrefix(TRACE_MARK).trim().trimStart(':', ' ').take(120).ifBlank { return null }
+    } else {
+        try {
+            val o = JSONObject(line.substring(start, end + 1))
+            val t = o.optString("t").ifBlank { o.optString("label") }.trim().take(120)
+            if (t.isBlank()) return null
+            return TraceRow(t, kindOf(o.optString("k").ifBlank { o.optString("kind") }), stateOf(o.optString("s").ifBlank { o.optString("state") }))
+        } catch (_: Exception) {
+            return null
+        }
+    }
+    return TraceRow(label, TraceKind.Task, TraceState.Info)
+}
+
+private fun stripMachine(text: String, marks: List<String>): String {
+    val kept = StringBuilder(text.length)
+    text.lineSequence().forEach { line ->
+        if (marks.any { line.trimStart().startsWith(it, ignoreCase = true) }) return@forEach
+        if (kept.isNotEmpty()) kept.append('\n')
+        kept.append(line)
+    }
+    return kept.toString().replace(Regex("\n{3,}"), "\n\n").trim()
+}
+
+/**
+ * Appends one trace row to a reply. Trace is append-only (unlike PLAN, where
+ * the last line wins) — every Added/Started/Completed flip is a new row.
+ */
+fun appendTrace(text: String, row: TraceRow): String {
+    val line = "///TRACE " + JSONObject()
+        .put("t", row.label.take(120))
+        .put(
+            "k", when (row.kind) {
+                TraceKind.Task -> "task"
+                TraceKind.Skill -> "skill"
+                TraceKind.EnvCheck -> "env"
+                TraceKind.Build -> "build"
+                TraceKind.Search -> "search"
+                TraceKind.Create -> "create"
+                TraceKind.Render -> "render"
+                TraceKind.Read -> "read"
+                TraceKind.Flag -> "flag"
+                TraceKind.Note -> "note"
+            }
+        )
+        .put(
+            "s", when (row.state) {
+                TraceState.Added -> "added"
+                TraceState.Started -> "started"
+                TraceState.Completed -> "completed"
+                TraceState.Info -> "info"
+            }
+        )
+        .toString()
+    return if (text.isBlank()) line else text.trimEnd() + "\n" + line
+}
+
+/** All ///TRACE rows (append-only, in order) plus the body without trace lines. */
+fun splitTrace(text: String): ParsedTrace {
+    if (!text.contains(TRACE_MARK, ignoreCase = true)) return ParsedTrace(emptyList(), text)
+    val rows = ArrayList<TraceRow>()
+    text.lineSequence().forEach { line ->
+        if (line.trimStart().startsWith(TRACE_MARK, ignoreCase = true)) {
+            parseTraceLine(line)?.let { rows.add(it) }
+        }
+    }
+    return ParsedTrace(rows.take(40), stripMachine(text, listOf(TRACE_MARK)))
+}
+
+/** ///CLARIFY lines → questions (max 2), body stripped. */
+fun splitClarify(text: String): ParsedClarify {
+    if (!text.contains(CLARIFY_MARK, ignoreCase = true)) return ParsedClarify(emptyList(), text)
+    val out = ArrayList<ClarifyQuestion>()
+    text.lineSequence().forEach { line ->
+        if (!line.trimStart().startsWith(CLARIFY_MARK, ignoreCase = true) || out.size >= 2) return@forEach
+        val start = line.indexOf('{')
+        val end = line.lastIndexOf('}')
+        val obj = try {
+            if (start < 0 || end <= start) null else JSONObject(line.substring(start, end + 1))
+        } catch (_: Exception) {
+            null
+        } ?: return@forEach
+        val q = obj.optString("q").ifBlank { obj.optString("question") }.trim().take(160)
+        val arr = obj.optJSONArray("opts") ?: obj.optJSONArray("options")
+        val opts = ArrayList<String>()
+        if (arr != null) for (i in 0 until arr.length()) {
+            arr.optString(i).trim().take(80).takeIf { it.isNotBlank() }?.let { opts.add(it) }
+        }
+        if (q.isNotBlank() && opts.isNotEmpty()) out.add(ClarifyQuestion(q, opts.take(4)))
+    }
+    return ParsedClarify(out, stripMachine(text, listOf(CLARIFY_MARK)))
+}
+
+/** ///ARTIFACT {"name":"x.pdf","pages":15,"kind":"pdf"} → artifacts, body stripped. */
+fun splitArtifact(text: String): ParsedArtifact {
+    if (!text.contains(ARTIFACT_MARK, ignoreCase = true)) return ParsedArtifact(emptyList(), text)
+    val out = ArrayList<ArtifactMeta>()
+    text.lineSequence().forEach { line ->
+        if (!line.trimStart().startsWith(ARTIFACT_MARK, ignoreCase = true)) return@forEach
+        val start = line.indexOf('{')
+        val end = line.lastIndexOf('}')
+        val obj = try {
+            if (start < 0 || end <= start) null else JSONObject(line.substring(start, end + 1))
+        } catch (_: Exception) {
+            null
+        } ?: return@forEach
+        val name = obj.optString("name").ifBlank { obj.optString("file") }.trim().take(120)
+        if (name.isNotBlank()) {
+            out.add(
+                ArtifactMeta(
+                    name,
+                    obj.optInt("pages", 0).coerceIn(0, 999),
+                    obj.optString("kind", "pdf").ifBlank { "pdf" }.trim().lowercase().take(12)
+                )
+            )
+        }
+    }
+    return ParsedArtifact(out, stripMachine(text, listOf(ARTIFACT_MARK)))
+}
+
+/** ///SOURCES {"items":[{title,url,source}…]} → sources, body stripped. */
+fun splitSources(text: String): ParsedSources {
+    if (!text.contains(SOURCES_MARK, ignoreCase = true)) return ParsedSources(emptyList(), text)
+    var items: List<SourceEntry> = emptyList()
+    text.lineSequence().forEach { line ->
+        if (!line.trimStart().startsWith(SOURCES_MARK, ignoreCase = true)) return@forEach
+        val start = line.indexOf('{')
+        val end = line.lastIndexOf('}')
+        val obj = try {
+            if (start < 0 || end <= start) null else JSONObject(line.substring(start, end + 1))
+        } catch (_: Exception) {
+            null
+        } ?: return@forEach
+        val arr = obj.optJSONArray("items")
+        if (arr != null) {
+            val list = ArrayList<SourceEntry>()
+            for (i in 0 until arr.length()) {
+                val it = arr.optJSONObject(i) ?: continue
+                val title = it.optString("title").ifBlank { "Source" }.trim().take(120)
+                val url = it.optString("url", "").trim().take(240)
+                val src = it.optString("source").ifBlank { url.substringAfter("://", "").substringBefore('/').ifBlank { "source" } }.trim().take(60)
+                if (title.isNotBlank()) list.add(SourceEntry(title, url, src))
+            }
+            if (list.isNotEmpty()) items = list.take(12)
+        }
+    }
+    return ParsedSources(items, stripMachine(text, listOf(SOURCES_MARK)))
+}
+
+/** Appends a ///SOURCES line for already-retrieved web hits. */
+fun appendSources(text: String, items: List<SourceEntry>): String {
+    if (items.isEmpty()) return text
+    val arr = org.json.JSONArray()
+    items.take(12).forEach {
+        arr.put(JSONObject().put("title", it.title.take(120)).put("url", it.url.take(240)).put("source", it.source.take(60)))
+    }
+    val line = "///SOURCES " + JSONObject().put("items", arr).toString()
+    return if (text.isBlank()) line else text.trimEnd() + "\n" + line
+}
+
+/** All machine lines stripped — the visible body. */
+fun stripMachineLines(text: String): String =
+    stripMachine(text, listOf(PLAN_MARK, TRACE_MARK, CLARIFY_MARK, ARTIFACT_MARK, SOURCES_MARK))
+
+/** Grouped summary: "Created 3 files, searched the web, and 12 more steps". */
+fun traceSummary(rows: List<TraceRow>): String {
+    if (rows.isEmpty()) return ""
+    val creates = rows.count { it.kind == TraceKind.Create }
+    val searched = rows.any { it.kind == TraceKind.Search }
+    val parts = ArrayList<String>()
+    if (creates > 0) parts.add("Created $creates file${if (creates == 1) "" else "s"}")
+    if (searched) parts.add("searched the web")
+    val more = rows.size - creates - (if (searched) 1 else 0)
+    if (more > 0) parts.add("$more more step${if (more == 1) "" else "s"}")
+    if (parts.isEmpty()) return "${rows.size} step${if (rows.size == 1) "" else "s"}"
+    return parts.joinToString(", ")
+}
+
+/** Row label as shown in Claude's trace: "Added task: X" / "Started task: X". */
+fun traceRowLabel(row: TraceRow): String = when (row.state) {
+    TraceState.Added -> "Added task: ${row.label}"
+    TraceState.Started -> "Started task: ${row.label}"
+    TraceState.Completed -> "Completed task: ${row.label}"
+    TraceState.Info -> when (row.kind) {
+        TraceKind.Skill -> "Loaded skill — ${row.label}"
+        TraceKind.EnvCheck -> "Checked ${row.label}"
+        TraceKind.Search -> "Searched the web — ${row.label}"
+        TraceKind.Create -> "Created ${row.label}"
+        TraceKind.Render -> "Rendered ${row.label}"
+        TraceKind.Read -> "Read ${row.label}"
+        TraceKind.Flag -> "Flagging ${row.label}"
+        TraceKind.Build -> row.label
+        TraceKind.Note -> row.label
+        TraceKind.Task -> row.label
+    }
+}
+
+/** Status-line narration for a working row ("Looking up X before starting."). */
+fun narrationFor(row: TraceRow): String = when (row.kind) {
+    TraceKind.Search -> "Looking up ${row.label} before starting."
+    TraceKind.Skill -> "Loading skill ${row.label}…"
+    TraceKind.EnvCheck -> "Checking tools and fonts…"
+    TraceKind.Flag -> "Flagging layout problems…"
+    TraceKind.Read -> "Reading back the render…"
+    else -> if (row.state == TraceState.Started || row.state == TraceState.Info) row.label else ""
+}
+
+/** Grouped accordion trace — task group + work group, Claude-style. */
+@Composable
+fun TraceAccordion(trace: ParsedTrace, modifier: Modifier = Modifier) {
+    if (trace.isEmpty) return
+    val colors = LocalKarenColors.current
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    val tasks = trace.rows.filter { it.kind == TraceKind.Task }
+    val work = trace.rows.filter { it.kind != TraceKind.Task }
+    Column(
+        modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(colors.surface)
+            .border(1.dp, colors.border, RoundedCornerShape(12.dp))
+            .padding(horizontal = 12.dp, vertical = 10.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClickLabel = if (expanded) "Collapse steps" else "Expand steps") { expanded = !expanded },
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = traceSummary(trace.rows),
+                color = colors.textPrimary,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f)
+            )
+            Text(
+                text = if (expanded) "▴" else "▾",
+                color = colors.textMuted,
+                fontSize = 12.sp
+            )
+        }
+        if (expanded) {
+            Spacer(Modifier.height(6.dp))
+            if (tasks.isNotEmpty()) {
+                Text(
+                    text = "${tasks.size} step${if (tasks.size == 1) "" else "s"}",
+                    color = colors.textMuted,
+                    fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace
+                )
+                Spacer(Modifier.height(4.dp))
+                tasks.forEach { TraceRowView(it) }
+            }
+            if (tasks.isNotEmpty() && work.isNotEmpty()) Spacer(Modifier.height(6.dp))
+            if (work.isNotEmpty()) {
+                if (tasks.isNotEmpty()) {
+                    Text(
+                        text = traceSummary(work),
+                        color = colors.textMuted,
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                    Spacer(Modifier.height(4.dp))
+                }
+                work.forEach { TraceRowView(it) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TraceRowView(row: TraceRow) {
+    val colors = LocalKarenColors.current
+    val glyph = when (row.kind) {
+        TraceKind.Skill -> "⬡"
+        TraceKind.EnvCheck -> "⚙"
+        TraceKind.Search -> "🔎"
+        TraceKind.Create -> "📄"
+        TraceKind.Render -> "▦"
+        TraceKind.Read -> "👁"
+        TraceKind.Flag -> "⚑"
+        else -> if (row.state == TraceState.Completed) "✓" else if (row.state == TraceState.Started) "●" else "○"
+    }
+    Row(verticalAlignment = Alignment.Top) {
+        Box(
+            modifier = Modifier.size(15.dp).padding(top = 1.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = glyph,
+                color = when (row.kind) {
+                    TraceKind.Flag -> colors.accentAmber
+                    TraceKind.Skill -> colors.accentBlue
+                    else -> colors.textMuted
+                },
+                fontSize = 10.sp
+            )
+        }
+        Spacer(Modifier.width(7.dp))
+        Text(
+            text = traceRowLabel(row),
+            color = colors.textPrimary,
+            fontSize = 12.5.sp,
+            lineHeight = 17.sp
+        )
+    }
+}
+
+/** Clarifying-question carousel ("Q n of m") — tappable options. */
+@Composable
+fun ClarifyCard(
+    questions: List<ClarifyQuestion>,
+    index: Int,
+    onPick: (String) -> Unit,
+    onDismiss: () -> Unit = {}
+) {
+    if (questions.isEmpty()) return
+    val colors = LocalKarenColors.current
+    val q = questions[index.coerceIn(0, questions.lastIndex)]
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(colors.surface)
+            .border(1.dp, colors.accentBlue.copy(alpha = 0.4f), RoundedCornerShape(12.dp))
+            .padding(12.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "Q ${index + 1} of ${questions.size}",
+                color = colors.accentBlue,
+                fontSize = 10.sp,
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = q.question,
+                color = colors.textPrimary,
+                fontSize = 13.5.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f)
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        q.options.forEach { opt ->
+            val recommended = opt.contains("Recommended", ignoreCase = true)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 3.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(colors.surfaceHover.copy(alpha = 0.5f))
+                    .border(1.dp, colors.border, RoundedCornerShape(8.dp))
+                    .clickable { onPick(opt) }
+                    .padding(horizontal = 10.dp, vertical = 8.dp)
+            ) {
+                Text(
+                    text = opt.removeSuffix(" (Recommended)").trim(),
+                    color = colors.textPrimary,
+                    fontSize = 13.sp,
+                    modifier = Modifier.weight(1f)
+                )
+                if (recommended) {
+                    Text(
+                        text = "Recommended",
+                        color = colors.accentGreen,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** Artifact card ("Document · PDF" chip) — tap opens the viewer. */
+@Composable
+fun ArtifactCard(
+    artifact: ArtifactMeta,
+    modifier: Modifier = Modifier,
+    onOpen: () -> Unit = {}
+) {
+    val colors = LocalKarenColors.current
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(colors.surface)
+            .border(1.dp, colors.border, RoundedCornerShape(12.dp))
+            .clickable { onOpen() }
+            .padding(horizontal = 12.dp, vertical = 10.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(36.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(colors.accentRed.copy(alpha = 0.1f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = artifact.kind.uppercase().take(3),
+                color = colors.accentRed,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                fontFamily = FontFamily.Monospace
+            )
+        }
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = artifact.name,
+                color = colors.textPrimary,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1
+            )
+            Text(
+                text = "Document · ${artifact.kind.uppercase()}" +
+                    if (artifact.pages > 0) " · ${artifact.pages} page${if (artifact.pages == 1) "" else "s"}" else "",
+                color = colors.textMuted,
+                fontSize = 11.sp
+            )
+        }
+        Text(
+            text = "View file",
+            color = colors.accentGreen,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold
+        )
     }
 }

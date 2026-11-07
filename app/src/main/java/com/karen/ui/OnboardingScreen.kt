@@ -6,6 +6,13 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.focus.FocusDirection
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -18,6 +25,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -25,6 +35,8 @@ import androidx.compose.ui.unit.sp
 fun OnboardingScreen(onDone: () -> Unit = {}) {
     val colors = LocalKarenColors.current
     val context = LocalContext.current
+    val focusManager = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
     var name by remember { mutableStateOf("") }
     var age by remember { mutableStateOf("") }
     var type by remember { mutableStateOf("") }
@@ -34,6 +46,11 @@ fun OnboardingScreen(onDone: () -> Unit = {}) {
         modifier = Modifier
             .fillMaxSize()
             .background(colors.background)
+            // Keyboard avoidance (same as WorkspaceScreen composer): lift the
+            // form above the IME instead of letting it cover the fields.
+            .imePadding()
+            .navigationBarsPadding()
+            .verticalScroll(rememberScrollState())
             .padding(24.dp),
         contentAlignment = Alignment.Center
     ) {
@@ -53,6 +70,13 @@ fun OnboardingScreen(onDone: () -> Unit = {}) {
                 onValueChange = { name = it },
                 label = { Text("Your name") },
                 singleLine = true,
+                keyboardOptions = KeyboardOptions(
+                    capitalization = KeyboardCapitalization.Words,
+                    imeAction = ImeAction.Next
+                ),
+                keyboardActions = KeyboardActions(
+                    onNext = { focusManager.moveFocus(FocusDirection.Down) }
+                ),
                 modifier = Modifier.fillMaxWidth(),
                 colors = karenFieldColors(colors)
             )
@@ -62,6 +86,16 @@ fun OnboardingScreen(onDone: () -> Unit = {}) {
                 onValueChange = { if (it.all { c -> c.isDigit() } && it.length <= 3) age = it },
                 label = { Text("Age") },
                 singleLine = true,
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Number,
+                    imeAction = ImeAction.Done
+                ),
+                keyboardActions = KeyboardActions(
+                    onDone = {
+                        keyboard?.hide()
+                        focusManager.clearFocus()
+                    }
+                ),
                 modifier = Modifier.fillMaxWidth(),
                 colors = karenFieldColors(colors)
             )
@@ -92,6 +126,8 @@ fun OnboardingScreen(onDone: () -> Unit = {}) {
                 onClick = {
                     if (name.isNotBlank()) {
                         UserPrefs.save(context, name.trim(), age, type.ifBlank { "Personal" })
+                        keyboard?.hide()
+                        focusManager.clearFocus()
                         onDone()
                     }
                 },

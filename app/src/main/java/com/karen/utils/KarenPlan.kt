@@ -325,11 +325,16 @@ private const val CLARIFY_MARK = "///CLARIFY"
 private const val ARTIFACT_MARK = "///ARTIFACT"
 private const val SOURCES_MARK = "///SOURCES"
 
-/** True for long-build prompts ("15 page pdf", "magazine", "step by step" builds). */
+/** True for long-build prompts ("15 page pdf", "magazine", "step by step" builds, "8 slide ppt"). */
+fun isPptPrompt(prompt: String): Boolean {
+    val t = " ${prompt.lowercase()} "
+    return listOf(" ppt", "pptx", " presentation", " slides", " slide ", " deck").any { it in t || t.contains("ppt") || t.contains("presentation") || t.contains("slides") }
+}
+
 fun wantsLongBuild(prompt: String): Boolean {
     val t = " ${prompt.lowercase()} "
-    return listOf("pdf", "magazine", "document", "report", "ebook", "book", "page", " build ", " create a ").any { it in t } &&
-        (wantsPlan(prompt) || "step by step" in t)
+    val artifactCue = listOf("pdf", "magazine", "document", "report", "ebook", "book", "ppt", "presentation", "slides", "deck", "page", " build ", " create a ").any { it in t }
+    return artifactCue && (wantsPlan(prompt) || "step by step" in t || isPptPrompt(prompt) || "page" in t)
 }
 
 private fun kindOf(raw: String): TraceKind = when (raw.trim().lowercase()) {

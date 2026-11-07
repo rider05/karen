@@ -319,8 +319,13 @@ object MagazineBuilder {
     /** Share intent for an artifact file (Download/Share in the viewer). */
     fun shareIntent(ctx: Context, file: File): Intent? = try {
         val uri = FileProvider.getUriForFile(ctx, "${ctx.packageName}.fileprovider", file)
+        val mime = when (file.name.substringAfterLast('.', "").lowercase()) {
+            "pptx", "ppt" -> "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+            "pdf" -> "application/pdf"
+            else -> "*/*"
+        }
         Intent(Intent.ACTION_SEND).apply {
-            type = "application/pdf"
+            type = mime
             putExtra(Intent.EXTRA_STREAM, uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
@@ -331,8 +336,13 @@ object MagazineBuilder {
     /** Download intent: open the PDF in a viewer (system handles saving). */
     fun downloadIntent(ctx: Context, file: File): Intent? = try {
         val uri = FileProvider.getUriForFile(ctx, "${ctx.packageName}.fileprovider", file)
+        val mime = when (file.name.substringAfterLast('.', "").lowercase()) {
+            "pptx", "ppt" -> "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+            "pdf" -> "application/pdf"
+            else -> "*/*"
+        }
         Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(uri, "application/pdf")
+            setDataAndType(uri, mime)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
     } catch (_: Exception) {

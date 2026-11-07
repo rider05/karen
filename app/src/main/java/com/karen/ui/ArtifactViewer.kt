@@ -49,6 +49,102 @@ fun PdfViewerDialog(
 ) {
     val colors = LocalKarenColors.current
     val ctx = LocalContext.current
+    // PPTX decks list their slides; PDFs render pages with PdfRenderer.
+    val isPptx = file.name.lowercase().endsWith(".pptx") || file.name.lowercase().endsWith(".ppt")
+    if (isPptx) {
+        val slides = remember(file) { PptxBuilder.slideTitles(file) }
+        androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
+            Surface(
+                color = colors.surface,
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier.fillMaxWidth(0.96f).heightIn(max = 560.dp)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(RoundedCornerShape(11.dp))
+                                .background(colors.accentGreen),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("PPT", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                        }
+                        Spacer(Modifier.width(10.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(title, color = colors.textPrimary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                            Spacer(Modifier.height(3.dp))
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(999.dp))
+                                    .background(colors.surfaceHover.copy(alpha = 0.5f))
+                                    .padding(horizontal = 8.dp, vertical = 3.dp)
+                            ) {
+                                Text(
+                                    "${slides.size} slide${if (slides.size == 1) "" else "s"}",
+                                    color = colors.textSecondary,
+                                    fontSize = 11.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                        IconButton(onClick = onDismiss) {
+                            Icon(Icons.Default.Close, contentDescription = "Close viewer", tint = colors.textSecondary)
+                        }
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    LazyColumn(
+                        modifier = Modifier.fillMaxWidth().weight(1f, fill = false).heightIn(max = 320.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        items(slides.size) { i ->
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(colors.surfaceHover.copy(alpha = 0.4f))
+                                    .padding(horizontal = 12.dp, vertical = 9.dp)
+                            ) {
+                                Text(
+                                    "${i + 1}",
+                                    color = colors.accentGreen,
+                                    fontSize = 12.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.width(28.dp)
+                                )
+                                Text(
+                                    slides[i],
+                                    color = colors.textPrimary,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    maxLines = 2
+                                )
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(onClick = {
+                            PptxBuilder.downloadIntent(ctx, file)?.let { ctx.startActivity(it) }
+                        }) {
+                            Icon(Icons.Default.Download, contentDescription = "Download", modifier = Modifier.size(14.dp))
+                            Spacer(Modifier.width(4.dp)); Text("Download")
+                        }
+                        TextButton(onClick = {
+                            PptxBuilder.shareIntent(ctx, file)?.let { ctx.startActivity(Intent.createChooser(it, "Share ${file.name}")) }
+                        }) {
+                            Icon(Icons.Default.Share, contentDescription = "Share", modifier = Modifier.size(14.dp))
+                            Spacer(Modifier.width(4.dp)); Text("Share")
+                        }
+                    }
+                }
+            }
+        }
+        return
+    }
     var pageIndex by remember { mutableIntStateOf(0) }
     var pageCount by remember { mutableIntStateOf(0) }
     var bitmap by remember { mutableStateOf<Bitmap?>(null) }

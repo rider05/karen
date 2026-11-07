@@ -50,6 +50,7 @@ import com.karen.utils.splitPlan
 import com.karen.utils.splitSources
 import com.karen.utils.splitTrace
 import com.karen.utils.stripMachineLines
+import com.karen.utils.isPptPrompt
 import com.karen.utils.wantsLongBuild
 import com.karen.utils.wantsPlan
 import com.karen.utils.rememberDeviceTelemetry
@@ -1246,32 +1247,53 @@ fun ChatScreen(
                 }
                 // Build triggers: wantsLongBuild (covers no-model fallback too),
                 // unless the model emitted ///ARTIFACT already (it knows the file).
+                // PPT prompts take the deck builder; everything else the PDF one.
                 if (!cancelGeneration && wantsLongBuild(userText) &&
                     splitArtifact(out).artifacts.isEmpty()
                 ) {
-                    setStreamingText(aid, "Loading skill pdf…")
-                    out = appendTrace(out, TraceRow("Build the PDF page by page", TraceKind.Build, TraceState.Started))
-                    out = appendTrace(out, TraceRow("pdf", TraceKind.Skill, TraceState.Info))
-                    out = appendTrace(out, TraceRow("PDF tools and fonts", TraceKind.EnvCheck, TraceState.Info))
+                    val isPpt = isPptPrompt(userText)
+                    val skill = if (isPpt) "pptx" else "pdf"
+                    setStreamingText(aid, "Loading skill $skill…")
+                    out = appendTrace(out, TraceRow(if (isPpt) "Build the deck slide by slide" else "Build the PDF page by page", TraceKind.Build, TraceState.Started))
+                    out = appendTrace(out, TraceRow(skill, TraceKind.Skill, TraceState.Info))
+                    out = appendTrace(out, TraceRow(if (isPpt) "Presentation tools and fonts" else "PDF tools and fonts", TraceKind.EnvCheck, TraceState.Info))
                     out = appendTrace(out, TraceRow("Research what the subject is", TraceKind.Task, TraceState.Completed))
                     out = appendTrace(out, TraceRow("Plan the outline", TraceKind.Task, TraceState.Completed))
-                    val outline = MagazineBuilder.outlineFor(userText)
-                    val result = try {
-                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                            MagazineBuilder.build(context, outline)
+                    if (isPpt) {
+                        val outline = PptxBuilder.outlineFor(userText)
+                        val result = try {
+                            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                PptxBuilder.build(context, outline)
+                            }
+                        } catch (_: Exception) {
+                            setStreamingText(aid, "Could not build the presentation on this device.")
+                            return out
                         }
-                    } catch (_: Exception) {
-                        setStreamingText(aid, "Could not build the PDF on this device.")
-                        return out
-                    }
-                    out = MagazineBuilder.withBuild(out, result)
-                    // Status-line narration after the first pages.
-                    setStreamingText(aid, MagazineBuilder.builtPagesNarration(5))
-                    out = appendTrace(out, TraceRow(MagazineBuilder.rundown(outline), TraceKind.Note, TraceState.Info))
-                    // Rundown text: trace note is machine-hidden; also surface
-                    // it as body when the model gave no real body.
-                    if (!hasVisibleContent(stripMachineLines(out))) {
-                        out += "\n\n" + MagazineBuilder.rundown(outline)
+                        out = PptxBuilder.withBuild(out, result)
+                        setStreamingText(aid, "Slides 1 to ${minOf(5, outline.slides)} are built and I'm checking the rest…")
+                        out = appendTrace(out, TraceRow(PptxBuilder.rundown(outline), TraceKind.Note, TraceState.Info))
+                        if (!hasVisibleContent(stripMachineLines(out))) {
+                            out += "\n\n" + PptxBuilder.rundown(outline)
+                        }
+                    } else {
+                        val outline = MagazineBuilder.outlineFor(userText)
+                        val result = try {
+                            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                MagazineBuilder.build(context, outline)
+                            }
+                        } catch (_: Exception) {
+                            setStreamingText(aid, "Could not build the PDF on this device.")
+                            return out
+                        }
+                        out = MagazineBuilder.withBuild(out, result)
+                        // Status-line narration after the first pages.
+                        setStreamingText(aid, MagazineBuilder.builtPagesNarration(5))
+                        out = appendTrace(out, TraceRow(MagazineBuilder.rundown(outline), TraceKind.Note, TraceState.Info))
+                        // Rundown text: trace note is machine-hidden; also surface
+                        // it as body when the model gave no real body.
+                        if (!hasVisibleContent(stripMachineLines(out))) {
+                            out += "\n\n" + MagazineBuilder.rundown(outline)
+                        }
                     }
                 }
                 // Sources chip: already-retrieved hits ride with the answer.
@@ -1829,13 +1851,23 @@ fun ChatScreen(
                             if (!cancelGeneration && wantsLongBuild(userText) &&
                                 splitArtifact(withTools).artifacts.isEmpty()
                             ) {
-                                val outline = MagazineBuilder.outlineFor(userText)
-                                val result = try {
-                                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                                        MagazineBuilder.build(context, outline)
-                                    }
-                                } catch (_: Exception) { null }
-                                if (result != null) withTools = MagazineBuilder.withBuild(withTools, result)
+                                if (isPptPrompt(userText)) {
+                                    val outline = PptxBuilder.outlineFor(userText)
+                                    val result = try {
+                                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                            PptxBuilder.build(context, outline)
+                                        }
+                                    } catch (_: Exception) { null }
+                                    if (result != null) withTools = PptxBuilder.withBuild(withTools, result)
+                                } else {
+                                    val outline = MagazineBuilder.outlineFor(userText)
+                                    val result = try {
+                                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                            MagazineBuilder.build(context, outline)
+                                        }
+                                    } catch (_: Exception) { null }
+                                    if (result != null) withTools = MagazineBuilder.withBuild(withTools, result)
+                                }
                             }
                             if (hasVisibleContent(withTools)) {
                                 // Already streamed live above: sync the final
@@ -1867,15 +1899,27 @@ fun ChatScreen(
                 }
                 if (webSources.isNotEmpty()) fullText = appendSources(fullText, webSources)
                 if (wantsLongBuild(userText)) {
-                    setStreamingText(aid, "Loading skill pdf…")
-                    val outline = MagazineBuilder.outlineFor(userText)
-                    val result = try {
-                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                            MagazineBuilder.build(context, outline)
-                        }
-                    } catch (_: Exception) { null }
-                    fullText = MagazineBuilder.rundown(outline) + "\n\n" + fullText
-                    if (result != null) fullText = MagazineBuilder.withBuild(fullText, result)
+                    if (isPptPrompt(userText)) {
+                        setStreamingText(aid, "Loading skill pptx…")
+                        val outline = PptxBuilder.outlineFor(userText)
+                        val result = try {
+                            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                PptxBuilder.build(context, outline)
+                            }
+                        } catch (_: Exception) { null }
+                        fullText = PptxBuilder.rundown(outline) + "\n\n" + fullText
+                        if (result != null) fullText = PptxBuilder.withBuild(fullText, result)
+                    } else {
+                        setStreamingText(aid, "Loading skill pdf…")
+                        val outline = MagazineBuilder.outlineFor(userText)
+                        val result = try {
+                            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                MagazineBuilder.build(context, outline)
+                            }
+                        } catch (_: Exception) { null }
+                        fullText = MagazineBuilder.rundown(outline) + "\n\n" + fullText
+                        if (result != null) fullText = MagazineBuilder.withBuild(fullText, result)
+                    }
                 }
                 kotlinx.coroutines.delay(400)
                 if (cancelGeneration) {

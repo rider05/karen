@@ -96,6 +96,10 @@ class KarenPlanTest {
     fun wantsLongBuildGuardsFalsePositives() {
         assertTrue(wantsLongBuild("Make a 15 page pdf magazine for acme and do it step by step"))
         assertTrue(wantsLongBuild("Build a step by step document"))
+        assertTrue(wantsLongBuild("Make an 8 slide ppt for acme"))
+        assertTrue(wantsLongBuild("Create a presentation about climate"))
+        assertTrue(isPptPrompt("Make an 8 slide ppt for acme"))
+        assertFalse(isPptPrompt("Make a 15 page pdf magazine for acme"))
         assertFalse(wantsLongBuild("Hi there"))
         assertFalse(wantsLongBuild("What is the capital of France?"))
     }

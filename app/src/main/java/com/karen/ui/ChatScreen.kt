@@ -2313,6 +2313,44 @@ fun ChatScreen(
                 contentPadding = PaddingValues(top = 12.dp, bottom = 200.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
+                // Centered empty state (Claude-style, Karen-branded): asterisk
+                // mark + greeting when the chat is fresh.
+                if (messages.isEmpty()) {
+                    item(key = "empty_state") {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 120.dp),
+                            contentAlignment = Alignment.TopCenter
+                        ) {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Text(
+                                    text = "✳",
+                                    color = colors.accentAmber,
+                                    fontSize = 44.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Spacer(Modifier.height(12.dp))
+                                Text(
+                                    text = "Coffee and Karen time?",
+                                    color = colors.textPrimary,
+                                    fontSize = 22.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                                )
+                                Spacer(Modifier.height(6.dp))
+                                Text(
+                                    text = "Ask anything — plans, files, the web.",
+                                    color = colors.textMuted,
+                                    fontSize = 13.sp,
+                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                                )
+                            }
+                        }
+                    }
+                }
                 items(messages, key = { when (it) { is ChatItem.User -> it.id; is ChatItem.Assistant -> it.id } }) { item ->
                     when (item) {
                         is ChatItem.User -> {

@@ -11,6 +11,21 @@ cd D:\karen; .\gradlew.bat :app:compileDebugKotlin --offline
 
 SDK path is in `local.properties`. Always recompile after UI edits; `-q` hides success.
 
+**Shipping `apks/karen.apk`:** always build the **release** APK, never
+`assembleDebug` — debug is signed with the Android Debug key and fails on
+user devices with "Signing certificate mismatch":
+
+```powershell
+.\gradlew.bat :app:assembleRelease --offline
+Copy-Item app\build\outputs\apk\release\app-release.apk apks\karen.apk -Force
+```
+
+`karen-release.jks` (CN=Karen, repo root) is the installed signing key —
+release builds sign with it via the `release` signingConfig in
+`app/build.gradle.kts`, so a fresh `apks/karen.apk` installs over the
+current app with no uninstall. After copying, commit the APK refresh and
+push; a cached download may still show the old build — hard-refresh.
+
 ## Theme (Professional Workspace — per `docs/DESIGN.md`)
 
 `ui/KarenTheme.kt` is the source of truth: canvas `#0F1115` / raised `#1F2530`

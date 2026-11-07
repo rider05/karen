@@ -2,6 +2,7 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
+    id("com.chaquo.python")
 }
 
 android {
@@ -16,7 +17,7 @@ android {
         versionName = "2.2.0"
 
         ndk {
-            abiFilters += listOf("arm64-v8a")
+            abiFilters += listOf("arm64-v8a", "x86_64")
         }
         externalNativeBuild {
             cmake {
@@ -52,6 +53,14 @@ android {
     }
     buildFeatures { compose = true }
 
+    // On-device Python runtime (Chaquopy, CPython 3.11) — powers the PPT
+    // builder (src/main/python). ~60 MB, arm64-v8a only.
+    chaquopy {
+        defaultConfig {
+            version = "3.11"
+        }
+    }
+
     externalNativeBuild {
         cmake {
             path = file("src/main/cpp/CMakeLists.txt")
@@ -76,6 +85,8 @@ dependencies {
     implementation("com.google.mlkit:barcode-scanning:17.3.0")
     // ONNX Runtime: executes .onnx voice models on-device (Silero VAD).
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.22.0")
+    // Chaquopy Python runtime (CPython 3.11): executes src/main/python on-device.
+    // (Runtime AAR is added by the chaquopy Gradle plugin automatically.)
 
     // Focused JVM tests for the search package (no Android runtime needed).
     testImplementation("junit:junit:4.13.2")

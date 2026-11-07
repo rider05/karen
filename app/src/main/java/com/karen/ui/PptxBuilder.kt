@@ -53,13 +53,27 @@ object PptxBuilder {
         val dir = File(ctx.filesDir, "artifacts").apply { mkdirs() }
         val safe = outline.title.replace(Regex("[^A-Za-z0-9]+"), "_").trim('_').ifBlank { "deck" }.take(40)
         val dest = File(dir, "${safe}_presentation.pptx".lowercase())
-        writePptx(dest, outline)
+        // Preferred path: on-device Python (Chaquopy) runs src/main/python.
+        // Fallback: pure-Kotlin writer below (same OOXML output).
+        val viaPython = tryBuildWithPython(ctx, outline, dest)
+        if (!viaPython) writePptx(dest, outline)
         trace += TraceRow("Created ${dest.name}", TraceKind.Create, TraceState.Completed)
         trace += TraceRow("Open the deck and check the slides", TraceKind.Read, TraceState.Info)
         val issues = verify(dest, outline.slides)
         issues.forEach { trace += TraceRow(it, TraceKind.Flag, TraceState.Info) }
         trace += TraceRow("Build the deck slide by slide", TraceKind.Build, TraceState.Completed)
         return BuildResult(dest, ArtifactMeta(dest.name, outline.slides, "pptx"), trace)
+    }
+
+    /** Runs the bundled Python script; false (no throw) when unavailable. */
+    private fun tryBuildWithPython(ctx: Context, outline: Outline, dest: File): Boolean = try {
+        val py = com.chaquo.python.Python.getInstance()
+        val mod = py.getModule("make_pptx")
+        val count = mod.callAttr("build_pptx", outline.title, outline.slides, dest.absolutePath, outline.subtitle)
+            ?.toInt() ?: 0
+        count > 0 && dest.exists() && dest.length() > 0
+    } catch (_: Exception) {
+        false
     }
 
     // ---- PPTX generation (handwritten OOXML) ----
@@ -87,7 +101,7 @@ object PptxBuilder {
             append("</p:txBody></p:sp>")
         }
         return """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:bg><p:bgPr><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></p:bgPr></p:bg><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:grpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/>$body$list</p:spTree></p:sld>"""
+<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:bg><p:bgPr><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></p:bgPr></p:bg><p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:grpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/>$body$list</p:spTree></p:cSld></p:sld>"""
     }
 
     private fun presentationXml(n: Int): String {

@@ -79,6 +79,13 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        // On-device Python runtime (Chaquopy CPython 3.11) for src/main/python.
+        // Started once; PptxBuilder calls into it on demand.
+        try {
+            if (!com.chaquo.python.Python.isStarted()) {
+                com.chaquo.python.Python.start(com.chaquo.python.android.AndroidPlatform(this))
+            }
+        } catch (_: Exception) { }
         wakeStartScreen = startScreenFor(intent)
         if (wakeStartScreen == "Voice") WakeWordService.notifyAppOpened(this)
         setContent { KarenApp(startScreen = wakeStartScreen, shakeSignal = shakeSignal) }

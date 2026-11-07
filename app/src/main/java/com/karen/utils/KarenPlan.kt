@@ -30,6 +30,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontFamily
@@ -745,48 +746,77 @@ fun ArtifactCard(
         verticalAlignment = Alignment.CenterVertically,
         modifier = modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(16.dp))
             .background(colors.surface)
-            .border(1.dp, colors.border, RoundedCornerShape(12.dp))
+            .border(1.dp, colors.border, RoundedCornerShape(16.dp))
             .clickable { onOpen() }
-            .padding(horizontal = 12.dp, vertical = 10.dp)
+            .padding(horizontal = 12.dp, vertical = 12.dp)
     ) {
         Box(
             modifier = Modifier
-                .size(36.dp)
-                .clip(RoundedCornerShape(10.dp))
-                .background(colors.accentRed.copy(alpha = 0.1f)),
+                .size(44.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(colors.accentRed),
             contentAlignment = Alignment.Center
         ) {
             Text(
                 text = artifact.kind.uppercase().take(3),
-                color = colors.accentRed,
-                fontSize = 10.sp,
+                color = Color.White,
+                fontSize = 11.sp,
                 fontWeight = FontWeight.Bold,
                 fontFamily = FontFamily.Monospace
             )
         }
-        Spacer(Modifier.width(10.dp))
+        Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(
                 text = artifact.name,
                 color = colors.textPrimary,
-                fontSize = 13.sp,
+                fontSize = 13.5.sp,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1
             )
+            Spacer(Modifier.height(4.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(colors.accentRed.copy(alpha = 0.1f))
+                        .padding(horizontal = 7.dp, vertical = 2.dp)
+                ) {
+                    Text(
+                        text = "Document · ${artifact.kind.uppercase()}",
+                        color = colors.accentRed,
+                        fontSize = 9.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+                if (artifact.pages > 0) {
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        text = "${artifact.pages} page${if (artifact.pages == 1) "" else "s"}",
+                        color = colors.textMuted,
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.width(8.dp))
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(999.dp))
+                .background(colors.accentGreen)
+                .padding(horizontal = 12.dp, vertical = 7.dp),
+            contentAlignment = Alignment.Center
+        ) {
             Text(
-                text = "Document · ${artifact.kind.uppercase()}" +
-                    if (artifact.pages > 0) " · ${artifact.pages} page${if (artifact.pages == 1) "" else "s"}" else "",
-                color = colors.textMuted,
-                fontSize = 11.sp
+                text = "View file",
+                color = Color.White,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold
             )
         }
-        Text(
-            text = "View file",
-            color = colors.accentGreen,
-            fontSize = 12.sp,
-            fontWeight = FontWeight.SemiBold
-        )
     }
 }

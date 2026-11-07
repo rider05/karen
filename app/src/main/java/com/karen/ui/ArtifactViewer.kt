@@ -82,15 +82,34 @@ fun PdfViewerDialog(
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clip(RoundedCornerShape(11.dp))
+                            .background(colors.accentRed),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("PDF", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                    }
+                    Spacer(Modifier.width(10.dp))
                     Column(Modifier.weight(1f)) {
                         Text(title, color = colors.textPrimary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                        Spacer(Modifier.height(3.dp))
                         if (pageCount > 0) {
-                            Text(
-                                "Page ${pageIndex + 1} of $pageCount",
-                                color = colors.textMuted,
-                                fontSize = 11.sp,
-                                fontFamily = FontFamily.Monospace
-                            )
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(999.dp))
+                                    .background(colors.surfaceHover.copy(alpha = 0.5f))
+                                    .padding(horizontal = 8.dp, vertical = 3.dp)
+                            ) {
+                                Text(
+                                    "Page ${pageIndex + 1} of $pageCount",
+                                    color = colors.textSecondary,
+                                    fontSize = 11.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
                         }
                     }
                     IconButton(onClick = onDismiss) {
@@ -102,13 +121,14 @@ fun PdfViewerDialog(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(420.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(Color.White)
-                        .border(1.dp, colors.border, RoundedCornerShape(12.dp)),
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(if (colors.isDark) Color(0xFF0B0D10) else Color(0xFFF1F5F9))
+                        .border(1.dp, colors.border, RoundedCornerShape(14.dp))
+                        .padding(8.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     when {
-                        error != null -> Text(error!!, color = colors.accentRed, fontSize = 12.sp)
+                        error != null -> Text(error!!, color = colors.accentRed, fontSize = 12.sp, lineHeight = 17.sp)
                     bitmap != null -> Image(
                         bitmap = bitmap!!.asImageBitmap(),
                         contentDescription = "PDF page ${pageIndex + 1}",

@@ -51,3 +51,4 @@ yarn-error.log*
 dist/
 .vite/
 .parcel-cache/
+app/src/main/python/pptxgen/__pycache__/

@@ -2,6 +2,7 @@ package com.karen.ui
 
 import android.content.Context
 import android.content.Intent
+import android.util.Log
 import androidx.core.content.FileProvider
 import com.karen.utils.ArtifactMeta
 import com.karen.utils.TraceKind
@@ -24,6 +25,7 @@ import java.util.zip.ZipOutputStream
  * title text extracted; problems surface as Flagging trace rows.
  */
 object PptxBuilder {
+    private const val TAG = "KarenPptx"
 
     data class Outline(
         val title: String,
@@ -66,13 +68,16 @@ object PptxBuilder {
     }
 
     /** Runs the bundled Python script; false (no throw) when unavailable. */
-    private fun tryBuildWithPython(ctx: Context, outline: Outline, dest: File): Boolean = try {
+    private fun tryBuildWithPython(context: Context, outline: Outline, dest: File): Boolean = try {
         val py = com.chaquo.python.Python.getInstance()
         val mod = py.getModule("make_pptx")
         val count = mod.callAttr("build_pptx", outline.title, outline.slides, dest.absolutePath, outline.subtitle)
             ?.toInt() ?: 0
-        count > 0 && dest.exists() && dest.length() > 0
-    } catch (_: Exception) {
+        val ok = count > 0 && dest.exists() && dest.length() > 0
+        Log.i(TAG, "PPT build via Python: $ok (${dest.length()} bytes, $count slides)")
+        ok
+    } catch (e: Exception) {
+        Log.i(TAG, "Python unavailable, falling back to Kotlin builder: ${e.message}")
         false
     }
 

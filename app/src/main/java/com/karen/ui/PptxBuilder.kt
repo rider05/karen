@@ -70,7 +70,7 @@ object PptxBuilder {
     /** Runs the bundled Python script; false (no throw) when unavailable. */
     private fun tryBuildWithPython(context: Context, outline: Outline, dest: File): Boolean = try {
         val py = com.chaquo.python.Python.getInstance()
-        val mod = py.getModule("make_pptx")
+        val mod = py.getModule("pptxgen")
         val count = mod.callAttr("build_pptx", outline.title, outline.slides, dest.absolutePath, outline.subtitle)
             ?.toInt() ?: 0
         val ok = count > 0 && dest.exists() && dest.length() > 0

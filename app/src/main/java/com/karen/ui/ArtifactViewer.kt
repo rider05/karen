@@ -31,6 +31,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.karen.utils.SourceEntry
+import com.karen.utils.SlideThumb
+import com.karen.utils.readSlides
 import java.io.File
 
 /**
@@ -52,7 +54,7 @@ fun PdfViewerDialog(
     // PPTX decks list their slides; PDFs render pages with PdfRenderer.
     val isPptx = file.name.lowercase().endsWith(".pptx") || file.name.lowercase().endsWith(".ppt")
     if (isPptx) {
-        val slides = remember(file) { PptxBuilder.slideTitles(file) }
+        val slides = remember(file) { readSlides(file) }
         androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
             Surface(
                 color = colors.surface,
@@ -94,34 +96,36 @@ fun PdfViewerDialog(
                         }
                     }
                     Spacer(Modifier.height(10.dp))
-                    LazyColumn(
-                        modifier = Modifier.fillMaxWidth().weight(1f, fill = false).heightIn(max = 320.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        items(slides.size) { i ->
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .background(colors.surfaceHover.copy(alpha = 0.4f))
-                                    .padding(horizontal = 12.dp, vertical = 9.dp)
-                            ) {
-                                Text(
-                                    "${i + 1}",
-                                    color = colors.accentGreen,
-                                    fontSize = 12.sp,
-                                    fontFamily = FontFamily.Monospace,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.width(28.dp)
-                                )
-                                Text(
-                                    slides[i],
-                                    color = colors.textPrimary,
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    maxLines = 2
-                                )
+                    if (slides.isEmpty()) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 120.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                "Preview unavailable for this deck.",
+                                color = colors.textMuted,
+                                fontSize = 12.sp
+                            )
+                        }
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier.fillMaxWidth().weight(1f, fill = false).heightIn(max = 400.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            items(slides.size) { i ->
+                                Column {
+                                    Text(
+                                        "Slide ${i + 1}",
+                                        color = colors.accentGreen,
+                                        fontSize = 10.5.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Spacer(Modifier.height(4.dp))
+                                    SlideThumb(preview = slides[i], index = i, count = slides.size)
+                                }
                             }
                         }
                     }

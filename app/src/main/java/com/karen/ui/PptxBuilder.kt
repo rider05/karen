@@ -221,28 +221,6 @@ object PptxBuilder {
         return issues
     }
 
-    /** Extracts slide titles for the in-chat slide list. */
-    fun slideTitles(file: File): List<String> {
-        val out = ArrayList<String>()
-        try {
-            ZipFile(file).use { zip ->
-                val slides = zip.entries().asSequence()
-                    .map { it.name }
-                    .filter { it.startsWith("ppt/slides/slide") && it.endsWith(".xml") }
-                    .sortedBy { it.substringAfter("slide").substringBefore(".").toIntOrNull() ?: 999 }
-                    .toList()
-                slides.forEach { name ->
-                    val xml = zip.getInputStream(zip.getEntry(name))?.bufferedReader()?.readText().orEmpty()
-                    val title = Regex("<a:t>([^<]+)</a:t>").find(xml)?.groupValues?.get(1)?.trim().orEmpty()
-                    out += title.ifBlank { name.substringAfterLast('/') }
-                }
-            }
-        } catch (_: Exception) {
-            // viewer falls back to a single-row summary
-        }
-        return out
-    }
-
     /** Human rundown for the final message. */
     fun rundown(outline: Outline): String = buildString {
         append("Here's your ${outline.slides}-slide ${outline.title} presentation:")

@@ -2483,7 +2483,7 @@ fun ChatScreen(
                                     // Artifact card: tap opens the paginated viewer.
                                     artifactP.artifacts.forEach { art ->
                                         val artFile = remember(art.name) { MagazineBuilder.fileFor(context, art.name) }
-                                        ArtifactCard(artifact = art) {
+                                        ArtifactCard(artifact = art, file = artFile) {
                                             if (artFile != null) {
                                                 viewerTitle = art.name
                                                 viewerFile = artFile

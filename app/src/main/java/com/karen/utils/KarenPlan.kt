@@ -7,22 +7,28 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -31,14 +37,21 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.graphics.Bitmap
+import android.graphics.pdf.PdfRenderer
+import android.os.ParcelFileDescriptor
 import org.json.JSONObject
+import java.io.File
+import java.util.zip.ZipFile
 
 /**
  * Live plan checklist — Karen's take on Claude's task list.
@@ -481,6 +494,44 @@ fun splitArtifact(text: String): ParsedArtifact {
     return ParsedArtifact(out, stripMachine(text, listOf(ARTIFACT_MARK)))
 }
 
+/** One parsed deck slide for on-screen previews. */
+data class SlidePreview(val title: String, val subtitle: String, val bullets: List<String>)
+
+/**
+ * Parses a deck's slides (title / subtitle / bullet lines) out of the pptx zip
+ * so the card and viewer can draw real slide previews. Works for both builders
+ * (Kotlin + Python) since both emit `name="Title"` / `name="Body"` text shapes.
+ */
+fun readSlides(file: File?): List<SlidePreview> {
+    if (file == null || !file.exists()) return emptyList()
+    val out = ArrayList<SlidePreview>()
+    try {
+        ZipFile(file).use { zip ->
+            zip.entries().asSequence()
+                .map { it.name }
+                .filter { it.startsWith("ppt/slides/slide") && it.endsWith(".xml") }
+                .sortedBy { it.substringAfter("slide").substringBefore(".").toIntOrNull() ?: 999 }
+                .forEach { name ->
+                    val xml = zip.getInputStream(zip.getEntry(name))?.bufferedReader()?.readText().orEmpty()
+                    val titleBlock = xml.substringAfter("name=\"Title\"", "").substringBefore("</p:sp>")
+                    val bodyBlock = xml.substringAfter("name=\"Body\"", "").substringBefore("</p:sp>")
+                    val texts = Regex("<a:t>([^<]*)</a:t>")
+                    val titleVals = texts.findAll(titleBlock).map { it.groupValues[1].trim() }.filter { it.isNotBlank() }.toList()
+                    val bodyVals = texts.findAll(bodyBlock).map { it.groupValues[1].trim() }.filter { it.isNotBlank() }.toList()
+                    val title = titleVals.firstOrNull() ?: bodyVals.firstOrNull() ?: name.substringAfterLast('/')
+                    val subtitle = titleVals.drop(1).joinToString(" ")
+                    val bullets = (bodyVals + titleVals.drop(2))
+                        .map { it.removePrefix("• ").trim() }
+                        .filter { it.isNotBlank() && it != title }
+                    out.add(SlidePreview(title, subtitle, bullets))
+                }
+        }
+    } catch (_: Exception) {
+        // unreadable deck: callers fall back to their skeleton states
+    }
+    return out
+}
+
 /** ///SOURCES {"items":[{title,url,source}…]} → sources, body stripped. */
 fun splitSources(text: String): ParsedSources {
     if (!text.contains(SOURCES_MARK, ignoreCase = true)) return ParsedSources(emptyList(), text)
@@ -739,66 +790,226 @@ fun ClarifyCard(
     }
 }
 
-/** Artifact card ("Document · PDF" chip) — tap opens the viewer. */
+/**
+ * Draws one deck slide as a Compose mini-canvas. Faithful for Karen-built
+ * decks (white bg, bold slate title, optional subtitle, bullet lines) with
+ * sizes scaled off the available width. A null preview renders the skeleton.
+ */
+@Composable
+fun SlideThumb(preview: SlidePreview?, index: Int, count: Int, modifier: Modifier = Modifier) {
+    val colors = LocalKarenColors.current
+    BoxWithConstraints(modifier) {
+        val s = maxWidth.value / 330f
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .aspectRatio(16f / 9f)
+                .clip(RoundedCornerShape((9 * s).dp))
+                .background(Color.White)
+                .border(1.dp, colors.border, RoundedCornerShape((9 * s).dp))
+                .padding((20 * s).dp)
+        ) {
+            Text(
+                text = preview?.title ?: "Slide ${index + 1}",
+                color = Color(0xFF0F172A),
+                fontSize = (30f * s).sp,
+                lineHeight = (36f * s).sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (!preview?.subtitle.isNullOrBlank()) {
+                Spacer(Modifier.height((5 * s).dp))
+                Text(
+                    preview!!.subtitle,
+                    color = Color(0xFF475569),
+                    fontSize = (12f * s).sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            // Breathing room where the slide's content area starts.
+            Spacer(Modifier.weight(0.85f, fill = false))
+            val bullets = preview?.bullets.orEmpty()
+            bullets.take(7).forEach { b ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        Modifier
+                            .size((5f * s).dp)
+                            .clip(CircleShape)
+                            .background(Color(0xFF334155))
+                    )
+                    Spacer(Modifier.width((7f * s).dp))
+                    Text(
+                        b,
+                        color = Color(0xFF334155),
+                        fontSize = (13f * s).sp,
+                        lineHeight = (17f * s).sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Spacer(Modifier.height((4.5f * s).dp))
+            }
+        }
+        if (count > 1) {
+            Box(
+                Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding((8 * s).dp)
+                    .clip(RoundedCornerShape((6 * s).dp))
+                    .background(Color(0xFF334155).copy(alpha = 0.72f))
+                    .padding(horizontal = (6 * s).dp, vertical = (2.5f * s).dp)
+            ) {
+                Text(
+                    "${index + 1} / $count",
+                    color = Color.White,
+                    fontSize = (9f * s).sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace
+                )
+            }
+        }
+    }
+}
+
+/** First PDF page rendered with PdfRenderer for the card cover. */
+@Composable
+private fun PdfCover(file: File, modifier: Modifier = Modifier) {
+    val colors = LocalKarenColors.current
+    var bmp by remember(file) { mutableStateOf<Bitmap?>(null) }
+    LaunchedEffect(file) {
+        try {
+            val fd = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+            val renderer = PdfRenderer(fd)
+            try {
+                val page = renderer.openPage(0)
+                try {
+                    val w = 480
+                    val h = (w * page.height / page.width.toDouble()).toInt().coerceAtLeast(1)
+                    val img = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                    img.eraseColor(android.graphics.Color.WHITE)
+                    page.render(img, android.graphics.Rect(0, 0, w, h), null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                    bmp = img
+                } finally {
+                    page.close()
+                }
+            } finally {
+                renderer.close()
+                fd.close()
+            }
+        } catch (_: Exception) {
+            // fall back to the kind tile
+        }
+    }
+    if (bmp != null) {
+        Image(
+            bitmap = bmp!!.asImageBitmap(),
+            contentDescription = "First page preview",
+            modifier = modifier
+                .clip(RoundedCornerShape(8.dp))
+                .border(1.dp, colors.border, RoundedCornerShape(8.dp))
+        )
+    } else {
+        KindTile(artifactKind = "pdf", modifier = modifier)
+    }
+}
+
+@Composable
+private fun KindTile(artifactKind: String, modifier: Modifier = Modifier) {
+    val colors = LocalKarenColors.current
+    val accent = if (artifactKind.lowercase().endsWith("pdf")) colors.accentRed else colors.accentGreen
+    Box(
+        modifier
+            .size(44.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(accent),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = artifactKind.uppercase().take(3),
+            color = Color.White,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            fontFamily = FontFamily.Monospace
+        )
+    }
+}
+
+/** Artifact card, redesigned: cover preview on a dark stage, then meta + CTA. */
 @Composable
 fun ArtifactCard(
     artifact: ArtifactMeta,
     modifier: Modifier = Modifier,
+    file: File? = null,
     onOpen: () -> Unit = {}
 ) {
     val colors = LocalKarenColors.current
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = modifier
+    val isPdf = artifact.kind.lowercase().endsWith("pdf")
+    val accent = if (isPdf) colors.accentRed else colors.accentGreen
+    Column(
+        modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
             .background(colors.surface)
             .border(1.dp, colors.border, RoundedCornerShape(16.dp))
             .clickable { onOpen() }
-            .padding(horizontal = 12.dp, vertical = 12.dp)
     ) {
+        // Preview stage: slide 1 or page 1 centred on the dark canvas.
         Box(
-            modifier = Modifier
-                .size(44.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(colors.accentRed),
+            Modifier
+                .fillMaxWidth()
+                .background(if (colors.isDark) Color(0xFF0B0D10) else Color(0xFFF1F5F9))
+                .padding(horizontal = 14.dp, vertical = 12.dp),
             contentAlignment = Alignment.Center
         ) {
-            Text(
-                text = artifact.kind.uppercase().take(3),
-                color = Color.White,
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Bold,
-                fontFamily = FontFamily.Monospace
-            )
-        }
-        Spacer(Modifier.width(12.dp))
-        Column(Modifier.weight(1f)) {
-            Text(
-                text = artifact.name,
-                color = colors.textPrimary,
-                fontSize = 13.5.sp,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1
-            )
-            Spacer(Modifier.height(4.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(999.dp))
-                        .background(colors.accentRed.copy(alpha = 0.1f))
-                        .padding(horizontal = 7.dp, vertical = 2.dp)
-                ) {
-                    Text(
-                        text = "Document · ${artifact.kind.uppercase()}",
-                        color = colors.accentRed,
-                        fontSize = 9.5.sp,
-                        fontWeight = FontWeight.Bold,
-                        fontFamily = FontFamily.Monospace
+            when {
+                file == null -> KindTile(artifactKind = artifact.kind)
+                isPdf -> PdfCover(file = file, modifier = Modifier.heightIn(max = 230.dp))
+                else -> {
+                    var slides by remember(file) { mutableStateOf<List<SlidePreview>?>(null) }
+                    LaunchedEffect(file) { slides = readSlides(file) }
+                    SlideThumb(
+                        preview = slides?.firstOrNull(),
+                        index = 0,
+                        count = slides?.size?.takeIf { it > 0 } ?: artifact.pages,
+                        modifier = Modifier.fillMaxWidth()
                     )
                 }
+            }
+        }
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(colors.surface)
+                .padding(horizontal = 12.dp, vertical = 10.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(accent.copy(alpha = 0.12f))
+                    .padding(horizontal = 8.dp, vertical = 3.dp)
+            ) {
+                Text(
+                    text = artifact.kind.uppercase(),
+                    color = accent,
+                    fontSize = 9.5.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = artifact.name,
+                    color = colors.textPrimary,
+                    fontSize = 13.5.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
                 if (artifact.pages > 0) {
-                    Spacer(Modifier.width(6.dp))
                     Text(
                         text = "${artifact.pages} page${if (artifact.pages == 1) "" else "s"}",
                         color = colors.textMuted,
@@ -807,21 +1018,21 @@ fun ArtifactCard(
                     )
                 }
             }
-        }
-        Spacer(Modifier.width(8.dp))
-        Box(
-            modifier = Modifier
-                .clip(RoundedCornerShape(999.dp))
-                .background(colors.accentGreen)
-                .padding(horizontal = 12.dp, vertical = 7.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                text = "View file",
-                color = Color.White,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Bold
-            )
+            Spacer(Modifier.width(8.dp))
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(colors.accentGreen)
+                    .padding(horizontal = 12.dp, vertical = 7.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "View file",
+                    color = Color.White,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
         }
     }
 }
